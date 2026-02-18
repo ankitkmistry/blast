@@ -1,0 +1,163 @@
+# TODO: to be implemented
+# - optional type   : '?i32'
+# - error type      : 'IoError!String'
+# - error sets like in Zig
+# - defer
+# - different kinds of casts (normal cast, pun cast, ...)
+
+# Ignore whitespaces -> ' ', '\t', '\n'
+# Comment -> // ... \n and /* ... */ cannot be nested
+
+# Keywords
+# * Objects
+#   - module
+#   - struct
+#   - union
+#   - fn
+# * Types
+#   - void
+#   - type
+# * Constructs
+#   - if
+#   - else
+#   - while
+#   - do
+#   - loop
+#   - continue
+#   - break
+#   - return
+# * Operators
+#   - or
+#   - and
+#   - not
+#   - true
+#   - false
+#   - as
+
+# name : type = value
+# name := value
+# name : type : value
+# name :: value
+
+Program     <- Decl*;
+
+Decl        <- (Identifier / '_') ':' Type [=:] Object
+             ;
+Object      <- Module / Struct / Union / Function
+             / Type ';'
+             / Expr ';'
+             ;
+Module      <- 'module' '{' Decl* '}';
+Struct      <- 'struct' '{' Fields '}';
+Union       <- 'union' '{' Fields '}';
+Function    <- 'fn' '(' Params ')' ('->' Type)? (';' / ExprBlock);
+
+Fields      <- Field*;
+Field       <- Decl;
+
+# Type
+# - identifier      : 'i32'
+# - const           : 'const i32'
+# - function        : 'fn(i32, i32) -> bool'
+# - pointer         : '*fn(i32,i32) -> bool' or '*i32'
+# - array           : '[i32; 8]' or '[i32; _]'
+# - fat pointer     : '[u8]'
+# - tuple           : '(i32, bool)'
+# - void            : 'void' or '()'
+# - never           : '!'
+# - type            : 'type'
+
+Types   <- (Type (',' Type) ','?)?;
+Type    <-  Identifier ('.' Identifier)*
+         / 'fn' '(' Types ')' '->' Type
+         / 'const' Type
+         / '*' Type
+         / '[' Type ';' ('_' / Expr) ']'
+         / '[' Type ']'
+         / '(' Types ')'
+         / 'void'
+         / '!'
+         / 'type'
+         ;
+
+# Statements
+Stmts           <- Stmt*;
+Block           <- '{' Stmts '}';
+Stmt            <- If / While / DoWhile / LoopStmt # / ForStmt
+                 # continue stmt is not allowed in do while loop
+                 / 'continue' Label? ';'
+                 / 'break' Label? Expr? ';'
+                 / 'return' Label? Expr? ';'
+                 / Expr ';'
+                 / ';'
+                 ;
+
+StmtDoWhile     <- 'do' Block 'while' Expr (';' / 'else' Block);
+StmtIf          <- 'if' Expr Block ('else' Block)?;
+StmtWhile       <- Label? 'while' Expr Block ('else' Block)?;
+# ExprFor         <- 'for' Block ('else' Block)?;
+StmtLoop        <- Label? 'loop' Block;
+
+# Expression
+Exprs       <- (Expr (',' Expr) ','?)?;
+Expr        <- LogicOr / Assignment;
+Assignment  <- LogicOrList Operator '=' ExprList;
+Operator    <- [+-][%:]?
+             / [/%]
+             / '*''*'?
+             / '<''<' / '>''>'
+             / [&|^];
+
+LogicOr     <- LogicAnd ('or' LogicAnd)*;
+LogicAnd    <- LogicNot ('and' LogicNot)*;
+LogicNot    <- 'not'* Relational;
+Relational  <- BitOr (('<'/'<='/'=='/'!='/'>='/'>') BitOr)*;
+BitOr       <- BitXor ('|' BitXor)*;
+BitXor      <- BitAnd ('^' BitAnd)*;
+BitAnd      <- Shift ('&' Shift)*;
+Shift       <- Term (('<''<'/'>''>') Term)*;
+Term        <- Factor ([+-][%:]? Factor)*;
+Factor      <- Power ([*/%] Power)*;
+Power       <- (Cast '**')* Cast;
+Cast        <- Unary ('as' Type)*;
+
+Unary       <- [-+~]? Postfix;
+Postfix     <- Primary
+             (('.' Identifier)
+            / ('(' ArgumentList ')')
+            / ('[' ExprList ']'));
+Primary     <- 'true' / 'false'
+             / Integer / Float / Identifier
+             / '(' Expr ')'
+             / '(' Exprs ')'
+             ;
+
+ExprBlock   <- '{' Stmts Expr '}';
+ExprIf      <- 'if' Expr ExprBlock ('else' ExprBlock)?
+             / 'if' Expr 'then' Expr 'else' Expr;
+ExprWhile   <- 'while' Expr Block ('else' ExprBlock)?;
+# ExprFor     <- 'for' ExprBlock ('else' ExprBlock)?;
+ExprLoop    <- 'loop' Block;
+
+# Lexer definitions
+Label       <-  '$' Identifier
+Identifier  <- [a-zA-Z_][a-zA-Z0-9]*;
+
+String      <- [a-zA-Z]? ["] .* !'\n' ["]        # Single line strings
+            / [a-zA-Z]? '`' .* '`'               # Multi line strings
+            ;
+
+Integer     <- RawInteger ('i8'/'i16'/'i32'/'i64')?;
+RawInteger  <- Decimal
+            / '0'[bB]([01]_?)+
+            / '0'[oO]([0-7]_?)+
+            / '0'[xX] hex
+            ;
+
+Float       <- RawFloat ('f32'/'f64')?;
+RawFloat    <- Decimal '.' Decimal? ([eE][+-] Decimal)?
+            / '0'[xX] hex '.' hex  ([pP][+-] Decimal)?
+            ;
+
+Decimal     <- ([0-9]_?)+;
+Hex         <- ([0-9a-fA-F]_?)+;
