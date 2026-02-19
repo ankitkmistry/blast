@@ -3,11 +3,13 @@ use crate::{
     lexer::Token,
 };
 
+#[derive(Clone)]
 pub struct TypeFunctionParam {
     pub name: Token,
     pub taipe: Type,
 }
 
+#[derive(Clone)]
 pub enum Type {
     Path {
         items: Vec<Token>,
@@ -45,12 +47,30 @@ pub enum Type {
     Literal(Token),
 }
 
+#[derive(Clone)]
 pub struct Arg {
     pub name: Option<Token>,
     pub expr: Expr,
 }
 
+#[derive(Clone)]
 pub enum Expr {
+    Assign {
+        lhs: Vec<Expr>,
+        op: Token,
+        rhs: Vec<Expr>,
+    },
+    Binary2 {
+        left: Box<Expr>,
+        op1: Token,
+        op2: Token,
+        right: Box<Expr>,
+    },
+    Binary {
+        left: Box<Expr>,
+        op: Token,
+        right: Box<Expr>,
+    },
     Cast {
         expr: Box<Expr>,
         taipe: Box<Type>,
@@ -108,7 +128,7 @@ pub enum Expr {
 impl HasLineInfo for Type {
     fn get_line_info(&self) -> LineInfo {
         match self {
-            Type::Path { items } => LineInfo::from_list(items),
+            Type::Path { items } => items.get_line_info(),
             Type::Function {
                 line_info,
                 params: _,
@@ -141,6 +161,14 @@ impl HasLineInfo for Type {
 impl HasLineInfo for Expr {
     fn get_line_info(&self) -> LineInfo {
         match self {
+            Expr::Assign { lhs, op: _, rhs } => LineInfo::from_range(lhs, rhs),
+            Expr::Binary2 {
+                left,
+                op1: _,
+                op2: _,
+                right,
+            } => LineInfo::from_range(left, right),
+            Expr::Binary { left, op: _, right } => LineInfo::from_range(left, right),
             Expr::Cast { expr, taipe } => LineInfo::from_range(expr, taipe),
             Expr::Unary { op, expr } => {
                 if let Some(tok) = op {

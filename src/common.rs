@@ -1,4 +1,5 @@
 use std::{error::Error, fmt};
+use std::ops::Deref;
 
 // line_start and line_end is inclusive
 // col_start and col_end is exclusive
@@ -21,6 +22,12 @@ impl Default for LineInfo {
     }
 }
 
+impl HasLineInfo for LineInfo {
+    fn get_line_info(&self) -> LineInfo {
+        *self
+    }
+}
+
 impl LineInfo {
     pub fn from_range(start: &impl HasLineInfo, end: &impl HasLineInfo) -> Self {
         Self {
@@ -31,14 +38,24 @@ impl LineInfo {
         }
     }
 
-    pub fn from_items(items: &[impl HasLineInfo]) -> Self {
-        assert!(items.len() > 0);
-        Self::from_range(items.first().unwrap(), items.last().unwrap())
-    }
+    // pub fn from_items(items: &[impl HasLineInfo]) -> Self {
+    //     assert!(items.len() > 0);
+    //     Self::from_range(items.first().unwrap(), items.last().unwrap())
+    // }
 }
 
 pub trait HasLineInfo {
     fn get_line_info(&self) -> LineInfo;
+}
+
+impl<T> HasLineInfo for Vec<T>
+where
+    T: HasLineInfo,
+{
+    fn get_line_info(&self) -> LineInfo {
+        assert!(self.len() > 0);
+        LineInfo::from_range(self.first().unwrap(), self.last().unwrap())
+    }
 }
 
 impl<T> HasLineInfo for Box<T>
@@ -46,7 +63,7 @@ where
     T: HasLineInfo,
 {
     fn get_line_info(&self) -> LineInfo {
-        self.get_line_info()
+        self.deref().get_line_info()
     }
 }
 

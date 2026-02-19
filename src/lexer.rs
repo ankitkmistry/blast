@@ -27,7 +27,11 @@ pub enum TokenKind {
     Slash,
     Percent,
     Plus,
+    WrapPlus,
+    SatPlus,
     Minus,
+    WrapMinus,
+    SatMinus,
     Ampersand,
     Caret,
     Pipe,
@@ -56,74 +60,81 @@ pub enum TokenKind {
     Void,
     Type,
     Underscore,
+    Not,
+    And,
+    Or,
     // Module,
     // Struct,
     // Union,
     // Type,
     // Else,
-    // Or,
-    // And,
-    // Not,
 }
 
 impl TokenKind {
     pub fn get_repr(&self) -> &str {
         match self {
-            TokenKind::LParen => "(",
-            TokenKind::RParen => ")",
-            TokenKind::LBrace => "{",
-            TokenKind::RBrace => "}",
-            TokenKind::LBrack => "[",
-            TokenKind::RBrack => "]",
-            TokenKind::LAngle => "<",
-            TokenKind::RAngle => ">",
-            TokenKind::Comma => ",",
-            TokenKind::Colon => ":",
-            TokenKind::Semicolon => ";",
-            TokenKind::Equal => "=",
-            TokenKind::Arrow => "->",
-            TokenKind::Bang => "!",
-            TokenKind::Dot => ".",
-            TokenKind::Tilde => "~",
-            TokenKind::StarStar => "**",
-            TokenKind::Star => "*",
-            TokenKind::Slash => "/",
-            TokenKind::Percent => "%",
-            TokenKind::Plus => "+",
-            TokenKind::Minus => "-",
-            TokenKind::Ampersand => "&",
-            TokenKind::Caret => "^",
-            TokenKind::Pipe => "|",
-            TokenKind::LessEq => "<=",
-            TokenKind::EqEq => "==",
-            TokenKind::NotEq => "!=",
-            TokenKind::GreaterEq => ">=",
-            TokenKind::Label => "$label",
-            TokenKind::Ident => "identifier",
-            TokenKind::StringLit => "string",
-            TokenKind::IntLit => "integer",
-            TokenKind::FloatLit => "float",
-            TokenKind::True => "true",
-            TokenKind::False => "false",
-            TokenKind::If => "if",
-            TokenKind::While => "while",
-            TokenKind::Loop => "loop",
-            TokenKind::Continue => "continue",
-            TokenKind::Break => "break",
-            TokenKind::Return => "return",
-            TokenKind::As => "as",
-            TokenKind::Fun => "fun",
-            TokenKind::Const => "const",
-            TokenKind::Void => "void",
-            TokenKind::Type => "type",
-            TokenKind::Underscore => "_",
+            TokenKind::LParen => "'('",
+            TokenKind::RParen => "')'",
+            TokenKind::LBrace => "'{'",
+            TokenKind::RBrace => "'}'",
+            TokenKind::LBrack => "'['",
+            TokenKind::RBrack => "']'",
+            TokenKind::LAngle => "'<'",
+            TokenKind::RAngle => "'>'",
+            TokenKind::Comma => "','",
+            TokenKind::Colon => "':'",
+            TokenKind::Semicolon => "';'",
+            TokenKind::Equal => "'='",
+            TokenKind::Arrow => "'->'",
+            TokenKind::Bang => "'!'",
+            TokenKind::Dot => "'.'",
+            TokenKind::Tilde => "'~'",
+            TokenKind::StarStar => "'**'",
+            TokenKind::Star => "'*'",
+            TokenKind::Slash => "'/'",
+            TokenKind::Percent => "'%'",
+            TokenKind::Plus => "'+'",
+            TokenKind::WrapPlus => "'+%'",
+            TokenKind::SatPlus => "'+:'",
+            TokenKind::Minus => "'-'",
+            TokenKind::WrapMinus => "'-%'",
+            TokenKind::SatMinus => "'-:'",
+            TokenKind::Ampersand => "'&'",
+            TokenKind::Caret => "'^'",
+            TokenKind::Pipe => "'|'",
+            TokenKind::LessEq => "'<='",
+            TokenKind::EqEq => "'=='",
+            TokenKind::NotEq => "'!='",
+            TokenKind::GreaterEq => "'>='",
+            TokenKind::Label => "<$label>",
+            TokenKind::Ident => "<identifier>",
+            TokenKind::StringLit => "<string>",
+            TokenKind::IntLit => "<integer>",
+            TokenKind::FloatLit => "<float>",
+            TokenKind::True => "'true'",
+            TokenKind::False => "'false'",
+            TokenKind::If => "'if'",
+            TokenKind::While => "'while'",
+            TokenKind::Loop => "'loop'",
+            TokenKind::Continue => "'continue'",
+            TokenKind::Break => "'break'",
+            TokenKind::Return => "'return'",
+            TokenKind::As => "'as'",
+            TokenKind::Fun => "'fun'",
+            TokenKind::Const => "'const'",
+            TokenKind::Void => "'void'",
+            TokenKind::Type => "'type'",
+            TokenKind::Underscore => "'_'",
+            TokenKind::Not => "'not'",
+            TokenKind::And => "'and'",
+            TokenKind::Or => "'or'",
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Token {
-    line_info: LineInfo,
+    pub line_info: LineInfo,
     pub kind: TokenKind,
     pub text: String,
 }
@@ -158,13 +169,13 @@ static KEYWORDS: LazyLock<HashMap<&'static str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("void", TokenKind::Void);
     keywords.insert("type", TokenKind::Type);
     keywords.insert("_", TokenKind::Underscore);
+    keywords.insert("not", TokenKind::Not);
+    keywords.insert("and", TokenKind::And);
+    keywords.insert("or", TokenKind::Or);
     // keywords.insert("module", TokenKind::Module);
     // keywords.insert("struct", TokenKind::Struct);
     // keywords.insert("union", TokenKind::Union);
     // keywords.insert("else", TokenKind::Else);
-    // keywords.insert("or", TokenKind::Or);
-    // keywords.insert("and", TokenKind::And);
-    // keywords.insert("not", TokenKind::Not);
     keywords
 });
 
@@ -233,6 +244,10 @@ impl Lexer {
                 '-' => {
                     if self.check(">") {
                         token!(Arrow)
+                    } else if self.check("%") {
+                        token!(WrapMinus)
+                    } else if self.check(":") {
+                        token!(SatMinus)
                     } else {
                         token!(Minus)
                     }
@@ -270,7 +285,15 @@ impl Lexer {
                     }
                 }
                 '%' => token!(Percent),
-                '+' => token!(Plus),
+                '+' => {
+                    if self.check("%") {
+                        token!(WrapPlus)
+                    } else if self.check(":") {
+                        token!(SatPlus)
+                    } else {
+                        token!(Plus)
+                    }
+                }
                 '&' => token!(Ampersand),
                 '^' => token!(Caret),
                 '|' => token!(Pipe),
@@ -367,8 +390,7 @@ impl Lexer {
         KEYWORDS
             .get(text)
             .copied()
-            .or(Some(TokenKind::Ident))
-            .unwrap()
+            .unwrap_or(TokenKind::Ident)
     }
 
     fn make_token(&mut self, kind: TokenKind) -> Token {

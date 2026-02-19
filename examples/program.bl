@@ -1,4 +1,5 @@
 // 1 0b1 0o147 0x1abcd 1.2 1.23e+23 1.23e-23 0xab.cdp+2
-main :: fn () {
-    io.println("Hello, World");
-}
+// main :: fn () {
+//     io.println("Hello, World");
+// }
+a + 

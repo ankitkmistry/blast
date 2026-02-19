@@ -1,4 +1,6 @@
-use std::fs;
+use std::{fmt::Write, fs};
+
+use color_print::{cprintln, cwrite};
 
 use crate::common::{CompileError, LineInfo};
 
@@ -17,7 +19,7 @@ pub fn print_error(err: CompileError) {
     }
 }
 
-fn interpolate_chars(c1: char, c2: char) -> char {
+fn interpolate_char(c1: char, c2: char) -> char {
     // This function handles \t and other kind of whitespaces
     // But ignores normal ' '
     if c1 != ' ' && c1.is_whitespace() {
@@ -56,10 +58,46 @@ fn num_digits(x: usize) -> usize {
 }
 
 fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
-    println!("error: {}", msg);
-    println!(
-        "in file: {}:{}:{}",
-        file_path, line_info.line_start, line_info.col_start
+    let mut result = String::new();
+    let mut flag = false;
+    let mut flag_color_r = 0xFF;
+    let mut flag_color_g = 0xFF;
+    let mut flag_color_b = 0xFF;
+    for i in 0..msg.chars().count() {
+        let c = msg.chars().nth(i).unwrap();
+        if c == '\'' {
+            if flag {
+                flag = false;
+                continue;
+            }
+            flag = true;
+            flag_color_r = 214;
+            flag_color_g = 25;
+            flag_color_b = 224;
+        } else if c == '<' {
+            flag = true;
+            flag_color_r =3;
+            flag_color_g = 189;
+            flag_color_b = 187;
+        } else if c == '>' {
+            flag = false;
+        } else {
+            if flag {
+                result = format!(
+                    "{}\x1b[1m\x1b[38;2;{};{};{}m{}\x1b[0m",
+                    result, flag_color_r, flag_color_g, flag_color_b, c
+                );
+            } else {
+                result.push(c);
+            }
+        }
+    }
+    cprintln!("<r,s>error</>: <s>{}</>", result);
+    cprintln!(
+        "in file: {}:<m!>{}</>:<m!>{}</>",
+        file_path,
+        line_info.line_start,
+        line_info.col_start
     );
 
     let line_column_width = num_digits(line_info.line_end) + 2;
@@ -77,36 +115,56 @@ fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
             for (j, c) in line.chars().enumerate() {
                 let col = j + 1;
                 if line_info.col_start <= col && col < line_info.col_end {
-                    underline.push(interpolate_chars(c, UNDERLINE_CHAR));
+                    let _ = cwrite!(
+                        &mut underline,
+                        "<y!>{}</>",
+                        interpolate_char(c, UNDERLINE_CHAR)
+                    );
                 } else {
-                    underline.push(interpolate_chars(c, ' '));
+                    underline.push(interpolate_char(c, ' '));
                 }
             }
         } else if lineno == line_info.line_start {
             for (j, c) in line.chars().enumerate() {
                 let col = j + 1;
                 if line_info.col_start <= col {
-                    underline.push(interpolate_chars(c, UNDERLINE_CHAR));
+                    let _ = cwrite!(
+                        &mut underline,
+                        "<y!>{}</>",
+                        interpolate_char(c, UNDERLINE_CHAR)
+                    );
                 } else {
-                    underline.push(interpolate_chars(c, ' '));
+                    underline.push(interpolate_char(c, ' '));
                 }
             }
         } else if lineno == line_info.line_end {
             for (j, c) in line.chars().enumerate() {
                 let col = j + 1;
                 if col < line_info.col_end {
-                    underline.push(interpolate_chars(c, UNDERLINE_CHAR));
+                    let _ = cwrite!(
+                        &mut underline,
+                        "<y!>{}</>",
+                        interpolate_char(c, UNDERLINE_CHAR)
+                    );
                 } else {
-                    underline.push(interpolate_chars(c, ' '));
+                    underline.push(interpolate_char(c, ' '));
                 }
             }
         } else {
             for c in line.chars() {
-                underline.push(interpolate_chars(c, UNDERLINE_CHAR));
+                let _ = cwrite!(
+                    &mut underline,
+                    "<y!>{}</>",
+                    interpolate_char(c, UNDERLINE_CHAR)
+                );
             }
         }
 
-        println!("{:>line_column_width$} | {}", lineno, line);
-        println!("{: >line_column_width$} | {}", "", underline);
+        cprintln!("<m!,s>{:>line_column_width$}</> <b!>|</> {}", lineno, line);
+        cprintln!(
+            "<m!,s>{: >line_column_width$}</> <b!>|</> {}",
+            "",
+            underline
+        );
     }
 }

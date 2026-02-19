@@ -102,7 +102,7 @@ StmtLoop    <- Label? 'loop' Block;
 # Expression
 Exprs       <- (Expr (',' Expr) ','?)?;
 Expr        <- LogicOr / Assignment;
-Assignment  <- LogicOrList Operator '=' Exprs;
+Assignment  <- LogicOrs Operator '=' Exprs;
 Operator    <- [+-][%:]?
              / [/%]
              / '*''*'?
@@ -122,7 +122,7 @@ Factor      <- Power ([*/%] Power)*;
 Power       <- (Cast '**')* Cast;
 Cast        <- Unary ('as' Type)*;
 
-Unary       <- [-+~]? Postfix;
+Unary       <- [-+~*&]? Postfix;
 Postfix     <- Primary
              (('.' Identifier)
             / ('(' Arguments ')')
