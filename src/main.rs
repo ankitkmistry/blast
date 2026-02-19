@@ -1,17 +1,18 @@
 use std::fs;
 
 use crate::{
-    common::CompilerResult,
+    common::CompileResult,
     lexer::Lexer,
     parser::Parser,
 };
 
 mod common;
 mod lexer;
+mod ast;
 mod parser;
 mod printer;
 
-fn compile_file(file_path: &str) -> CompilerResult<()> {
+fn compile_file(file_path: &str) -> CompileResult<()> {
     let contents = fs::read_to_string(file_path).unwrap();
 
     let mut lexer = Lexer::new(file_path, &contents);

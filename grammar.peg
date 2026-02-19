@@ -13,7 +13,7 @@
 #   - module
 #   - struct
 #   - union
-#   - fn
+#   - fun
 # * Types
 #   - void
 #   - type
@@ -47,10 +47,10 @@ Object      <- Module / Struct / Union / Function
              / Type ';'
              / Expr ';'
              ;
-Module      <- 'module' '{' Decl* '}';
+Module      <- 'module' (String ';' / '{' Decl* '}');
 Struct      <- 'struct' '{' Fields '}';
 Union       <- 'union' '{' Fields '}';
-Function    <- 'fn' '(' Params ')' ('->' Type)? (';' / ExprBlock);
+Function    <- 'fun' '(' Params ')' ('->' Type)? (';' / ExprBlock);
 
 Fields      <- Field*;
 Field       <- Decl;
@@ -58,8 +58,8 @@ Field       <- Decl;
 # Type
 # - identifier      : 'i32'
 # - const           : 'const i32'
-# - function        : 'fn(i32, i32) -> bool'
-# - pointer         : '*fn(i32,i32) -> bool' or '*i32'
+# - function        : 'fun(i32, i32) -> bool'
+# - pointer         : '*fun(i32,i32) -> bool' or '*i32'
 # - array           : '[i32; 8]' or '[i32; _]'
 # - fat pointer     : '[u8]'
 # - tuple           : '(i32, bool)'
@@ -68,12 +68,14 @@ Field       <- Decl;
 # - type            : 'type'
 
 Types   <- (Type (',' Type) ','?)?;
+TypeFunctionParam <- Identifier ':' Type
 Type    <-  Identifier ('.' Identifier)*
-         / 'fn' '(' Types ')' '->' Type
+         / 'fun' '(' Types ')' '->' Type
          / 'const' Type
          / '*' Type
          / '[' Type ';' ('_' / Expr) ']'
          / '[' Type ']'
+         / '(' Type ')'
          / '(' Types ')'
          / 'void'
          / '!'
@@ -82,9 +84,9 @@ Type    <-  Identifier ('.' Identifier)*
 
 # Statements
 Stmts           <- Stmt*;
-Block           <- '{' Stmts '}';
-Stmt            <- If / While / DoWhile / LoopStmt # / ForStmt
-                 # continue stmt is not allowed in do while loop
+Block           <- '{' (Decl / Stmt)* '}';
+Stmt            <- StmtIf / StmtWhile / StmtLoop # / StmtFor
+                 / Block
                  / 'continue' Label? ';'
                  / 'break' Label? Expr? ';'
                  / 'return' Label? Expr? ';'
@@ -92,16 +94,15 @@ Stmt            <- If / While / DoWhile / LoopStmt # / ForStmt
                  / ';'
                  ;
 
-StmtDoWhile     <- 'do' Block 'while' Expr (';' / 'else' Block);
-StmtIf          <- 'if' Expr Block ('else' Block)?;
-StmtWhile       <- Label? 'while' Expr Block ('else' Block)?;
-# ExprFor         <- 'for' Block ('else' Block)?;
-StmtLoop        <- Label? 'loop' Block;
+StmtIf      <- 'if' Expr Block ('else' Block)?
+StmtWhile   <- Label? 'while' Expr Block ('else' Block)?;
+StmtLoop    <- Label? 'loop' Block;
+# ExprFor     <- 'for' ExprBlock ('else' ExprBlock)?;
 
 # Expression
 Exprs       <- (Expr (',' Expr) ','?)?;
 Expr        <- LogicOr / Assignment;
-Assignment  <- LogicOrList Operator '=' ExprList;
+Assignment  <- LogicOrList Operator '=' Exprs;
 Operator    <- [+-][%:]?
              / [/%]
              / '*''*'?
@@ -124,20 +125,32 @@ Cast        <- Unary ('as' Type)*;
 Unary       <- [-+~]? Postfix;
 Postfix     <- Primary
              (('.' Identifier)
-            / ('(' ArgumentList ')')
-            / ('[' ExprList ']'));
+            / ('(' Arguments ')')
+            / ('[' Exprs ']'));
+Arguments   <- (Argument (',' Argument)* ','?)?;
+Argument    <- (Identifier ':')? Expr;
 Primary     <- 'true' / 'false'
              / Integer / Float / Identifier
              / '(' Expr ')'
              / '(' Exprs ')'
-             ;
+             / '[' Exprs ']'
+             / CompoundExpr;
 
-ExprBlock   <- '{' Stmts Expr '}';
+CompoundExpr    <- ExprBlock
+                 / ExprIf
+                 / ExprWhile
+                 / ExprLoop
+                 / 'continue' Label?
+                 / 'break' Label? Expr?
+                 / 'return' Label? Expr?
+                 ;
+
+ExprBlock   <- '{' (Decl / Stmt)* Expr? '}';
 ExprIf      <- 'if' Expr ExprBlock ('else' ExprBlock)?
              / 'if' Expr 'then' Expr 'else' Expr;
-ExprWhile   <- 'while' Expr Block ('else' ExprBlock)?;
+ExprWhile   <- Label? 'while' Expr Block ('else' ExprBlock)?;
+ExprLoop    <- Label? 'loop' Block;
 # ExprFor     <- 'for' ExprBlock ('else' ExprBlock)?;
-ExprLoop    <- 'loop' Block;
 
 # Lexer definitions
 Label       <-  '$' Identifier
@@ -147,14 +160,14 @@ String      <- [a-zA-Z]? ["] .* !'\n' ["]        # Single line strings
             / [a-zA-Z]? '`' .* '`'               # Multi line strings
             ;
 
-Integer     <- RawInteger ('i8'/'i16'/'i32'/'i64')?;
+Integer     <- RawInteger ('i8'/'i16'/'i32'/'i64'/'i128'/'isize'/'u8'/'u16'/'u32'/'u64'/'u128'/'usize')?;
 RawInteger  <- Decimal
             / '0'[bB]([01]_?)+
             / '0'[oO]([0-7]_?)+
             / '0'[xX] hex
             ;
 
-Float       <- RawFloat ('f32'/'f64')?;
+Float       <- RawFloat ('f16'/'f32'/'f64')?;
 RawFloat    <- Decimal '.' Decimal? ([eE][+-] Decimal)?
             / '0'[xX] hex '.' hex  ([pP][+-] Decimal)?
             ;

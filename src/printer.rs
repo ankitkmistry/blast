@@ -1,15 +1,15 @@
 use std::fs;
 
-use crate::common::{CompilerError, LineInfo};
+use crate::common::{CompileError, LineInfo};
 
-pub fn print_error(err: CompilerError) {
+pub fn print_error(err: CompileError) {
     match err {
-        CompilerError::LexerError {
+        CompileError::LexerError {
             file_path,
             line_info,
             msg,
         } => print_file_error(&file_path, line_info, &msg),
-        CompilerError::ParserError {
+        CompileError::ParserError {
             file_path,
             line_info,
             msg,
@@ -29,6 +29,32 @@ fn interpolate_chars(c1: char, c2: char) -> char {
 
 const UNDERLINE_CHAR: char = '^';
 
+fn num_digits(x: usize) -> usize {
+    if x < 10 {
+        1
+    } else if x < 100 {
+        2
+    } else if x < 1000 {
+        3
+    } else if x < 10000 {
+        4
+    } else if x < 100000 {
+        5
+    } else if x < 1000000 {
+        6
+    } else if x < 10000000 {
+        7
+    } else if x < 100000000 {
+        8
+    } else if x < 1000000000 {
+        9
+    } else if x < 10000000000 {
+        10
+    } else {
+        x.to_string().len()
+    }
+}
+
 fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
     println!("error: {}", msg);
     println!(
@@ -36,7 +62,7 @@ fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
         file_path, line_info.line_start, line_info.col_start
     );
 
-    let line_column_width = line_info.line_end.to_string().len() + 2;
+    let line_column_width = num_digits(line_info.line_end) + 2;
 
     for (i, line) in fs::read_to_string(file_path)
         .unwrap()

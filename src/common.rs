@@ -21,12 +21,37 @@ impl Default for LineInfo {
     }
 }
 
+impl LineInfo {
+    pub fn from_range(start: &impl HasLineInfo, end: &impl HasLineInfo) -> Self {
+        Self {
+            line_start: start.get_line_info().line_start,
+            line_end: end.get_line_info().line_end,
+            col_start: start.get_line_info().col_start,
+            col_end: end.get_line_info().col_end,
+        }
+    }
+
+    pub fn from_items(items: &[impl HasLineInfo]) -> Self {
+        assert!(items.len() > 0);
+        Self::from_range(items.first().unwrap(), items.last().unwrap())
+    }
+}
+
 pub trait HasLineInfo {
     fn get_line_info(&self) -> LineInfo;
 }
 
+impl<T> HasLineInfo for Box<T>
+where
+    T: HasLineInfo,
+{
+    fn get_line_info(&self) -> LineInfo {
+        self.get_line_info()
+    }
+}
+
 #[derive(Clone, Debug)]
-pub enum CompilerError {
+pub enum CompileError {
     // FileNotFound(String),
     LexerError {
         file_path: String,
@@ -40,12 +65,12 @@ pub enum CompilerError {
     },
 }
 
-impl fmt::Display for CompilerError {
+impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "TODO: implement this")
     }
 }
 
-impl Error for CompilerError {}
+impl Error for CompileError {}
 
-pub type CompilerResult<T> = Result<T, CompilerError>;
+pub type CompileResult<T> = Result<T, CompileError>;

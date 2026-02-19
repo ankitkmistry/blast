@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::LazyLock};
 
-use crate::common::{CompilerError, CompilerResult, HasLineInfo, LineInfo};
+use crate::common::{CompileError, CompileResult, HasLineInfo, LineInfo};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
@@ -37,32 +37,88 @@ pub enum TokenKind {
     GreaterEq,
 
     Label,
-    Identifier,
-    String,
-    Integer,
-    Float,
+    Ident,
+    StringLit,
+    IntLit,
+    FloatLit,
+
+    True,
+    False,
+    If,
+    While,
+    Loop,
+    Continue,
+    Break,
+    Return,
+    As,
+    Fun,
+    Const,
+    Void,
+    Type,
+    Underscore,
     // Module,
     // Struct,
     // Union,
-    // Fn,
-    // Const,
-    // Void,
     // Type,
-    // If,
     // Else,
-    // While,
-    // Do,
-    // Loop,
-    // Continue,
-    // Break,
-    // Return,
     // Or,
     // And,
     // Not,
-    // True,
-    // False,
-    // As,
-    // Underscore,
+}
+
+impl TokenKind {
+    pub fn get_repr(&self) -> &str {
+        match self {
+            TokenKind::LParen => "(",
+            TokenKind::RParen => ")",
+            TokenKind::LBrace => "{",
+            TokenKind::RBrace => "}",
+            TokenKind::LBrack => "[",
+            TokenKind::RBrack => "]",
+            TokenKind::LAngle => "<",
+            TokenKind::RAngle => ">",
+            TokenKind::Comma => ",",
+            TokenKind::Colon => ":",
+            TokenKind::Semicolon => ";",
+            TokenKind::Equal => "=",
+            TokenKind::Arrow => "->",
+            TokenKind::Bang => "!",
+            TokenKind::Dot => ".",
+            TokenKind::Tilde => "~",
+            TokenKind::StarStar => "**",
+            TokenKind::Star => "*",
+            TokenKind::Slash => "/",
+            TokenKind::Percent => "%",
+            TokenKind::Plus => "+",
+            TokenKind::Minus => "-",
+            TokenKind::Ampersand => "&",
+            TokenKind::Caret => "^",
+            TokenKind::Pipe => "|",
+            TokenKind::LessEq => "<=",
+            TokenKind::EqEq => "==",
+            TokenKind::NotEq => "!=",
+            TokenKind::GreaterEq => ">=",
+            TokenKind::Label => "$label",
+            TokenKind::Ident => "identifier",
+            TokenKind::StringLit => "string",
+            TokenKind::IntLit => "integer",
+            TokenKind::FloatLit => "float",
+            TokenKind::True => "true",
+            TokenKind::False => "false",
+            TokenKind::If => "if",
+            TokenKind::While => "while",
+            TokenKind::Loop => "loop",
+            TokenKind::Continue => "continue",
+            TokenKind::Break => "break",
+            TokenKind::Return => "return",
+            TokenKind::As => "as",
+            TokenKind::Fun => "fun",
+            TokenKind::Const => "const",
+            TokenKind::Void => "void",
+            TokenKind::Type => "type",
+            TokenKind::Underscore => "_",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -72,7 +128,7 @@ pub struct Token {
     pub text: String,
 }
 
-impl HasLineInfo for Token{
+impl HasLineInfo for Token {
     fn get_line_info(&self) -> LineInfo {
         self.line_info
     }
@@ -88,28 +144,27 @@ pub struct Lexer {
 
 static KEYWORDS: LazyLock<HashMap<&'static str, TokenKind>> = LazyLock::new(|| {
     let mut keywords: HashMap<&'static str, TokenKind> = HashMap::new();
+    keywords.insert("true", TokenKind::True);
+    keywords.insert("false", TokenKind::False);
+    keywords.insert("if", TokenKind::If);
+    keywords.insert("while", TokenKind::While);
+    keywords.insert("loop", TokenKind::Loop);
+    keywords.insert("continue", TokenKind::Continue);
+    keywords.insert("break", TokenKind::Break);
+    keywords.insert("return", TokenKind::Return);
+    keywords.insert("as", TokenKind::As);
+    keywords.insert("fun", TokenKind::Fun);
+    keywords.insert("const", TokenKind::Const);
+    keywords.insert("void", TokenKind::Void);
+    keywords.insert("type", TokenKind::Type);
+    keywords.insert("_", TokenKind::Underscore);
     // keywords.insert("module", TokenKind::Module);
     // keywords.insert("struct", TokenKind::Struct);
     // keywords.insert("union", TokenKind::Union);
-    // keywords.insert("fn", TokenKind::Fn);
-    // keywords.insert("const", TokenKind::Const);
-    // keywords.insert("void", TokenKind::Void);
-    // keywords.insert("type", TokenKind::Type);
-    // keywords.insert("if", TokenKind::If);
     // keywords.insert("else", TokenKind::Else);
-    // keywords.insert("while", TokenKind::While);
-    // keywords.insert("do", TokenKind::Do);
-    // keywords.insert("loop", TokenKind::Loop);
-    // keywords.insert("continue", TokenKind::Continue);
-    // keywords.insert("break", TokenKind::Break);
-    // keywords.insert("return", TokenKind::Return);
     // keywords.insert("or", TokenKind::Or);
     // keywords.insert("and", TokenKind::And);
     // keywords.insert("not", TokenKind::Not);
-    // keywords.insert("true", TokenKind::True);
-    // keywords.insert("false", TokenKind::False);
-    // keywords.insert("as", TokenKind::As);
-    // keywords.insert("_", TokenKind::Underscore);
     keywords
 });
 
@@ -128,7 +183,7 @@ impl Lexer {
         self.index < self.text.chars().count()
     }
 
-    pub fn next_token(&mut self) -> CompilerResult<Token> {
+    pub fn next_token(&mut self) -> CompileResult<Token> {
         macro_rules! token {
             ($($arg:tt)*) => {
                 return Ok(self.make_token($($arg)*))
@@ -225,15 +280,15 @@ impl Lexer {
                 }
                 '_' | 'a'..='z' | 'A'..='Z' => {
                     self.expect_ident(false)?;
-                    token!(Identifier)
+                    token!(Ident)
                 }
                 '"' => {
                     self.expect_string("", '"', false, false)?;
-                    token!(String)
+                    token!(StringLit)
                 }
                 '`' => {
                     self.expect_string("", '`', true, false)?;
-                    token!(String)
+                    token!(StringLit)
                 }
                 '1'..='9' => {
                     self.expect_decimal(false)?;
@@ -243,9 +298,11 @@ impl Lexer {
                         // decimal float
                         self.advance();
                         self.expect_float('e', false)?;
-                        token!(Float)
+                        self.check_float_suffix();
+                        token!(FloatLit)
                     } else {
-                        token!(Integer)
+                        self.check_int_suffix();
+                        token!(IntLit)
                     }
                 }
                 '0' => {
@@ -255,7 +312,8 @@ impl Lexer {
                                 // binary
                                 self.advance();
                                 self.expect_binary()?;
-                                token!(Integer)
+                                self.check_int_suffix();
+                                token!(IntLit)
                             }
                             'x' | 'X' => {
                                 // hex
@@ -267,25 +325,32 @@ impl Lexer {
                                     // hex float
                                     self.advance();
                                     self.expect_float('p', true)?;
-                                    token!(Float)
+                                    self.check_float_suffix();
+                                    token!(FloatLit)
                                 } else {
-                                    token!(Integer)
+                                    self.check_int_suffix();
+                                    token!(IntLit)
                                 }
                             }
                             'o' | 'O' => {
                                 self.advance();
                                 self.expect_octal()?;
-                                token!(Integer)
+                                self.check_int_suffix();
+                                token!(IntLit)
                             }
                             '.' => {
                                 // decimal float
                                 self.advance();
                                 self.expect_float('e', false)?;
-                                token!(Float)
+                                self.check_float_suffix();
+                                token!(FloatLit)
                             }
-                            _ => token!(Integer),
+                            _ => {
+                                self.check_int_suffix();
+                                token!(IntLit)
+                            }
                         },
-                        None => token!(Integer),
+                        None => token!(IntLit),
                     }
                 }
                 ' ' | '\t' | '\r' | '\n' => {
@@ -302,7 +367,7 @@ impl Lexer {
         KEYWORDS
             .get(text)
             .copied()
-            .or(Some(TokenKind::Identifier))
+            .or(Some(TokenKind::Ident))
             .unwrap()
     }
 
@@ -317,7 +382,7 @@ impl Lexer {
         let text = self.text[self.start..self.index].to_owned();
         let result = Token {
             line_info: self.line_info,
-            kind: if kind == TokenKind::Identifier {
+            kind: if kind == TokenKind::Ident {
                 Self::get_ident_kind(&text)
             } else {
                 kind
@@ -348,7 +413,7 @@ impl Lexer {
     //     }
     // }
 
-    fn getchar(&mut self) -> CompilerResult<char> {
+    fn getchar(&mut self) -> CompileResult<char> {
         match self.advance() {
             Some(c) => Ok(c),
             None => Err(self.make_error("unexpected end of file")),
@@ -374,7 +439,7 @@ impl Lexer {
         let old_index = self.index;
         let old_line_info = self.line_info;
         for c in str.chars() {
-            match self.advance() {
+            match self.peek() {
                 Some(peek_c) => {
                     if peek_c != c {
                         // Restore
@@ -382,6 +447,7 @@ impl Lexer {
                         self.line_info = old_line_info;
                         return false;
                     }
+                    self.advance();
                 }
                 None => {
                     // Restore
@@ -410,7 +476,26 @@ impl Lexer {
         ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F')
     }
 
-    fn expect_binary(&mut self) -> CompilerResult<()> {
+    fn check_float_suffix(&mut self) -> bool {
+        !self.check("f16") && !self.check("f32") && !self.check("f64")
+    }
+
+    fn check_int_suffix(&mut self) -> bool {
+        !self.check("i8")
+            && !self.check("i16")
+            && !self.check("i32")
+            && !self.check("i64")
+            && !self.check("i128")
+            && !self.check("isize")
+            && !self.check("u8")
+            && !self.check("u16")
+            && !self.check("u32")
+            && !self.check("u64")
+            && !self.check("u128")
+            && !self.check("usize")
+    }
+
+    fn expect_binary(&mut self) -> CompileResult<()> {
         let Some(c) = self.advance() else {
             return Err(self.make_error("expected binary digit"));
         };
@@ -437,7 +522,7 @@ impl Lexer {
         Ok(())
     }
 
-    fn expect_octal(&mut self) -> CompilerResult<()> {
+    fn expect_octal(&mut self) -> CompileResult<()> {
         let Some(c) = self.advance() else {
             return Err(self.make_error("expected octal digit"));
         };
@@ -464,7 +549,7 @@ impl Lexer {
         Ok(())
     }
 
-    fn expect_decimal(&mut self, do_start: bool) -> CompilerResult<()> {
+    fn expect_decimal(&mut self, do_start: bool) -> CompileResult<()> {
         if do_start {
             let c = self.getchar()?;
             if !Self::is_decimal(c) {
@@ -485,7 +570,7 @@ impl Lexer {
         Ok(())
     }
 
-    fn expect_hex(&mut self) -> CompilerResult<()> {
+    fn expect_hex(&mut self) -> CompileResult<()> {
         let Some(c) = self.advance() else {
             return Err(self.make_error("expected hex digit"));
         };
@@ -506,7 +591,7 @@ impl Lexer {
         Ok(())
     }
 
-    fn expect_float(&mut self, exp: char, is_hex: bool) -> CompilerResult<()> {
+    fn expect_float(&mut self, exp: char, is_hex: bool) -> CompileResult<()> {
         if is_hex {
             self.expect_hex()?;
             if let Some(c) = self.peek()
@@ -541,7 +626,7 @@ impl Lexer {
         quantifier: char,
         multiline: bool,
         do_start: bool,
-    ) -> CompilerResult<()> {
+    ) -> CompileResult<()> {
         if do_start {
             let Some(c) = self.advance() else {
                 return Err(
@@ -575,7 +660,7 @@ impl Lexer {
         Ok(())
     }
 
-    fn expect_ident(&mut self, do_start: bool) -> CompilerResult<()> {
+    fn expect_ident(&mut self, do_start: bool) -> CompileResult<()> {
         if do_start {
             let Some(c) = self.advance() else {
                 return Err(self.make_error(format!("expected identifier")));
@@ -606,8 +691,8 @@ impl Lexer {
     //     }
     // }
 
-    fn make_error(&self, msg: impl ToString) -> CompilerError {
-        CompilerError::LexerError {
+    fn make_error(&self, msg: impl ToString) -> CompileError {
+        CompileError::LexerError {
             file_path: self.file_path.clone(),
             line_info: LineInfo {
                 line_start: self.line_info.line_end,
