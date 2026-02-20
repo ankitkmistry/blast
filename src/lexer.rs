@@ -160,8 +160,8 @@ pub struct Lexer {
     line_info: LineInfo,
 }
 
-static KEYWORDS: LazyLock<HashMap<&'static str, TokenKind>> = LazyLock::new(|| {
-    let mut keywords: HashMap<&'static str, TokenKind> = HashMap::new();
+static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
+    let mut keywords: HashMap<&str, TokenKind> = HashMap::new();
     keywords.insert("true", TokenKind::True);
     keywords.insert("false", TokenKind::False);
     keywords.insert("if", TokenKind::If);

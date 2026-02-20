@@ -59,30 +59,35 @@ fn num_digits(x: usize) -> usize {
 
 fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
     let mut result = String::new();
-    let mut flag = false;
+    let mut flag = None;
     let mut flag_color_r = 0xFF;
     let mut flag_color_g = 0xFF;
     let mut flag_color_b = 0xFF;
     for i in 0..msg.chars().count() {
         let c = msg.chars().nth(i).unwrap();
         if c == '\'' {
-            if flag {
-                flag = false;
+            if let Some(c) = flag
+                && c == '\''
+            {
+                flag = None;
                 continue;
             }
-            flag = true;
+            flag = Some('\'');
             flag_color_r = 214;
             flag_color_g = 25;
             flag_color_b = 224;
         } else if c == '<' {
-            flag = true;
-            flag_color_r =3;
+            flag = Some('<');
+            flag_color_r = 3;
             flag_color_g = 189;
             flag_color_b = 187;
-        } else if c == '>' {
-            flag = false;
+        } else if c == '>'
+            && let Some(c) = flag
+            && c == '<'
+        {
+            flag = None;
         } else {
-            if flag {
+            if flag.is_some() {
                 result = format!(
                     "{}\x1b[1m\x1b[38;2;{};{};{}m{}\x1b[0m",
                     result, flag_color_r, flag_color_g, flag_color_b, c
@@ -112,8 +117,10 @@ fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
         let lineno = line_info.line_start + i;
         let mut underline = String::new();
         if lineno == line_info.line_start && lineno == line_info.line_end {
-            for (j, c) in line.chars().enumerate() {
+            let count = line.chars().count().max(line_info.col_end - 1);
+            for j in 0..count {
                 let col = j + 1;
+                let c = line.chars().nth(j).unwrap_or(' ');
                 if line_info.col_start <= col && col < line_info.col_end {
                     let _ = cwrite!(
                         &mut underline,
@@ -125,8 +132,10 @@ fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
                 }
             }
         } else if lineno == line_info.line_start {
-            for (j, c) in line.chars().enumerate() {
+            let count = line.chars().count().max(line_info.col_end - 1);
+            for j in 0..count {
                 let col = j + 1;
+                let c = line.chars().nth(j).unwrap_or(' ');
                 if line_info.col_start <= col {
                     let _ = cwrite!(
                         &mut underline,
@@ -138,8 +147,10 @@ fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
                 }
             }
         } else if lineno == line_info.line_end {
-            for (j, c) in line.chars().enumerate() {
+            let count = line.chars().count().max(line_info.col_end - 1);
+            for j in 0..count {
                 let col = j + 1;
+                let c = line.chars().nth(j).unwrap_or(' ');
                 if col < line_info.col_end {
                     let _ = cwrite!(
                         &mut underline,
@@ -151,7 +162,10 @@ fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
                 }
             }
         } else {
-            for c in line.chars() {
+            let count = line.chars().count().max(line_info.col_end - 1);
+            for j in 0..count {
+                let col = j + 1;
+                let c = line.chars().nth(j).unwrap_or(' ');
                 let _ = cwrite!(
                     &mut underline,
                     "<y!>{}</>",

@@ -71,7 +71,8 @@ impl Parser {
         })
     }
 
-    // decl ::= (identifier | '_') ':' type? (';' | (':' '=' object))
+    // decl ::= (identifier | '_') ':' type (';' | (':' '=' object))
+    //        | (identifier | '_') ':' ((':'|'=') object)
     //        | 'import' identifier ('.' identifier)* ('.' '*')
     //        ;
     fn parse_decl(&mut self) -> CompileResult<ast::Decl> {
@@ -80,19 +81,36 @@ impl Parser {
                 Ident | Underscore => {
                     let name = self.get_token()?;
                     self.expect(Colon)?;
-                    let taipe = self.rule_optional(Self::parse_type);
-                    let object = if let Some(tok) = self.peek()
-                        && (tok.kind == Equal || tok.kind == Colon)
-                    {
-                        Some(self.parse_object()?)
+                    if let Some(taipe) = self.rule_optional(Self::parse_type) {
+                        let object = if let Some(tok) = self.peek()
+                            && (tok.kind == Equal || tok.kind == Colon)
+                        {
+                            self.get_token()?;
+                            Some(self.parse_object()?)
+                        } else {
+                            self.expect_term()?;
+                            None
+                        };
+                        Ok(ast::Decl::Decl {
+                            name,
+                            taipe: Some(taipe),
+                            object,
+                        })
                     } else {
-                        None
-                    };
-                    Ok(ast::Decl::Decl {
-                        name,
-                        taipe,
-                        object,
-                    })
+                        let object = if let Some(tok) = self.peek()
+                            && (tok.kind == Equal || tok.kind == Colon)
+                        {
+                            self.get_token()?;
+                            Some(self.parse_object()?)
+                        } else {
+                            return Err(self.expect_err_more(&["<type>"], &[Equal, Colon]));
+                        };
+                        Ok(ast::Decl::Decl {
+                            name,
+                            taipe: None,
+                            object,
+                        })
+                    }
                 }
                 Import => {
                     let start = self.get_token()?;
@@ -117,7 +135,7 @@ impl Parser {
                         }
                     }
 
-                    let end = self.expect(Semicolon)?;
+                    let end = self.expect_term()?;
                     Ok(ast::Decl::Import {
                         line_info: LineInfo::from_range(&start, &end),
                         items,
@@ -156,7 +174,22 @@ impl Parser {
                     self.get_token()?;
                     Ok(ast::Object::Typedef(self.parse_type()?))
                 }
-                _ => Ok(ast::Object::Expr(self.parse_expr()?)),
+                _ => {
+                    if self.is_expr_start() {
+                        let expr = self.parse_expr()?;
+                        self.expect_term()?;
+                        Ok(ast::Object::Expr(expr))
+                    } else {
+                        Err(self.expect_err(&[
+                            // Object begin tokens
+                            Module, Struct, Union, Fun, Type, //
+                            // Expr begin tokens
+                            Not, Plus, Minus, Tilde, Star, Ampersand, //
+                            // Primary expr begin tokens
+                            True, False, IntLit, FloatLit, Ident, LParen, //
+                        ]))
+                    }
+                }
             }
         } else {
             Err(self.expect_err(&[
@@ -173,23 +206,29 @@ impl Parser {
     // module ::= 'module' (string ';' | '{' decls '}');
     fn parse_module(&mut self) -> CompileResult<ast::Object> {
         let start = self.expect(Module)?;
-        if let Some(tok) = self.peek()
-            && tok.kind == StringLit
-        {
-            let value = self.get_token()?;
-            self.expect(Semicolon)?;
-            Ok(ast::Object::ExternModule {
-                line_info: LineInfo::from_range(&start, &value),
-                value,
-            })
+        if let Some(tok) = self.peek() {
+            match tok.kind {
+                StringLit => {
+                    let value = self.get_token()?;
+                    self.expect_term()?;
+                    Ok(ast::Object::ExternModule {
+                        line_info: LineInfo::from_range(&start, &value),
+                        value,
+                    })
+                }
+                LBrace => {
+                    self.expect(LBrace)?;
+                    let decls = self.parse_decls()?;
+                    let end = self.expect(RBrace)?;
+                    Ok(ast::Object::Module {
+                        line_info: LineInfo::from_range(&start, &end),
+                        decls,
+                    })
+                }
+                _ => Err(self.expect_err(&[StringLit, LBrace])),
+            }
         } else {
-            self.expect(LBrace)?;
-            let decls = self.parse_decls()?;
-            let end = self.expect(RBrace)?;
-            Ok(ast::Object::Module {
-                line_info: LineInfo::from_range(&start, &end),
-                decls,
-            })
+            Err(self.expect_err(&[StringLit, LBrace]))
         }
     }
 
@@ -233,15 +272,25 @@ impl Parser {
         };
         let body = if let Some(tok) = self.peek() {
             match tok.kind {
-                Label | LBrace => Some(self.parse_block(true)?),
+                LBrace => Some(self.parse_block(false)?),
                 Semicolon => {
                     self.get_token()?;
                     None
                 }
-                _ => return Err(self.expect_err(&[LBrace, Label, Semicolon])),
+                _ => {
+                    return if ret.is_some() {
+                        Err(self.expect_err(&[LBrace, Semicolon]))
+                    } else {
+                        Err(self.expect_err(&[Arrow, LBrace, Semicolon]))
+                    };
+                }
             }
         } else {
-            return Err(self.expect_err(&[LBrace, Semicolon]));
+            return if ret.is_some() {
+                Err(self.expect_err(&[LBrace, Semicolon]))
+            } else {
+                Err(self.expect_err(&[Arrow, LBrace, Semicolon]))
+            };
         };
         let end = self.cur().unwrap();
         Ok(ast::Object::Fun {
@@ -297,7 +346,7 @@ impl Parser {
                         None
                     };
                     let expr = self.rule_optional(Self::parse_expr);
-                    self.expect(Semicolon)?;
+                    self.expect_term()?;
                     Ok(ast::Stmt::Single { token, label, expr })
                 }
                 Continue => {
@@ -309,7 +358,7 @@ impl Parser {
                     } else {
                         None
                     };
-                    self.expect(Semicolon)?;
+                    self.expect_term()?;
                     Ok(ast::Stmt::Single {
                         token,
                         label,
@@ -326,13 +375,13 @@ impl Parser {
                         None
                     };
                     let expr = self.rule_optional(Self::parse_expr);
-                    self.expect(Semicolon)?;
+                    self.expect_term()?;
                     Ok(ast::Stmt::Single { token, label, expr })
                 }
                 Return => {
                     let token = self.get_token()?;
                     let expr = self.rule_optional(Self::parse_expr);
-                    self.expect(Semicolon)?;
+                    self.expect_term()?;
                     Ok(ast::Stmt::Single {
                         token,
                         label: None,
@@ -340,7 +389,22 @@ impl Parser {
                     })
                 }
                 Semicolon => Ok(ast::Stmt::Nop(self.get_token()?)),
-                _ => Ok(ast::Stmt::Expr(Box::new(self.parse_expr()?))),
+                _ => {
+                    if self.is_expr_start() {
+                        let expr = self.parse_expr()?;
+                        self.expect_term()?;
+                        Ok(ast::Stmt::Expr(Box::new(expr)))
+                    } else {
+                        Err(self.expect_err(&[
+                            // Stmt begin tokens
+                            If, Label, While, Loop, LBrace, Yield, Continue, Break, Return, //
+                            // Expr begin tokens
+                            Not, Plus, Minus, Tilde, Star, Ampersand, //
+                            // Primary expr begin tokens
+                            True, False, IntLit, FloatLit, Ident, LParen, //
+                        ]))
+                    }
+                }
             }
         } else {
             Err(self.expect_err(&[
@@ -369,10 +433,9 @@ impl Parser {
         while let Some(tok) = self.peek()
             && tok.kind != RBrace
         {
-            stmts.push(self.rule_or(
-                |parser| Ok(ast::Stmt::Decl(Box::new(parser.parse_decl()?))),
-                Self::parse_stmt,
-            )?);
+            stmts.push(self.rule_or(Self::parse_stmt, |parser| {
+                Ok(ast::Stmt::Decl(Box::new(parser.parse_decl()?)))
+            })?);
         }
         let end = self.expect(RBrace)?;
         Ok(ast::Stmt::Block {
@@ -477,7 +540,8 @@ impl Parser {
                     while let Some(tok) = self.peek()
                         && tok.kind == Dot
                     {
-                        items.push(self.get_token()?);
+                        self.get_token()?;
+                        items.push(self.expect(Ident)?);
                     }
                     Ok(ast::Type::Path { items })
                 }
@@ -571,6 +635,23 @@ impl Parser {
                 Ident, Fun, Const, Star, LBrack, LParen, Void, Noreturn, Type,
             ]))
         }
+    }
+
+    fn is_expr_start(&mut self) -> bool {
+        [
+            // Expr begin tokens
+            Not, Plus, Minus, Tilde, Star, Ampersand, //
+            // Primary expr begin tokens
+            True, False, IntLit, FloatLit, Ident, LParen, //
+        ]
+        .into_iter()
+        .any(|kind| {
+            if let Some(tok) = self.peek() {
+                kind == tok.kind
+            } else {
+                false
+            }
+        })
     }
 
     // expr ::= assigment | logic_or;
@@ -778,42 +859,45 @@ impl Parser {
 
     // postifix ::= primary ('.' identifier | '(' args_list ')' | '[' expr_list ']');
     fn parse_postfix(&mut self) -> CompileResult<ast::Expr> {
-        let expr = self.parse_primary()?;
-        if let Some(tok) = self.peek() {
-            match tok.kind {
-                Dot => {
-                    self.get_token()?;
-                    let name = self.expect(Ident)?;
-                    Ok(ast::Expr::Member {
-                        expr: Box::new(expr),
-                        name,
-                    })
+        let mut expr = self.parse_primary()?;
+        loop {
+            if let Some(tok) = self.peek() {
+                match tok.kind {
+                    Dot => {
+                        self.get_token()?;
+                        let name = self.expect(Ident)?;
+                        expr = ast::Expr::Member {
+                            expr: Box::new(expr),
+                            name,
+                        };
+                    }
+                    LParen => {
+                        self.get_token()?;
+                        let args = self.parse_arg_list();
+                        let end = self.expect(RParen)?;
+                        expr = ast::Expr::Call {
+                            line_info: LineInfo::from_range(&expr, &end),
+                            expr: Box::new(expr),
+                            args,
+                        };
+                    }
+                    LBrack => {
+                        self.get_token()?;
+                        let items = self.parse_expr_list();
+                        let end = self.expect(RBrack)?;
+                        expr = ast::Expr::Index {
+                            line_info: LineInfo::from_range(&expr, &end),
+                            expr: Box::new(expr),
+                            items,
+                        };
+                    }
+                    _ => break,
                 }
-                LParen => {
-                    self.get_token()?;
-                    let args = self.parse_arg_list();
-                    let end = self.expect(RParen)?;
-                    Ok(ast::Expr::Call {
-                        line_info: LineInfo::from_range(&expr, &end),
-                        expr: Box::new(expr),
-                        args,
-                    })
-                }
-                LBrack => {
-                    self.get_token()?;
-                    let items = self.parse_expr_list();
-                    let end = self.expect(RBrack)?;
-                    Ok(ast::Expr::Index {
-                        line_info: LineInfo::from_range(&expr, &end),
-                        expr: Box::new(expr),
-                        items,
-                    })
-                }
-                _ => Ok(expr),
+            } else {
+                break;
             }
-        } else {
-            Ok(expr)
         }
+        Ok(expr)
     }
 
     // primary ::= 'true' | 'false'
@@ -824,7 +908,7 @@ impl Parser {
         if let Some(tok) = self.peek() {
             match tok.kind {
                 True | False | StringLit | IntLit | FloatLit | Ident => {
-                    Ok(ast::Expr::Literal(self.get_token()?.clone()))
+                    Ok(ast::Expr::Literal(self.get_token()?))
                 }
                 LParen => {
                     if let Some(tok) = self.peek_at(1)
@@ -970,19 +1054,26 @@ impl Parser {
         }
     }
 
-    fn expect_err(&self, kinds: &[TokenKind]) -> CompileError {
+    fn expect_err_more(&self, items: &[&str], kinds: &[TokenKind]) -> CompileError {
         let mut msg = String::new();
         msg.push_str("expected ");
+        for item in items {
+            msg.push_str(item);
+            msg.push_str(", ");
+        }
         for kind in kinds {
             msg.push_str(kind.get_repr());
             msg.push_str(", ");
         }
-        if kinds.len() > 0 {
+        if items.len() > 0 || kinds.len() > 0 {
             msg.pop();
             msg.pop();
         }
-
         self.make_error(&self.get_holy_line_info(self.peek()), msg)
+    }
+
+    fn expect_err(&self, kinds: &[TokenKind]) -> CompileError {
+        self.expect_err_more(&[], kinds)
     }
 
     fn cur(&self) -> Option<Token> {
@@ -1029,8 +1120,24 @@ impl Parser {
         if self.check(kind) {
             Ok(self.cur().unwrap())
         } else {
-            Err(self.expect_err(&[kind]))
+            Err(self.make_error(
+                &self.get_holy_line_info(if let Some(tok) = self.cur() {
+                    Some(LineInfo {
+                        line_start: tok.line_info.line_end,
+                        line_end: tok.line_info.line_end,
+                        col_start: tok.line_info.col_end,
+                        col_end: tok.line_info.col_end + 1,
+                    })
+                } else {
+                    None
+                }),
+                format!("expected {}", kind.get_repr()),
+            ))
         }
+    }
+
+    fn expect_term(&mut self) -> CompileResult<Token> {
+        self.expect(Semicolon)
     }
 
     // fn advance(&mut self) -> CompilerResult<Token> {

@@ -1,5 +1,5 @@
-use std::{error::Error, fmt};
 use std::ops::Deref;
+use std::{error::Error, fmt};
 
 // line_start and line_end is inclusive
 // col_start and col_end is exclusive
@@ -80,11 +80,12 @@ pub enum CompileError {
         line_info: LineInfo,
         msg: String,
     },
+    Errors(Vec<CompileError>),
 }
 
 impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TODO: implement this")
+        write!(f, "Use printer::print_error instead")
     }
 }
 
