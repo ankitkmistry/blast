@@ -16,6 +16,11 @@ pub fn print_error(err: CompileError) {
             line_info,
             msg,
         } => print_file_error(&file_path, line_info, &msg),
+        CompileError::Errors(errs) => {
+            for err in errs {
+                print_error(err);
+            }
+        }
     }
 }
 

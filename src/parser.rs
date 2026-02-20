@@ -11,6 +11,8 @@ pub struct Parser {
     file_path: String,
     tokens: Vec<Token>,
     index: usize,
+
+    errors: Vec<CompileError>,
 }
 
 macro_rules! define_rule_list {
@@ -62,13 +64,19 @@ impl Parser {
             file_path: lexer.file_path.clone(),
             tokens,
             index: 0,
+            errors: Vec::new(),
         })
     }
 
     pub fn parse(&mut self) -> CompileResult<ast::Program> {
-        Ok(ast::Program {
+        let program = ast::Program {
             decls: self.parse_decls()?,
-        })
+        };
+        if self.errors.is_empty() {
+            Ok(program)
+        } else {
+            Err(CompileError::Errors(self.errors.clone()))
+        }
     }
 
     // decl ::= (identifier | '_') ':' type (';' | (':' '=' object))
@@ -186,7 +194,7 @@ impl Parser {
                             // Expr begin tokens
                             Not, Plus, Minus, Tilde, Star, Ampersand, //
                             // Primary expr begin tokens
-                            True, False, IntLit, FloatLit, Ident, LParen, //
+                            True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
                         ]))
                     }
                 }
@@ -198,7 +206,7 @@ impl Parser {
                 // Expr begin tokens
                 Not, Plus, Minus, Tilde, Star, Ampersand, //
                 // Primary expr begin tokens
-                True, False, IntLit, FloatLit, Ident, LParen, //
+                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
             ]))
         }
     }
@@ -401,7 +409,7 @@ impl Parser {
                             // Expr begin tokens
                             Not, Plus, Minus, Tilde, Star, Ampersand, //
                             // Primary expr begin tokens
-                            True, False, IntLit, FloatLit, Ident, LParen, //
+                            True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
                         ]))
                     }
                 }
@@ -413,7 +421,7 @@ impl Parser {
                 // Expr begin tokens
                 Not, Plus, Minus, Tilde, Star, Ampersand, //
                 // Primary expr begin tokens
-                True, False, IntLit, FloatLit, Ident, LParen, //
+                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
             ]))
         }
     }
@@ -642,7 +650,7 @@ impl Parser {
             // Expr begin tokens
             Not, Plus, Minus, Tilde, Star, Ampersand, //
             // Primary expr begin tokens
-            True, False, IntLit, FloatLit, Ident, LParen, //
+            True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
         ]
         .into_iter()
         .any(|kind| {
@@ -903,7 +911,8 @@ impl Parser {
     // primary ::= 'true' | 'false'
     //           | string | integer | float | identifier
     //           | '(' expr ')' | tuple
-    //           | '[' expr_list ']';
+    //           | '[' expr_list ']'
+    //           ;
     fn parse_primary(&mut self) -> CompileResult<ast::Expr> {
         if let Some(tok) = self.peek() {
             match tok.kind {
@@ -932,7 +941,7 @@ impl Parser {
                         expr: Box::new(expr),
                     })
                 }
-                RParen => {
+                LBrack => {
                     let start = self.get_token()?;
                     let exprs = self.parse_expr_list();
                     let end = self.expect(RBrack)?;
@@ -942,14 +951,14 @@ impl Parser {
                     })
                 }
                 _ => Err(self.expect_err(&[
-                    True, False, IntLit, FloatLit, Ident, LParen, LBrace, If, While, Loop, Break,
-                    Continue, Return,
+                    True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While, Loop,
+                    Break, Continue, Return,
                 ])),
             }
         } else {
             Err(self.expect_err(&[
-                True, False, IntLit, FloatLit, Ident, LParen, LBrace, If, While, Loop, Break,
-                Continue, Return,
+                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While, Loop,
+                Break, Continue, Return,
             ]))
         }
     }
@@ -1008,10 +1017,12 @@ impl Parser {
         F2: Fn(&mut Parser) -> CompileResult<T>,
     {
         let save = self.index;
+        let errors_save = self.errors.clone();
         if let Ok(value) = rule1(self) {
             Ok(value)
         } else {
             self.index = save;
+            self.errors = errors_save;
             rule2(self)
         }
     }
@@ -1021,10 +1032,12 @@ impl Parser {
         F: Fn(&mut Parser) -> CompileResult<T>,
     {
         let save = self.index;
+        let errors_save = self.errors.clone();
         if let Ok(value) = rule(self) {
             Some(value)
         } else {
             self.index = save;
+            self.errors = errors_save;
             None
         }
     }
@@ -1116,28 +1129,35 @@ impl Parser {
         }
     }
 
+    fn expect_term(&mut self) -> CompileResult<Token> {
+        self.expect(Semicolon)
+    }
+
     fn expect(&mut self, kind: TokenKind) -> CompileResult<Token> {
         if self.check(kind) {
             Ok(self.cur().unwrap())
         } else {
-            Err(self.make_error(
-                &self.get_holy_line_info(if let Some(tok) = self.cur() {
-                    Some(LineInfo {
-                        line_start: tok.line_info.line_end,
-                        line_end: tok.line_info.line_end,
-                        col_start: tok.line_info.col_end,
-                        col_end: tok.line_info.col_end + 1,
-                    })
-                } else {
-                    None
-                }),
-                format!("expected {}", kind.get_repr()),
-            ))
+            let line_info = self.get_holy_line_info(self.cur().map(|tok| LineInfo {
+                line_start: tok.line_info.line_end,
+                line_end: tok.line_info.line_end,
+                col_start: tok.line_info.col_end,
+                col_end: tok.line_info.col_end + 1,
+            }));
+            match kind {
+                Semicolon | RParen | RBrace | RBrack => Ok(self.recover_error(kind, line_info)),
+                _ => Err(self.make_error(&line_info, format!("expected {}", kind.get_repr()))),
+            }
         }
     }
 
-    fn expect_term(&mut self) -> CompileResult<Token> {
-        self.expect(Semicolon)
+    fn recover_error(&mut self, kind: TokenKind, line_info: LineInfo) -> Token {
+        self.errors
+            .push(self.make_error(&line_info, format!("expected {}", kind.get_repr())));
+        Token {
+            line_info,
+            kind,
+            text: kind.get_repr()[1..kind.get_repr().len() - 1].to_owned(),
+        }
     }
 
     // fn advance(&mut self) -> CompilerResult<Token> {

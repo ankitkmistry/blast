@@ -3,7 +3,7 @@ use std::{error::Error, fmt};
 
 // line_start and line_end is inclusive
 // col_start and col_end is exclusive
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct LineInfo {
     pub line_start: usize,
     pub line_end: usize,
@@ -67,7 +67,7 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
     // FileNotFound(String),
     LexerError {
