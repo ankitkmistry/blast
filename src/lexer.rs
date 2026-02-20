@@ -18,8 +18,7 @@ pub enum TokenKind {
     Semicolon,
     Equal,
     Arrow,
-    Bang,
-
+    // Bang,
     Dot,
     Tilde,
     StarStar,
@@ -48,26 +47,28 @@ pub enum TokenKind {
 
     True,
     False,
-    If,
-    While,
-    Loop,
-    Continue,
-    Break,
-    Return,
     As,
     Fun,
     Const,
     Void,
+    Noreturn,
     Type,
     Underscore,
     Not,
     And,
     Or,
-    // Module,
-    // Struct,
-    // Union,
-    // Type,
-    // Else,
+    If,
+    While,
+    Loop,
+    Yield,
+    Continue,
+    Break,
+    Return,
+    Else,
+    Module,
+    Struct,
+    Union,
+    Import,
 }
 
 impl TokenKind {
@@ -86,7 +87,6 @@ impl TokenKind {
             TokenKind::Semicolon => "';'",
             TokenKind::Equal => "'='",
             TokenKind::Arrow => "'->'",
-            TokenKind::Bang => "'!'",
             TokenKind::Dot => "'.'",
             TokenKind::Tilde => "'~'",
             TokenKind::StarStar => "'**'",
@@ -113,21 +113,28 @@ impl TokenKind {
             TokenKind::FloatLit => "<float>",
             TokenKind::True => "'true'",
             TokenKind::False => "'false'",
-            TokenKind::If => "'if'",
-            TokenKind::While => "'while'",
-            TokenKind::Loop => "'loop'",
-            TokenKind::Continue => "'continue'",
-            TokenKind::Break => "'break'",
-            TokenKind::Return => "'return'",
             TokenKind::As => "'as'",
             TokenKind::Fun => "'fun'",
             TokenKind::Const => "'const'",
             TokenKind::Void => "'void'",
+            TokenKind::Noreturn => "'noreturn'",
             TokenKind::Type => "'type'",
             TokenKind::Underscore => "'_'",
             TokenKind::Not => "'not'",
             TokenKind::And => "'and'",
             TokenKind::Or => "'or'",
+            TokenKind::If => "'if'",
+            TokenKind::While => "'while'",
+            TokenKind::Loop => "'loop'",
+            TokenKind::Yield => "'yield'",
+            TokenKind::Continue => "'continue'",
+            TokenKind::Break => "'break'",
+            TokenKind::Return => "'return'",
+            TokenKind::Else => "'else'",
+            TokenKind::Module => "'module'",
+            TokenKind::Struct => "'struct'",
+            TokenKind::Union =>  "'union'",
+            TokenKind::Import =>  "'import'",
         }
     }
 }
@@ -160,6 +167,7 @@ static KEYWORDS: LazyLock<HashMap<&'static str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("if", TokenKind::If);
     keywords.insert("while", TokenKind::While);
     keywords.insert("loop", TokenKind::Loop);
+    keywords.insert("yield", TokenKind::Yield);
     keywords.insert("continue", TokenKind::Continue);
     keywords.insert("break", TokenKind::Break);
     keywords.insert("return", TokenKind::Return);
@@ -167,15 +175,17 @@ static KEYWORDS: LazyLock<HashMap<&'static str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("fun", TokenKind::Fun);
     keywords.insert("const", TokenKind::Const);
     keywords.insert("void", TokenKind::Void);
+    keywords.insert("noreturn", TokenKind::Noreturn);
     keywords.insert("type", TokenKind::Type);
     keywords.insert("_", TokenKind::Underscore);
     keywords.insert("not", TokenKind::Not);
     keywords.insert("and", TokenKind::And);
     keywords.insert("or", TokenKind::Or);
-    // keywords.insert("module", TokenKind::Module);
-    // keywords.insert("struct", TokenKind::Struct);
-    // keywords.insert("union", TokenKind::Union);
-    // keywords.insert("else", TokenKind::Else);
+    keywords.insert("else", TokenKind::Else);
+    keywords.insert("module", TokenKind::Module);
+    keywords.insert("struct", TokenKind::Struct);
+    keywords.insert("union", TokenKind::Union);
+    keywords.insert("import", TokenKind::Import);
     keywords
 });
 
@@ -253,11 +263,13 @@ impl Lexer {
                     }
                 }
                 '!' => {
-                    if self.check("=") {
-                        token!(NotEq)
-                    } else {
-                        token!(Bang)
-                    }
+                    self.expect("=")?;
+                    token!(NotEq)
+                    // if self.check("=") {
+                    //     token!(NotEq)
+                    // } else {
+                    //     token!(Bang)
+                    // }
                 }
                 '.' => token!(Dot),
                 '~' => token!(Tilde),
@@ -387,10 +399,7 @@ impl Lexer {
     }
 
     fn get_ident_kind(text: &str) -> TokenKind {
-        KEYWORDS
-            .get(text)
-            .copied()
-            .unwrap_or(TokenKind::Ident)
+        KEYWORDS.get(text).copied().unwrap_or(TokenKind::Ident)
     }
 
     fn make_token(&mut self, kind: TokenKind) -> Token {
@@ -705,13 +714,13 @@ impl Lexer {
         Ok(())
     }
 
-    // fn expect(&mut self, str: &str) -> CompilerResult<()> {
-    //     if !self.check(str) {
-    //         Err(self.make_error(format!("expected '{}'", str)))
-    //     } else {
-    //         Ok(())
-    //     }
-    // }
+    fn expect(&mut self, str: &str) -> CompileResult<()> {
+        if !self.check(str) {
+            Err(self.make_error(format!("expected '{}'", str)))
+        } else {
+            Ok(())
+        }
+    }
 
     fn make_error(&self, msg: impl ToString) -> CompileError {
         CompileError::LexerError {

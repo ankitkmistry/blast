@@ -3,6 +3,87 @@ use crate::{
     lexer::Token,
 };
 
+pub struct Program {
+    pub decls: Vec<Decl>,
+}
+
+pub enum Decl {
+    Decl {
+        name: Token,
+        taipe: Option<Type>,
+        object: Option<Object>,
+    },
+    Import {
+        line_info: LineInfo,
+        items: Vec<Token>,
+    },
+}
+
+pub enum Object {
+    ExternModule {
+        line_info: LineInfo,
+        value: Token,
+    },
+    Module {
+        line_info: LineInfo,
+        decls: Vec<Decl>,
+    },
+    Struct {
+        line_info: LineInfo,
+        decls: Vec<Decl>,
+    },
+    Union {
+        line_info: LineInfo,
+        decls: Vec<Decl>,
+    },
+    Fun {
+        line_info: LineInfo,
+        params: Vec<Param>,
+        ret: Option<Type>,
+        body: Option<Stmt>,
+    },
+    Typedef(Type),
+    Expr(Expr),
+}
+
+pub struct Param {
+    pub name: Token,
+    pub taipe: Type,
+}
+
+pub enum Stmt {
+    If {
+        line_info: LineInfo,
+        expr: Expr,
+        then_body: Box<Stmt>,
+        else_body: Option<Box<Stmt>>,
+    },
+    While {
+        line_info: LineInfo,
+        label: Option<Token>,
+        expr: Expr,
+        then_body: Box<Stmt>,
+        else_body: Option<Box<Stmt>>,
+    },
+    Loop {
+        line_info: LineInfo,
+        body: Box<Stmt>,
+    },
+    Block {
+        line_info: LineInfo,
+        label: Option<Token>,
+        stmts: Vec<Stmt>,
+    },
+    Single {
+        token: Token,
+        label: Option<Token>,
+        expr: Option<Expr>,
+    },
+    Decl(Box<Decl>),
+    Expr(Box<Expr>),
+    Nop(Token),
+}
+
 #[derive(Clone)]
 pub struct TypeFunctionParam {
     pub name: Token,

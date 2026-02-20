@@ -34,26 +34,49 @@
 #   - false
 #   - as
 
+# name : type
+# name : const type
 # name : type = value
+# name : const type = value // same as name : type : value
 # name := value
 # name : type : value
+# name : const type : value // const is redundant
 # name :: value
 
 Program     <- Decl*;
 
-Decl        <- (Identifier / '_') ':' Type [=:] Object
-             ;
+Decl        <- (Identifier / '_') ':' Type? (';' / [=:] Object)
+             | 'import' Identifier ('.' Identifier)* ('.' '*'); ';'
 Object      <- Module / Struct / Union / Function
-             / Type ';'
+             / 'type' Type ';'
              / Expr ';'
              ;
 Module      <- 'module' (String ';' / '{' Decl* '}');
 Struct      <- 'struct' '{' Fields '}';
 Union       <- 'union' '{' Fields '}';
-Function    <- 'fun' '(' Params ')' ('->' Type)? (';' / ExprBlock);
+Function    <- 'fun' '(' Params ')' ('->' Type)? (';' / Block);
 
-Fields      <- Field*;
-Field       <- Decl;
+Fields      <- Decl*;
+Params      <- Param (',' Param)* ','?;
+Param       <- Identifier ':' Type;
+
+# Statements
+Stmts           <- Stmt*;
+Block           <- Label? '{' (Decl / Stmt)* '}';
+Stmt            <- StmtIf / StmtWhile / StmtLoop # / StmtFor
+                 / Block
+                 / 'yield' Label? Expr ';'
+                 / 'continue' Label? ';'
+                 / 'break' Label? Expr? ';'
+                 / 'return' Expr? ';'
+                 / Expr ';'
+                 / ';'
+                 ;
+
+StmtIf      <- 'if' Expr Block ('else' Block)?
+StmtWhile   <- Label? 'while' Expr Block ('else' Block)?;
+StmtLoop    <- Label? 'loop' Block;
+# ExprFor     <- 'for' Block ('else' Block)?;
 
 # Type
 # - identifier      : 'i32'
@@ -64,7 +87,7 @@ Field       <- Decl;
 # - fat pointer     : '[u8]'
 # - tuple           : '(i32, bool)'
 # - void            : 'void' or '()'
-# - never           : '!'
+# - noreturn        : noreturn
 # - type            : 'type'
 
 Types   <- (Type (',' Type) ','?)?;
@@ -81,23 +104,6 @@ Type    <-  Identifier ('.' Identifier)*
          / '!'
          / 'type'
          ;
-
-# Statements
-Stmts           <- Stmt*;
-Block           <- '{' (Decl / Stmt)* '}';
-Stmt            <- StmtIf / StmtWhile / StmtLoop # / StmtFor
-                 / Block
-                 / 'continue' Label? ';'
-                 / 'break' Label? Expr? ';'
-                 / 'return' Label? Expr? ';'
-                 / Expr ';'
-                 / ';'
-                 ;
-
-StmtIf      <- 'if' Expr Block ('else' Block)?
-StmtWhile   <- Label? 'while' Expr Block ('else' Block)?;
-StmtLoop    <- Label? 'loop' Block;
-# ExprFor     <- 'for' ExprBlock ('else' ExprBlock)?;
 
 # Expression
 Exprs       <- (Expr (',' Expr) ','?)?;
@@ -136,7 +142,7 @@ Primary     <- 'true' / 'false'
              / '[' Exprs ']'
              / CompoundExpr;
 
-CompoundExpr    <- ExprBlock
+CompoundExpr    <- Block
                  / ExprIf
                  / ExprWhile
                  / ExprLoop
@@ -145,12 +151,11 @@ CompoundExpr    <- ExprBlock
                  / 'return' Label? Expr?
                  ;
 
-ExprBlock   <- '{' (Decl / Stmt)* Expr? '}';
-ExprIf      <- 'if' Expr ExprBlock ('else' ExprBlock)?
+ExprIf      <- 'if' Expr Block ('else' Block)?
              / 'if' Expr 'then' Expr 'else' Expr;
-ExprWhile   <- Label? 'while' Expr Block ('else' ExprBlock)?;
+ExprWhile   <- Label? 'while' Expr Block ('else' Block)?;
 ExprLoop    <- Label? 'loop' Block;
-# ExprFor     <- 'for' ExprBlock ('else' ExprBlock)?;
+# ExprFor     <- 'for' Block ('else' Block)?;
 
 # Lexer definitions
 Label       <-  '$' Identifier
