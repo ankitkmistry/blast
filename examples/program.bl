@@ -2,4 +2,5 @@
 main :: fun () {
     io.println("Hello, World")
     io.println("Hello, World")
+    io.println("Hello, World")
 }

@@ -45,7 +45,8 @@
 
 Program     <- Decl*;
 
-Decl        <- (Identifier / '_') ':' Type? (';' / [=:] Object)
+Decl        <- (Identifier / '_') ':' Type (';' / [=:] Object)
+             | (Identifier / '_') ':' ([=:] Object)
              | 'import' Identifier ('.' Identifier)* ('.' '*'); ';'
 Object      <- Module / Struct / Union / Function
              / 'type' Type ';'
@@ -61,8 +62,6 @@ Params      <- Param (',' Param)* ','?;
 Param       <- Identifier ':' Type;
 
 # Statements
-Stmts           <- Stmt*;
-Block           <- Label? '{' (Decl / Stmt)* '}';
 Stmt            <- StmtIf / StmtWhile / StmtLoop # / StmtFor
                  / Block
                  / 'yield' Label? Expr ';'
@@ -72,7 +71,9 @@ Stmt            <- StmtIf / StmtWhile / StmtLoop # / StmtFor
                  / Expr ';'
                  / ';'
                  ;
+Block           <- Label? '{' (Decl / Stmt)* '}';
 
+# The blocks used have no label
 StmtIf      <- 'if' Expr Block ('else' Block)?
 StmtWhile   <- Label? 'while' Expr Block ('else' Block)?;
 StmtLoop    <- Label? 'loop' Block;
@@ -101,7 +102,7 @@ Type    <-  Identifier ('.' Identifier)*
          / '(' Type ')'
          / '(' Types ')'
          / 'void'
-         / '!'
+         / 'noreturn'
          / 'type'
          ;
 

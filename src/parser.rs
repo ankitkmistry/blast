@@ -68,6 +68,7 @@ impl Parser {
         })
     }
 
+    // program ::= decls;
     pub fn parse(&mut self) -> CompileResult<ast::Program> {
         let program = ast::Program {
             decls: self.parse_decls()?,
@@ -317,11 +318,12 @@ impl Parser {
         Ok(ast::Param { name, taipe })
     }
 
-    // stmt := if_stmt | while_stmt | loop_stmt | block
+    // stmt := if_stmt | while_stmt | loop_stmt
+    //       | block
     //       | 'yield' label? expr? ';'
     //       | 'continue' label? ';'
     //       | 'break' label? expr? ';'
-    //       | 'return' expr ';'
+    //       | 'return' expr? ';'
     //       | expr ';'
     //       | ';'
     //       ;
@@ -355,7 +357,7 @@ impl Parser {
                     };
                     let expr = self.rule_optional(Self::parse_expr);
                     self.expect_term()?;
-                    Ok(ast::Stmt::Single { token, label, expr })
+                    Ok(ast::Stmt::Yield { token, label, expr })
                 }
                 Continue => {
                     let token = self.get_token()?;
@@ -367,10 +369,9 @@ impl Parser {
                         None
                     };
                     self.expect_term()?;
-                    Ok(ast::Stmt::Single {
+                    Ok(ast::Stmt::Continue {
                         token,
                         label,
-                        expr: None,
                     })
                 }
                 Break => {
@@ -384,15 +385,14 @@ impl Parser {
                     };
                     let expr = self.rule_optional(Self::parse_expr);
                     self.expect_term()?;
-                    Ok(ast::Stmt::Single { token, label, expr })
+                    Ok(ast::Stmt::Break { token, label, expr })
                 }
                 Return => {
                     let token = self.get_token()?;
                     let expr = self.rule_optional(Self::parse_expr);
                     self.expect_term()?;
-                    Ok(ast::Stmt::Single {
+                    Ok(ast::Stmt::Return {
                         token,
-                        label: None,
                         expr,
                     })
                 }

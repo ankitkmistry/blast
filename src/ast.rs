@@ -74,9 +74,22 @@ pub enum Stmt {
         label: Option<Token>,
         stmts: Vec<Stmt>,
     },
-    Single {
+    Yield {
         token: Token,
         label: Option<Token>,
+        expr: Option<Expr>,
+    },
+    Continue {
+        token: Token,
+        label: Option<Token>,
+    },
+    Break {
+        token: Token,
+        label: Option<Token>,
+        expr: Option<Expr>,
+    },
+    Return {
+        token: Token,
         expr: Option<Expr>,
     },
     Decl(Box<Decl>),
@@ -204,6 +217,134 @@ pub enum Expr {
         label: Option<Token>,
         expr: Option<Box<Expr>>,
     },
+}
+
+impl HasLineInfo for Program {
+    fn get_line_info(&self) -> LineInfo {
+        self.decls.get_line_info()
+    }
+}
+
+impl HasLineInfo for Decl {
+    fn get_line_info(&self) -> LineInfo {
+        match self {
+            Decl::Decl {
+                name,
+                taipe,
+                object,
+            } => {
+                if let Some(obj) = object {
+                    LineInfo::from_range(name, obj)
+                } else if let Some(t) = taipe {
+                    LineInfo::from_range(name, t)
+                } else {
+                    name.get_line_info()
+                }
+            }
+            Decl::Import {
+                line_info,
+                items: _,
+            } => *line_info,
+        }
+    }
+}
+
+impl HasLineInfo for Object {
+    fn get_line_info(&self) -> LineInfo {
+        match self {
+            Object::ExternModule {
+                line_info,
+                value: _,
+            } => *line_info,
+            Object::Module {
+                line_info,
+                decls: _,
+            } => *line_info,
+            Object::Struct {
+                line_info,
+                decls: _,
+            } => *line_info,
+            Object::Union {
+                line_info,
+                decls: _,
+            } => *line_info,
+            Object::Fun {
+                line_info,
+                params: _,
+                ret: _,
+                body: _,
+            } => *line_info,
+            Object::Typedef(taipe) => taipe.get_line_info(),
+            Object::Expr(expr) => expr.get_line_info(),
+        }
+    }
+}
+
+impl HasLineInfo for Param {
+    fn get_line_info(&self) -> LineInfo {
+        LineInfo::from_range(&self.name, &self.taipe)
+    }
+}
+
+impl HasLineInfo for Stmt {
+    fn get_line_info(&self) -> LineInfo {
+        match self {
+            Stmt::If {
+                line_info,
+                expr: _,
+                then_body: _,
+                else_body: _,
+            } => *line_info,
+            Stmt::While {
+                line_info,
+                label: _,
+                expr: _,
+                then_body: _,
+                else_body: _,
+            } => *line_info,
+            Stmt::Loop { line_info, body: _ } => *line_info,
+            Stmt::Block {
+                line_info,
+                label: _,
+                stmts: _,
+            } => *line_info,
+            Stmt::Yield { token, label, expr } => {
+                if let Some(e) = expr {
+                    LineInfo::from_range(token, e)
+                } else if let Some(l) = label {
+                    LineInfo::from_range(token, l)
+                } else {
+                    token.get_line_info()
+                }
+            }
+            Stmt::Continue { token, label } => {
+                if let Some(l) = label {
+                    LineInfo::from_range(token, l)
+                } else {
+                    token.get_line_info()
+                }
+            }
+            Stmt::Break { token, label, expr } => {
+                if let Some(e) = expr {
+                    LineInfo::from_range(token, e)
+                } else if let Some(l) = label {
+                    LineInfo::from_range(token, l)
+                } else {
+                    token.get_line_info()
+                }
+            }
+            Stmt::Return { token, expr } => {
+                if let Some(e) = expr {
+                    LineInfo::from_range(token, e)
+                } else {
+                    token.get_line_info()
+                }
+            }
+            Stmt::Decl(decl) => decl.get_line_info(),
+            Stmt::Expr(expr) => expr.get_line_info(),
+            Stmt::Nop(token) => token.get_line_info(),
+        }
+    }
 }
 
 impl HasLineInfo for Type {
