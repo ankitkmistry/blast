@@ -949,11 +949,11 @@ impl Parser {
                 }
                 LBrack => {
                     let start = self.get_token()?;
-                    let exprs = self.parse_expr_list();
+                    let items = self.parse_expr_list();
                     let end = self.expect(RBrack)?;
-                    Ok(ast::Expr::Tuple {
+                    Ok(ast::Expr::ArrayLit {
                         line_info: LineInfo::from_range(&start, &end),
-                        exprs,
+                        items,
                     })
                 }
                 _ => Err(self.expect_err(&[

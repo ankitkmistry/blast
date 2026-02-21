@@ -457,6 +457,99 @@ impl AstPrinter {
     }
 
     fn visit_stmt(&mut self, stmt: &ast::Stmt) -> fmt::Result {
+        match stmt {
+            ast::Stmt::If {
+                line_info: _,
+                expr,
+                then_body,
+                else_body,
+            } => {
+                write!(self, "::If")?;
+                self.print_expr("expr", expr)?;
+                self.print_stmt("then_body", then_body)?;
+                if let Some(stmt) = else_body {
+                    self.print_stmt("else_body", stmt)?;
+                }
+            }
+            ast::Stmt::While {
+                line_info: _,
+                label,
+                expr,
+                then_body,
+                else_body,
+            } => {
+                write!(self, "::While")?;
+                if let Some(tok) = label {
+                    self.print_tok("label", tok)?;
+                }
+                self.print_expr("expr", expr)?;
+                self.print_stmt("then_body", then_body)?;
+                if let Some(stmt) = else_body {
+                    self.print_stmt("else_body", stmt)?;
+                }
+            }
+            ast::Stmt::Loop { line_info: _, body } => {
+                write!(self, "::Loop")?;
+                self.print_stmt("body", body)?;
+            }
+            ast::Stmt::Block {
+                line_info: _,
+                label,
+                stmts,
+            } => {
+                write!(self, "::Block")?;
+                if let Some(tok) = label {
+                    self.print_tok("label", tok)?;
+                }
+                self.print_list("stmts", stmts, Self::print_stmt)?;
+            }
+            ast::Stmt::Yield { token, label, expr } => {
+                write!(self, "::Yield")?;
+                self.print_tok("token", token)?;
+                if let Some(tok) = label {
+                    self.print_tok("label", tok)?;
+                }
+                if let Some(expr) = expr {
+                    self.print_expr("expr", expr)?;
+                }
+            }
+            ast::Stmt::Continue { token, label } => {
+                write!(self, "::Continue")?;
+                self.print_tok("token", token)?;
+                if let Some(tok) = label {
+                    self.print_tok("label", tok)?;
+                }
+            }
+            ast::Stmt::Break { token, label, expr } => {
+                write!(self, "::Break")?;
+                self.print_tok("token", token)?;
+                if let Some(tok) = label {
+                    self.print_tok("label", tok)?;
+                }
+                if let Some(expr) = expr {
+                    self.print_expr("expr", expr)?;
+                }
+            }
+            ast::Stmt::Return { token, expr } => {
+                write!(self, "::Return")?;
+                self.print_tok("token", token)?;
+                if let Some(expr) = expr {
+                    self.print_expr("expr", expr)?;
+                }
+            }
+            ast::Stmt::Decl(decl) => {
+                write!(self, "::Decl")?;
+                self.print_decl("decl", decl)?;
+            }
+            ast::Stmt::Expr(expr) => {
+                write!(self, "::Expr")?;
+                self.print_expr("expr", expr)?;
+            }
+            ast::Stmt::Nop(token) => {
+                write!(self, "::Nop")?;
+                self.print_tok("token", token)?;
+            }
+        }
         Ok(())
     }
 
