@@ -2,7 +2,7 @@ use crate::{
     ast::{self, Arg},
     common::{CompileError, CompileResult, HasLineInfo, LineInfo},
     lexer::{
-        Lexer, Token,
+        Token,
         TokenKind::{self, *},
     },
 };
@@ -55,14 +55,10 @@ macro_rules! define_binary_op {
 }
 
 impl Parser {
-    pub fn new(lexer: &mut Lexer) -> CompileResult<Self> {
-        let mut tokens = Vec::new();
-        while lexer.has_next_token() {
-            tokens.push(lexer.next_token()?);
-        }
+    pub fn new(file_path: &str, tokens: &[Token]) -> CompileResult<Self> {
         Ok(Self {
-            file_path: lexer.file_path.clone(),
-            tokens,
+            file_path: file_path.to_owned(),
+            tokens: tokens.to_owned(),
             index: 0,
             errors: Vec::new(),
         })
@@ -369,10 +365,7 @@ impl Parser {
                         None
                     };
                     self.expect_term()?;
-                    Ok(ast::Stmt::Continue {
-                        token,
-                        label,
-                    })
+                    Ok(ast::Stmt::Continue { token, label })
                 }
                 Break => {
                     let token = self.get_token()?;
@@ -391,10 +384,7 @@ impl Parser {
                     let token = self.get_token()?;
                     let expr = self.rule_optional(Self::parse_expr);
                     self.expect_term()?;
-                    Ok(ast::Stmt::Return {
-                        token,
-                        expr,
-                    })
+                    Ok(ast::Stmt::Return { token, expr })
                 }
                 Semicolon => Ok(ast::Stmt::Nop(self.get_token()?)),
                 _ => {
@@ -441,9 +431,10 @@ impl Parser {
         while let Some(tok) = self.peek()
             && tok.kind != RBrace
         {
-            stmts.push(self.rule_or(Self::parse_stmt, |parser| {
-                Ok(ast::Stmt::Decl(Box::new(parser.parse_decl()?)))
-            })?);
+            stmts.push(self.rule_or(
+                |parser| Ok(ast::Stmt::Decl(Box::new(parser.parse_decl()?))),
+                Self::parse_stmt,
+            )?);
         }
         let end = self.expect(RBrace)?;
         Ok(ast::Stmt::Block {
@@ -521,10 +512,19 @@ impl Parser {
         })
     }
 
-    // type_fun_param ::= identifier ':' type;
+    // type_fun_param ::= (identifier ':') type;
     fn parse_type_fun_param(&mut self) -> CompileResult<ast::TypeFunctionParam> {
-        let name = self.expect(Ident)?;
-        self.expect(Dot)?;
+        let name = if let Some(tok) = self.peek()
+            && tok.kind == Ident
+            && let Some(tok) = self.peek_at(1)
+            && tok.kind == Colon
+        {
+            let tok = self.get_token()?;
+            self.get_token()?;
+            Some(tok)
+        } else {
+            None
+        };
         let taipe = self.parse_type()?;
         Ok(ast::TypeFunctionParam { name, taipe })
     }
@@ -833,21 +833,27 @@ impl Parser {
         Ok(expr)
     }
 
-    // unary ::= ('+'|'-'|'~'|'*'|'&') primary;
+    // unary ::= ('+'|'-'|'~'|'*'|'&')* primary;
     fn parse_unary(&mut self) -> CompileResult<ast::Expr> {
-        let op = if let Some(tok) = self.peek() {
-            match tok.kind {
-                Plus | Minus | Tilde | Star | Ampersand => Some(self.get_token()?),
-                _ => None,
+        let mut ops = Vec::new();
+        loop {
+            if let Some(tok) = self.peek() {
+                match tok.kind {
+                    Plus | Minus | Tilde | Star | Ampersand => ops.push(self.get_token()?),
+                    _ => break,
+                }
+            } else {
+                break;
             }
-        } else {
-            None
-        };
-        let expr = self.parse_postfix()?;
-        Ok(ast::Expr::Unary {
-            op,
-            expr: Box::new(expr),
-        })
+        }
+        let mut expr = self.parse_postfix()?;
+        for op in ops.into_iter().rev() {
+            expr = ast::Expr::Unary {
+                op: Some(op),
+                expr: Box::new(expr),
+            };
+        }
+        Ok(expr)
     }
 
     // arg ::= (identifer ':')? expr;

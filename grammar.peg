@@ -92,7 +92,7 @@ StmtLoop    <- Label? 'loop' Block;
 # - type            : 'type'
 
 Types   <- (Type (',' Type) ','?)?;
-TypeFunctionParam <- Identifier ':' Type
+TypeFunctionParam <- (Identifier ':')? Type
 Type    <-  Identifier ('.' Identifier)*
          / 'fun' '(' Types ')' '->' Type
          / 'const' Type

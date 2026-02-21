@@ -99,7 +99,7 @@ pub enum Stmt {
 
 #[derive(Clone)]
 pub struct TypeFunctionParam {
-    pub name: Token,
+    pub name: Option<Token>,
     pub taipe: Type,
 }
 
@@ -201,21 +201,6 @@ pub enum Expr {
     ArrayLit {
         line_info: LineInfo,
         items: Vec<Expr>,
-    },
-    // Statements as expressions
-    Continue {
-        line_info: LineInfo,
-        label: Option<Token>,
-    },
-    Break {
-        line_info: LineInfo,
-        label: Option<Token>,
-        expr: Option<Box<Expr>>,
-    },
-    Return {
-        line_info: LineInfo,
-        label: Option<Token>,
-        expr: Option<Box<Expr>>,
     },
 }
 
@@ -380,6 +365,26 @@ impl HasLineInfo for Type {
     }
 }
 
+impl HasLineInfo for TypeFunctionParam {
+    fn get_line_info(&self) -> LineInfo {
+        if let Some(name) = &self.name {
+            LineInfo::from_range(name, &self.taipe)
+        } else {
+            self.taipe.get_line_info()
+        }
+    }
+}
+
+impl HasLineInfo for Arg {
+    fn get_line_info(&self) -> LineInfo {
+        if let Some(name) = &self.name {
+            LineInfo::from_range(name, &self.expr)
+        } else {
+            self.expr.get_line_info()
+        }
+    }
+}
+
 impl HasLineInfo for Expr {
     fn get_line_info(&self) -> LineInfo {
         match self {
@@ -419,20 +424,6 @@ impl HasLineInfo for Expr {
             Expr::ArrayLit {
                 line_info,
                 items: _,
-            } => *line_info,
-            Expr::Continue {
-                line_info,
-                label: _,
-            } => *line_info,
-            Expr::Break {
-                line_info,
-                label: _,
-                expr: _,
-            } => *line_info,
-            Expr::Return {
-                line_info,
-                label: _,
-                expr: _,
             } => *line_info,
         }
     }

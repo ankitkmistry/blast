@@ -133,8 +133,8 @@ impl TokenKind {
             TokenKind::Else => "'else'",
             TokenKind::Module => "'module'",
             TokenKind::Struct => "'struct'",
-            TokenKind::Union =>  "'union'",
-            TokenKind::Import =>  "'import'",
+            TokenKind::Union => "'union'",
+            TokenKind::Import => "'import'",
         }
     }
 }
@@ -218,6 +218,8 @@ impl Lexer {
         use TokenKind::*;
 
         self.index = self.start;
+        self.line_info.line_end = self.line_info.line_start;
+        self.line_info.col_end = self.line_info.col_start;
         loop {
             let c = self.getchar()?;
             match c {
@@ -287,7 +289,7 @@ impl Lexer {
                                 if c == '\n' {
                                     break;
                                 }
-                                self.advance();
+                               self.advance();
                             } else {
                                 break;
                             }
@@ -390,6 +392,8 @@ impl Lexer {
                 }
                 ' ' | '\t' | '\r' | '\n' => {
                     self.start = self.index;
+                    self.line_info.line_start = self.line_info.line_end;
+                    self.line_info.col_start = self.line_info.col_end;
                 }
                 _ => {
                     throw!("unexpected char '{}'", c);

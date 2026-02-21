@@ -1,6 +1,21 @@
 // 1 0b1 0o147 0x1abcd 1.2 1.23e+23 1.23e-23 0xab.cdp+2
+
+PunType :: union {
+    float: f64;
+    raw: u64;
+}
+
+Numbers :: struct {
+    items: *i32;
+    size: usize;
+    capacity: usize;
+}
+
+exit :: fun (code: i32) -> noreturn;
+
 main :: fun () {
-    io.println("Hello, World")
-    io.println("Hello, World")
-    io.println("Hello, World")
+    h :: &f;
+    io.println("Hello, World");
+    io.println("Hello, World");
+    io.println("Hello, World");
 }
