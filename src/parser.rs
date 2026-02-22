@@ -1,5 +1,5 @@
 use crate::{
-    ast::{self, Arg},
+    ast,
     common::{CompileError, CompileResult, HasLineInfo, LineInfo},
     lexer::{
         Token,
@@ -189,7 +189,7 @@ impl Parser {
                             // Object begin tokens
                             Module, Struct, Union, Fun, Type, //
                             // Expr begin tokens
-                            Not, Plus, Minus, Tilde, Star, Ampersand, //
+                            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
                             // Primary expr begin tokens
                             True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
                         ]))
@@ -201,7 +201,7 @@ impl Parser {
                 // Object begin tokens
                 Module, Struct, Union, Fun, Type, //
                 // Expr begin tokens
-                Not, Plus, Minus, Tilde, Star, Ampersand, //
+                Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
                 // Primary expr begin tokens
                 True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
             ]))
@@ -397,7 +397,7 @@ impl Parser {
                             // Stmt begin tokens
                             If, Label, While, Loop, LBrace, Yield, Continue, Break, Return, //
                             // Expr begin tokens
-                            Not, Plus, Minus, Tilde, Star, Ampersand, //
+                            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
                             // Primary expr begin tokens
                             True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
                         ]))
@@ -409,7 +409,7 @@ impl Parser {
                 // Stmt begin tokens
                 If, Label, While, Loop, LBrace, Yield, Continue, Break, Return, //
                 // Expr begin tokens
-                Not, Plus, Minus, Tilde, Star, Ampersand, //
+                Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
                 // Primary expr begin tokens
                 True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
             ]))
@@ -533,8 +533,8 @@ impl Parser {
     //        | 'fun' '(' type_fun_param_list ')' '->' type
     //        | 'const' type
     //        | '*' type
-    //        | '[' type ';' ('_' | expr)']'
-    //        | '[' type ']'
+    //        | '[' ('_' | expr) ']' type
+    //        | '['']' type
     //        | '(' type ')'
     //        | type_tuple
     //        | 'void' | 'noreturn' | 'type'
@@ -584,11 +584,17 @@ impl Parser {
                 }
                 LBrack => {
                     let start = self.get_token()?;
-                    let taipe = self.parse_type()?;
                     if let Some(tok) = self.peek()
-                        && tok.kind == Semicolon
+                        && tok.kind == RBrack
                     {
                         self.get_token()?;
+                        let taipe = self.parse_type()?;
+                        let end = self.cur().unwrap();
+                        Ok(ast::Type::Fat {
+                            line_info: LineInfo::from_range(&start, &end),
+                            taipe: Box::new(taipe),
+                        })
+                    } else {
                         let expr = if let Some(tok) = self.peek()
                             && tok.kind == Underscore
                         {
@@ -597,17 +603,13 @@ impl Parser {
                         } else {
                             Some(self.parse_expr()?)
                         };
-                        let end = self.expect(RBrack)?;
+                        self.expect(RBrack)?;
+                        let taipe = self.parse_type()?;
+                        let end = self.cur().unwrap();
                         Ok(ast::Type::Array {
                             line_info: LineInfo::from_range(&start, &end),
                             taipe: Box::new(taipe),
                             expr,
-                        })
-                    } else {
-                        let end = self.expect(RBrack)?;
-                        Ok(ast::Type::Fat {
-                            line_info: LineInfo::from_range(&start, &end),
-                            taipe: Box::new(taipe),
                         })
                     }
                 }
@@ -648,7 +650,7 @@ impl Parser {
     fn is_expr_start(&mut self) -> bool {
         [
             // Expr begin tokens
-            Not, Plus, Minus, Tilde, Star, Ampersand, //
+            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
             // Primary expr begin tokens
             True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
         ]
@@ -765,58 +767,8 @@ impl Parser {
         SatMinus
     );
 
-    // factor ::= power (('*'|'/'|'%') power)*;
-    fn parse_factor(&mut self) -> CompileResult<ast::Expr> {
-        let mut left = self.parse_power()?;
-        while let Some(tok) = self.peek()
-            && (tok.kind == Star || tok.kind == Slash || tok.kind == Percent)
-        {
-            // let res = [Star, Slash,].iter().any(|&kind| tok.kind == kind);
-            let op = self.get_token()?;
-            let right = self.parse_power()?;
-            left = ast::Expr::Binary {
-                left: Box::new(left),
-                op,
-                right: Box::new(right),
-            };
-        }
-        Ok(left)
-    }
-
-    // power ::= (cast '**')* cast;
-    fn parse_power(&mut self) -> CompileResult<ast::Expr> {
-        let mut left = self.parse_cast()?;
-        while let Some(tok) = self.peek()
-            && tok.kind == StarStar
-        {
-            let op = self.get_token()?;
-            let right = self.parse_cast()?;
-            left = if let ast::Expr::Binary {
-                left: prev_left,
-                op: prev_op,
-                right: prev_right,
-            } = left.clone() // TODO: clone is not the right thing
-                && prev_op.kind == StarStar
-            {
-                ast::Expr::Binary {
-                    left: prev_left,
-                    op: prev_op,
-                    right: Box::new(ast::Expr::Binary {
-                        left: prev_right,
-                        op,
-                        right: Box::new(right),
-                    }),
-                }
-            } else {
-                ast::Expr::Binary {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                }
-            };
-        }
-        Ok(left)
-    }
+    // factor ::= cast (('*'|'/'|'%') cast)*;
+    define_binary_op!(parse_factor, parse_cast, Star, Slash, Percent);
 
     // cast ::= unary ('as' type)*;
     fn parse_cast(&mut self) -> CompileResult<ast::Expr> {
@@ -833,13 +785,15 @@ impl Parser {
         Ok(expr)
     }
 
-    // unary ::= ('+'|'-'|'~'|'*'|'&')* primary;
+    // unary ::= ('+'|'-'|'~'|'*'|'&'|'sizeof'|'typeof')* primary;
     fn parse_unary(&mut self) -> CompileResult<ast::Expr> {
         let mut ops = Vec::new();
         loop {
             if let Some(tok) = self.peek() {
                 match tok.kind {
-                    Plus | Minus | Tilde | Star | Ampersand => ops.push(self.get_token()?),
+                    Plus | Minus | Tilde | Star | Ampersand | Sizeof | Typeof => {
+                        ops.push(self.get_token()?)
+                    }
                     _ => break,
                 }
             } else {
@@ -857,7 +811,7 @@ impl Parser {
     }
 
     // arg ::= (identifer ':')? expr;
-    fn parse_arg(&mut self) -> CompileResult<Arg> {
+    fn parse_arg(&mut self) -> CompileResult<ast::Arg> {
         let mut name: Option<Token> = None;
         if let Some(tok1) = self.peek_at(0)
             && tok1.kind == Ident
@@ -868,7 +822,7 @@ impl Parser {
             self.get_token()?;
         }
         let expr = self.parse_expr()?;
-        Ok(Arg { name, expr })
+        Ok(ast::Arg { name, expr })
     }
 
     // postifix ::= primary ('.' identifier | '(' args_list ')' | '[' expr_list ']');
@@ -1088,7 +1042,13 @@ impl Parser {
             msg.pop();
             msg.pop();
         }
-        self.make_error(&self.get_holy_line_info(self.peek()), msg)
+        let line_info = self.get_holy_line_info(self.cur().map(|tok| LineInfo {
+            line_start: tok.line_info.line_end,
+            line_end: tok.line_info.line_end,
+            col_start: tok.line_info.col_end,
+            col_end: tok.line_info.col_end + 1,
+        }));
+        self.make_error(&line_info, msg)
     }
 
     fn expect_err(&self, kinds: &[TokenKind]) -> CompileError {

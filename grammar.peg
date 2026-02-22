@@ -58,7 +58,7 @@ Union       <- 'union' '{' Fields '}';
 Function    <- 'fun' '(' Params ')' ('->' Type)? (';' / Block);
 
 Fields      <- Decl*;
-Params      <- Param (',' Param)* ','?;
+Params      <- (Param (',' Param)* ','?)?;
 Param       <- Identifier ':' Type;
 
 # Statements
@@ -80,25 +80,25 @@ StmtLoop    <- Label? 'loop' Block;
 # ExprFor     <- 'for' Block ('else' Block)?;
 
 # Type
-# - identifier      : 'i32'
-# - const           : 'const i32'
-# - function        : 'fun(i32, i32) -> bool'
-# - pointer         : '*fun(i32,i32) -> bool' or '*i32'
-# - array           : '[i32; 8]' or '[i32; _]'
-# - fat pointer     : '[u8]'
-# - tuple           : '(i32, bool)'
-# - void            : 'void' or '()'
-# - noreturn        : noreturn
-# - type            : 'type'
+# - identifier  : 'i32'
+# - const       : 'const i32'
+# - function    : 'fun(i32, i32) -> bool'
+# - pointer     : '*fun(i32,i32) -> bool' or '*i32'
+# - array       : '[8] i32' or '[_] i32'
+# - fat pointer : '[] u8'
+# - tuple       : '(i32, bool)'
+# - void        : 'void' or '()'
+# - noreturn    : noreturn
+# - type        : 'type'
 
 Types   <- (Type (',' Type) ','?)?;
 TypeFunctionParam <- (Identifier ':')? Type
 Type    <-  Identifier ('.' Identifier)*
-         / 'fun' '(' Types ')' '->' Type
+         / 'fun' '(' TypeFunctionParams ')' '->' Type
          / 'const' Type
          / '*' Type
-         / '[' Type ';' ('_' / Expr) ']'
-         / '[' Type ']'
+         / '[' (Expr | '_') ']' Type
+         / '['']' Type
          / '(' Type ')'
          / '(' Types ')'
          / 'void'
@@ -129,7 +129,7 @@ Factor      <- Power ([*/%] Power)*;
 Power       <- (Cast '**')* Cast;
 Cast        <- Unary ('as' Type)*;
 
-Unary       <- [-+~*&]? Postfix;
+Unary       <- ([-+~*&] | 'typeof' | 'sizeof')* Postfix;
 Postfix     <- Primary
              (('.' Identifier)
             / ('(' Arguments ')')

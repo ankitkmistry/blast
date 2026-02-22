@@ -14,7 +14,7 @@ Numbers :: struct {
 exit :: fun (code: i32) -> noreturn;
 
 main :: fun () {
-    h :: &f;
+    h : **const i8 : typeof &f;
     io.println("Hello, World");
     io.println("Hello, World");
     io.println("Hello, World");

@@ -658,7 +658,7 @@ impl AstPrinter {
                 self.print_type("type", taipe)?;
             }
             ast::Expr::Unary { op, expr } => {
-                write!(self, "::Cast")?;
+                write!(self, "::Unary")?;
                 if let Some(op) = op {
                     self.print_tok("op", op)?;
                 }

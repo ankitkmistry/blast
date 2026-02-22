@@ -21,7 +21,6 @@ pub enum TokenKind {
     // Bang,
     Dot,
     Tilde,
-    StarStar,
     Star,
     Slash,
     Percent,
@@ -69,6 +68,8 @@ pub enum TokenKind {
     Struct,
     Union,
     Import,
+    Sizeof,
+    Typeof,
 }
 
 impl TokenKind {
@@ -89,7 +90,6 @@ impl TokenKind {
             TokenKind::Arrow => "'->'",
             TokenKind::Dot => "'.'",
             TokenKind::Tilde => "'~'",
-            TokenKind::StarStar => "'**'",
             TokenKind::Star => "'*'",
             TokenKind::Slash => "'/'",
             TokenKind::Percent => "'%'",
@@ -135,6 +135,8 @@ impl TokenKind {
             TokenKind::Struct => "'struct'",
             TokenKind::Union => "'union'",
             TokenKind::Import => "'import'",
+            TokenKind::Sizeof => "'sizeof'",
+            TokenKind::Typeof => "'typeof'",
         }
     }
 }
@@ -186,6 +188,8 @@ static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("struct", TokenKind::Struct);
     keywords.insert("union", TokenKind::Union);
     keywords.insert("import", TokenKind::Import);
+    keywords.insert("sizeof", TokenKind::Sizeof);
+    keywords.insert("typeof", TokenKind::Typeof);
     keywords
 });
 
@@ -267,21 +271,10 @@ impl Lexer {
                 '!' => {
                     self.expect("=")?;
                     token!(NotEq)
-                    // if self.check("=") {
-                    //     token!(NotEq)
-                    // } else {
-                    //     token!(Bang)
-                    // }
                 }
                 '.' => token!(Dot),
                 '~' => token!(Tilde),
-                '*' => {
-                    if self.check("*") {
-                        token!(StarStar)
-                    } else {
-                        token!(Star)
-                    }
-                }
+                '*' => token!(Star),
                 '/' => {
                     if self.check("/") {
                         loop {
@@ -289,7 +282,7 @@ impl Lexer {
                                 if c == '\n' {
                                     break;
                                 }
-                               self.advance();
+                                self.advance();
                             } else {
                                 break;
                             }

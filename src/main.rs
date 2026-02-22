@@ -9,21 +9,11 @@ mod lexer;
 mod parser;
 mod printer;
 
-// #[derive(clap::Parser)]
-// #[command(version, about, long_about = None)]
-// struct Cli {
-//     #[arg(short, long)]
-//     lex: bool,
-//     #[arg(short, long)]
-//     parse: bool,
-// }
-
 fn compile_file(file_path: &str) -> CompileResult<()> {
-    // let cli = Cli::parse();
     let matches = command!()
         .about("The compiler for the Blast programming language.")
         .arg(
-            clap::Arg::new("show_lex_output")
+            clap::Arg::new("show_lex")
                 .short('l')
                 .long("lex")
                 .help("Shows lexer output")
@@ -31,7 +21,7 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
                 .action(ArgAction::SetTrue),
         )
         .arg(
-            clap::Arg::new("show_ast_output")
+            clap::Arg::new("show_ast")
                 .short('p')
                 .long("ast")
                 .help("Shows parser AST output")
@@ -46,13 +36,13 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
     let mut tokens = Vec::new();
     while lexer.has_next_token() {
         tokens.push(lexer.next_token()?);
-        if matches.get_flag("show_lex_output") {
+        if matches.get_flag("show_lex") {
             printer::print_token(tokens.last().unwrap());
         }
     }
     let mut parser = Parser::new(file_path, &tokens)?;
     let ast = parser.parse()?;
-    if matches.get_flag("show_ast_output") {
+    if matches.get_flag("show_ast") {
         printer::print_ast("program", &ast);
     }
     Ok(())
