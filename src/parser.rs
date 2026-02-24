@@ -1123,6 +1123,7 @@ impl Parser {
             line_info,
             kind,
             text: kind.get_repr()[1..kind.get_repr().len() - 1].to_owned(),
+            value: None,
         }
     }
 

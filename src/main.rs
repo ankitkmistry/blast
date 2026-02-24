@@ -3,9 +3,10 @@ use std::fs;
 use crate::{common::CompileResult, lexer::Lexer, parser::Parser};
 use clap::{self, ArgAction, command};
 
-mod ast;
 mod common;
+mod value;
 mod lexer;
+mod ast;
 mod parser;
 mod printer;
 

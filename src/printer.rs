@@ -77,6 +77,7 @@ fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
     let mut flag_color_b = 0xFF;
     for i in 0..msg.chars().count() {
         let c = msg.chars().nth(i).unwrap();
+        // FIXME: string lexer errors are not reported correctly
         if c == '\'' {
             if let Some(c) = flag
                 && c == '\''

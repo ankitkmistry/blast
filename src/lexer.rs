@@ -1,6 +1,9 @@
 use std::{collections::HashMap, sync::LazyLock};
 
-use crate::common::{CompileError, CompileResult, HasLineInfo, LineInfo};
+use crate::{
+    common::{CompileError, CompileResult, HasLineInfo, LineInfo},
+    value::Value,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
@@ -146,6 +149,7 @@ pub struct Token {
     pub line_info: LineInfo,
     pub kind: TokenKind,
     pub text: String,
+    pub value: Option<Value>,
 }
 
 impl HasLineInfo for Token {
@@ -210,14 +214,12 @@ impl Lexer {
 
     pub fn next_token(&mut self) -> CompileResult<Token> {
         macro_rules! token {
-            ($($arg:tt)*) => {
-                return Ok(self.make_token($($arg)*))
-            }
-        }
-        macro_rules! throw {
-            ($($arg:tt)*) => {
-                return Err(self.make_error(format!($($arg)*)))
-            }
+            ($kind:ident) => {
+                return Ok(self.make_token($kind))
+            };
+            ($kind:ident, $value:expr) => {
+                return Ok(self.make_token_with_val($kind, $value))
+            };
         }
         use TokenKind::*;
 
@@ -313,12 +315,12 @@ impl Lexer {
                     token!(Ident)
                 }
                 '"' => {
-                    self.expect_string("", '"', false, false)?;
-                    token!(StringLit)
+                    let str = self.expect_string("", '"', false, false)?;
+                    token!(StringLit, Some(Value::from_str(&str)))
                 }
                 '`' => {
-                    self.expect_string("", '`', true, false)?;
-                    token!(StringLit)
+                    let str = self.expect_string("", '`', true, false)?;
+                    token!(StringLit, Some(Value::from_str(&str)))
                 }
                 '1'..='9' => {
                     self.expect_decimal(false)?;
@@ -388,9 +390,7 @@ impl Lexer {
                     self.line_info.line_start = self.line_info.line_end;
                     self.line_info.col_start = self.line_info.col_end;
                 }
-                _ => {
-                    throw!("unexpected char '{}'", c);
-                }
+                _ => return Err(self.make_error_cur(format!("unexpected char '{}'", c))),
             }
         }
     }
@@ -399,7 +399,7 @@ impl Lexer {
         KEYWORDS.get(text).copied().unwrap_or(TokenKind::Ident)
     }
 
-    fn make_token(&mut self, kind: TokenKind) -> Token {
+    fn make_token_with_val(&mut self, kind: TokenKind, value: Option<Value>) -> Token {
         // Construct the token
         // let text: String = self
         //     .text
@@ -416,6 +416,7 @@ impl Lexer {
                 kind
             },
             text,
+            value,
         };
         // Move the marker
         self.start = self.index;
@@ -423,6 +424,10 @@ impl Lexer {
         self.line_info.col_start = self.line_info.col_end;
         // Return the token
         result
+    }
+
+    fn make_token(&mut self, kind: TokenKind) -> Token {
+        self.make_token_with_val(kind, None)
     }
 
     fn peek_at(&self, i: usize) -> Option<char> {
@@ -444,7 +449,7 @@ impl Lexer {
     fn getchar(&mut self) -> CompileResult<char> {
         match self.advance() {
             Some(c) => Ok(c),
-            None => Err(self.make_error("unexpected end of file")),
+            None => Err(self.make_error_cur("unexpected end of file")),
         }
     }
 
@@ -525,10 +530,10 @@ impl Lexer {
 
     fn expect_binary(&mut self) -> CompileResult<()> {
         let Some(c) = self.advance() else {
-            return Err(self.make_error("expected binary digit"));
+            return Err(self.make_error_cur("expected binary digit"));
         };
         if !Self::is_binary(c) {
-            return Err(self.make_error("expected binary digit"));
+            return Err(self.make_error_cur("expected binary digit"));
         }
         loop {
             match self.peek() {
@@ -545,17 +550,17 @@ impl Lexer {
             && Self::is_decimal(c)
         {
             self.advance();
-            return Err(self.make_error("expected binary digit"));
+            return Err(self.make_error_cur("expected binary digit"));
         }
         Ok(())
     }
 
     fn expect_octal(&mut self) -> CompileResult<()> {
         let Some(c) = self.advance() else {
-            return Err(self.make_error("expected octal digit"));
+            return Err(self.make_error_cur("expected octal digit"));
         };
         if !Self::is_octal(c) {
-            return Err(self.make_error("expected octal digit"));
+            return Err(self.make_error_cur("expected octal digit"));
         }
         loop {
             match self.peek() {
@@ -572,7 +577,7 @@ impl Lexer {
             && Self::is_decimal(c)
         {
             self.advance();
-            return Err(self.make_error("expected octal digit"));
+            return Err(self.make_error_cur("expected octal digit"));
         }
         Ok(())
     }
@@ -581,7 +586,7 @@ impl Lexer {
         if do_start {
             let c = self.getchar()?;
             if !Self::is_decimal(c) {
-                return Err(self.make_error("expected decimal digit"));
+                return Err(self.make_error_cur("expected decimal digit"));
             }
         }
         loop {
@@ -600,10 +605,10 @@ impl Lexer {
 
     fn expect_hex(&mut self) -> CompileResult<()> {
         let Some(c) = self.advance() else {
-            return Err(self.make_error("expected hex digit"));
+            return Err(self.make_error_cur("expected hex digit"));
         };
         if !Self::is_hex(c) {
-            return Err(self.make_error("expected hex digit"));
+            return Err(self.make_error_cur("expected hex digit"));
         }
         loop {
             match self.peek() {
@@ -628,7 +633,7 @@ impl Lexer {
                 self.advance().unwrap();
                 let c = self.getchar()?;
                 if c != '+' && c != '-' {
-                    return Err(self.make_error("expected '+' or '-'"));
+                    return Err(self.make_error_cur("expected '+' or '-'"));
                 }
                 self.expect_decimal(true)?;
             }
@@ -640,7 +645,7 @@ impl Lexer {
                 self.advance().unwrap();
                 let c = self.getchar()?;
                 if c != '+' && c != '-' {
-                    return Err(self.make_error("expected '+' or '-'"));
+                    return Err(self.make_error_cur("expected '+' or '-'"));
                 }
                 self.expect_decimal(true)?;
             }
@@ -654,47 +659,137 @@ impl Lexer {
         quantifier: char,
         multiline: bool,
         do_start: bool,
-    ) -> CompileResult<()> {
+    ) -> CompileResult<String> {
+        // TODO: use prefix
         if do_start {
             let Some(c) = self.advance() else {
                 return Err(
-                    self.make_error(format!("expected {prefix}{quantifier}...{quantifier}"))
+                    self.make_error_cur(format!("expected <{prefix}{quantifier}...{quantifier}>"))
                 );
             };
             if c != quantifier {
                 return Err(
-                    self.make_error(format!("expected {prefix}{quantifier}...{quantifier}"))
+                    self.make_error_cur(format!("expected <{prefix}{quantifier}...{quantifier}>"))
                 );
             }
         }
+        let mut text = String::new();
         loop {
             match self.peek() {
                 Some(c) => {
-                    self.advance();
-                    if c == quantifier {
-                        break;
-                    }
                     if !multiline && c == '\n' {
                         return Err(self.make_error(format!(
                             "newlines are not allowed in single-line strings"
                         )));
                     }
+                    self.advance();
+                    if c == '\\' {
+                        let c = self.getchar()?;
+                        let unescaped: char = match c {
+                            '0' => '\0',
+                            'a' => '\x07',
+                            'b' => '\x08',
+                            'e' => '\x1b',
+                            'f' => '\x0c',
+                            'n' => '\n',
+                            'r' => '\r',
+                            't' => '\t',
+                            'v' => '\x0b',
+                            '"' | '\'' | '`' | '\\' => c,
+                            'x' => {
+                                let dig1 = self.getchar()?;
+                                if !Self::is_octal(dig1) {
+                                    return Err(
+                                        self.make_error_cur(format!("expected octal digit"))
+                                    );
+                                }
+                                let dig2 = self.getchar()?;
+                                if !Self::is_hex(dig2) {
+                                    return Err(self.make_error_cur(format!("expected hex digit")));
+                                }
+                                let dig1 = dig1.to_digit(8).unwrap();
+                                let dig2 = dig2.to_digit(16).unwrap();
+                                let num = dig1 << 4 | dig2;
+                                char::from_u32(num).unwrap()
+                            }
+                            'u' => {
+                                self.expect("{")?;
+                                let start = LineInfo {
+                                    line_start: self.line_info.line_end,
+                                    line_end: 0,
+                                    col_start: self.line_info.col_end,
+                                    col_end: 0,
+                                };
+                                let mut num = 0u32;
+                                let mut times = 0;
+                                loop {
+                                    if let Some(c) = self.peek() {
+                                        if c == '}' {
+                                            break;
+                                        }
+                                        if !Self::is_hex(c) {
+                                            return Err(
+                                                self.make_error(format!("expected hex digit"))
+                                            );
+                                        }
+                                    }
+                                    let c = self.getchar()?;
+                                    num = num << 4 | c.to_digit(16).unwrap();
+                                    times += 1;
+                                    if times >= 6 {
+                                        break;
+                                    }
+                                }
+                                if times < 1 {
+                                    return Err(self.make_error(format!("expected hex digit")));
+                                }
+                                let res = if let Some(result) = char::from_u32(num) {
+                                    result
+                                } else {
+                                    return Err(self.make_error_range(
+                                        &LineInfo::from_range(&start, &self.line_info),
+                                        "invalid value of unicode codepoint",
+                                    ));
+                                };
+                                self.expect("}")?;
+                                res
+                            }
+                            '\n' => {
+                                while let Some(c) = self.peek()
+                                    && c.is_ascii_whitespace()
+                                {
+                                    self.advance();
+                                }
+                                c
+                            }
+                            _ => {
+                                return Err(self
+                                    .make_error_cur(format!("invalid escape sequence '\\{}'", c)));
+                            }
+                        };
+                        text.push(unescaped);
+                    } else {
+                        if c == quantifier {
+                            break;
+                        }
+                        text.push(c);
+                    }
                 }
                 None => {
-                    return Err(self.make_error(format!("expected end of string {quantifier}")));
+                    return Err(self.make_error(format!("expected end of string <{quantifier}>")));
                 }
             }
         }
-        Ok(())
+        Ok(text)
     }
 
     fn expect_ident(&mut self, do_start: bool) -> CompileResult<()> {
         if do_start {
             let Some(c) = self.advance() else {
-                return Err(self.make_error(format!("expected identifier")));
+                return Err(self.make_error_cur(format!("expected identifier")));
             };
             if c != '_' && !c.is_ascii_alphabetic() {
-                return Err(self.make_error(format!("expected identifier")));
+                return Err(self.make_error_cur(format!("expected identifier")));
             }
         }
         loop {
@@ -719,16 +814,35 @@ impl Lexer {
         }
     }
 
-    fn make_error(&self, msg: impl ToString) -> CompileError {
+    fn make_error_range(&self, object: &impl HasLineInfo, msg: impl ToString) -> CompileError {
         CompileError::LexerError {
             file_path: self.file_path.clone(),
-            line_info: LineInfo {
+            line_info: object.get_line_info(),
+            msg: msg.to_string(),
+        }
+    }
+
+    fn make_error_cur(&self, msg: impl ToString) -> CompileError {
+        self.make_error_range(
+            &LineInfo {
                 line_start: self.line_info.line_end,
                 line_end: self.line_info.line_end,
                 col_start: self.line_info.col_end - 1,
                 col_end: self.line_info.col_end,
             },
-            msg: msg.to_string(),
-        }
+            msg,
+        )
+    }
+
+    fn make_error(&self, msg: impl ToString) -> CompileError {
+        self.make_error_range(
+            &LineInfo {
+                line_start: self.line_info.line_end,
+                line_end: self.line_info.line_end,
+                col_start: self.line_info.col_end,
+                col_end: self.line_info.col_end + 1,
+            },
+            msg,
+        )
     }
 }

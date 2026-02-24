@@ -15,7 +15,7 @@ exit :: fun (code: i32) -> noreturn;
 
 main :: fun () {
     h : **const i8 : typeof &f;
-    io.println("Hello, World");
+    io.println("Hello, \\\"\t\' World");
     io.println("Hello, World");
     io.println("Hello, World");
 }
