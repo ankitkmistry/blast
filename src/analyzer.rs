@@ -243,7 +243,7 @@ impl<'a> Analyzer<'a> {
                 } = err
                 {
                     Err(self
-                        .make_err("type inference in ambiguous", name)
+                        .make_err("type inference is ambiguous", name)
                         .chain(self.make_note_with_path("declared here", file_path, &line_info)))
                 } else {
                     Err(err)
@@ -261,8 +261,6 @@ impl<'a> Analyzer<'a> {
                 );
                 let result = self.resolve_name(&items[0].text)?;
                 let Some(ctx) = result else {
-                    // FIXME: not working
-                    println!("aboba: {}", &items[0].text);
                     return Err(self.make_err("undefined reference", &items[0]));
                 };
                 ctx
