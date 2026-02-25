@@ -1,3 +1,4 @@
+use std::cell::Ref;
 use std::ops::Deref;
 use std::{error::Error, fmt};
 
@@ -67,6 +68,15 @@ where
     }
 }
 
+impl<'a, T> HasLineInfo for Ref<'a, T>
+where
+    T: HasLineInfo,
+{
+    fn get_line_info(&self) -> LineInfo {
+        self.deref().get_line_info()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
     // FileNotFound(String),
@@ -80,7 +90,34 @@ pub enum CompileError {
         line_info: LineInfo,
         msg: String,
     },
+    SemError {
+        file_path: String,
+        line_info: LineInfo,
+        msg: String,
+    },
+    SemNote {
+        file_path: String,
+        line_info: LineInfo,
+        msg: String,
+    },
+    SemCyclic {
+        file_path: String,
+        line_info: LineInfo,
+    },
     Errors(Vec<CompileError>),
+}
+
+impl CompileError {
+    pub fn chain(self, other: CompileError) -> Self {
+        let mut vec = Vec::new();
+        if let CompileError::Errors(mut errs) = self {
+            vec.append(&mut errs);
+        } else {
+            vec.push(self.clone());
+        }
+        vec.push(other);
+        CompileError::Errors(vec)
+    }
 }
 
 impl fmt::Display for CompileError {

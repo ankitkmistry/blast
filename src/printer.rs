@@ -3,7 +3,7 @@ use std::{
     fs,
 };
 
-use color_print::{cprintln, cwrite};
+use color_print::{cprint, cprintln, cwrite};
 
 use crate::{
     ast,
@@ -11,23 +11,42 @@ use crate::{
     lexer::Token,
 };
 
+enum DiagKind {
+    Error,
+    Note,
+}
+
 pub fn print_error(err: CompileError) {
     match err {
         CompileError::LexerError {
             file_path,
             line_info,
             msg,
-        } => print_file_error(&file_path, line_info, &msg),
+        } => print_diagnostic(DiagKind::Error, &file_path, line_info, &msg),
         CompileError::ParserError {
             file_path,
             line_info,
             msg,
-        } => print_file_error(&file_path, line_info, &msg),
+        } => print_diagnostic(DiagKind::Error, &file_path, line_info, &msg),
         CompileError::Errors(errs) => {
             for err in errs {
                 print_error(err);
             }
         }
+        CompileError::SemError {
+            file_path,
+            line_info,
+            msg,
+        } => print_diagnostic(DiagKind::Error, &file_path, line_info, &msg),
+        CompileError::SemNote {
+            file_path,
+            line_info,
+            msg,
+        } => print_diagnostic(DiagKind::Note, &file_path, line_info, &msg),
+        CompileError::SemCyclic {
+            file_path: _,
+            line_info: _,
+        } => unreachable!("this error is not supposed to come here"),
     }
 }
 
@@ -69,7 +88,7 @@ fn num_digits(x: usize) -> usize {
     }
 }
 
-fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
+fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &str) {
     let mut result = String::new();
     let mut flag = None;
     let mut flag_color_r = 0xFF;
@@ -110,7 +129,11 @@ fn print_file_error(file_path: &str, line_info: LineInfo, msg: &str) {
             }
         }
     }
-    cprintln!("<r,s>error</>: <s>{}</>", result);
+    match kind {
+        DiagKind::Error => cprint!("<r,s>error</>: "),
+        DiagKind::Note => cprint!("<b,s>note</>: "),
+    }
+    cprintln!("<s>{}</>", result);
     cprintln!(
         "in file: {}:<m!>{}</>:<m!>{}</>",
         file_path,
@@ -271,11 +294,6 @@ pub trait PrintableNode {
     fn print_ast(&self, name: &str, printer: &mut AstPrinter) -> TreeNode;
 }
 
-impl PrintableNode for ast::Program {
-    fn print_ast(&self, name: &str, printer: &mut AstPrinter) -> TreeNode {
-        printer.print_program(name, self).unwrap().unwrap()
-    }
-}
 impl PrintableNode for ast::Decl {
     fn print_ast(&self, name: &str, printer: &mut AstPrinter) -> TreeNode {
         printer.print_decl(name, self).unwrap().unwrap()
@@ -360,11 +378,6 @@ impl AstPrinter {
         Self {
             node_stack: Vec::new(),
         }
-    }
-
-    fn visit_program(&mut self, program: &ast::Program) -> fmt::Result {
-        self.print_list("decls", &program.decls, Self::print_decl)?;
-        Ok(())
     }
 
     fn visit_decl(&mut self, decl: &ast::Decl) -> fmt::Result {
@@ -722,7 +735,6 @@ impl AstPrinter {
         Ok(())
     }
 
-    define_printer!(print_program, visit_program, Program);
     define_printer!(print_decl, visit_decl, Decl);
     define_printer!(print_object, visit_object, Object);
     define_printer!(print_param, visit_param, Param);

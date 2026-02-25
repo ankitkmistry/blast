@@ -1,14 +1,17 @@
-use std::fs;
+use std::{fs, path::Path};
 
-use crate::{common::CompileResult, lexer::Lexer, parser::Parser};
+use crate::{analyzer::Analyzer, common::CompileResult, lexer::Lexer, parser::Parser};
 use clap::{self, ArgAction, command};
 
-mod common;
-mod value;
-mod lexer;
+mod analyzer;
 mod ast;
+mod common;
+mod context;
+mod lexer;
 mod parser;
 mod printer;
+mod scope;
+mod taipe;
 
 fn compile_file(file_path: &str) -> CompileResult<()> {
     let matches = command!()
@@ -46,6 +49,12 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
     if matches.get_flag("show_ast") {
         printer::print_ast("program", &ast);
     }
+    let mut analyzer = Analyzer::new(
+        file_path,
+        Path::new(file_path).file_stem().unwrap().to_str().unwrap(),
+        &ast,
+    );
+    analyzer.analyze()?;
     Ok(())
 }
 

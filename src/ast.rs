@@ -3,10 +3,6 @@ use crate::{
     lexer::Token,
 };
 
-pub struct Program {
-    pub decls: Vec<Decl>,
-}
-
 pub enum Decl {
     Decl {
         name: Token,
@@ -204,9 +200,17 @@ pub enum Expr {
     },
 }
 
-impl HasLineInfo for Program {
-    fn get_line_info(&self) -> LineInfo {
-        self.decls.get_line_info()
+impl Object {
+    pub fn get_decls(&self) -> Option<&[Decl]> {
+        match self {
+            Object::ExternModule { line_info: _, value:_ } => None,
+            Object::Module { line_info:_, decls } => Some(&decls),
+            Object::Struct { line_info:_, decls } => Some(&decls),
+            Object::Union { line_info:_, decls } => Some(&decls),
+            Object::Fun { line_info:_, params:_, ret:_, body:_ } => None,
+            Object::Typedef(_) => None,
+            Object::Expr(_) => None,
+        }
     }
 }
 

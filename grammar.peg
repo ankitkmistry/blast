@@ -89,7 +89,7 @@ StmtLoop    <- Label? 'loop' Block;
 # - tuple       : '(i32, bool)'
 # - void        : 'void' or '()'
 # - noreturn    : noreturn
-# - type        : 'type'
+# - type        : 'typedef'
 
 Types   <- (Type (',' Type) ','?)?;
 TypeFunctionParam <- (Identifier ':')? Type
@@ -103,7 +103,7 @@ Type    <-  Identifier ('.' Identifier)*
          / '(' Types ')'
          / 'void'
          / 'noreturn'
-         / 'type'
+         / 'typedef'
          ;
 
 # Expression

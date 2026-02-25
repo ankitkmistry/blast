@@ -1,9 +1,8 @@
 use std::{collections::HashMap, sync::LazyLock};
 
-use crate::{
-    common::{CompileError, CompileResult, HasLineInfo, LineInfo},
-    value::Value,
-};
+use crate::
+    common::{CompileError, CompileResult, HasLineInfo, LineInfo}
+;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
@@ -54,7 +53,7 @@ pub enum TokenKind {
     Const,
     Void,
     Noreturn,
-    Type,
+    Typedef,
     Underscore,
     Not,
     And,
@@ -121,7 +120,7 @@ impl TokenKind {
             TokenKind::Const => "'const'",
             TokenKind::Void => "'void'",
             TokenKind::Noreturn => "'noreturn'",
-            TokenKind::Type => "'type'",
+            TokenKind::Typedef => "'typedef'",
             TokenKind::Underscore => "'_'",
             TokenKind::Not => "'not'",
             TokenKind::And => "'and'",
@@ -145,11 +144,18 @@ impl TokenKind {
 }
 
 #[derive(Clone, Debug)]
+pub enum TokenValue {
+    String(String),
+    // TODO: add integers and floats
+    Unknown,
+}
+
+#[derive(Clone, Debug)]
 pub struct Token {
     pub line_info: LineInfo,
     pub kind: TokenKind,
     pub text: String,
-    pub value: Option<Value>,
+    pub value: Option<TokenValue>,
 }
 
 impl HasLineInfo for Token {
@@ -182,7 +188,7 @@ static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("const", TokenKind::Const);
     keywords.insert("void", TokenKind::Void);
     keywords.insert("noreturn", TokenKind::Noreturn);
-    keywords.insert("type", TokenKind::Type);
+    keywords.insert("typedef", TokenKind::Typedef);
     keywords.insert("_", TokenKind::Underscore);
     keywords.insert("not", TokenKind::Not);
     keywords.insert("and", TokenKind::And);
@@ -316,11 +322,11 @@ impl Lexer {
                 }
                 '"' => {
                     let str = self.expect_string("", '"', false, false)?;
-                    token!(StringLit, Some(Value::from_str(&str)))
+                    token!(StringLit, Some(TokenValue::String(str)))
                 }
                 '`' => {
                     let str = self.expect_string("", '`', true, false)?;
-                    token!(StringLit, Some(Value::from_str(&str)))
+                    token!(StringLit, Some(TokenValue::String(str)))
                 }
                 '1'..='9' => {
                     self.expect_decimal(false)?;
@@ -399,7 +405,7 @@ impl Lexer {
         KEYWORDS.get(text).copied().unwrap_or(TokenKind::Ident)
     }
 
-    fn make_token_with_val(&mut self, kind: TokenKind, value: Option<Value>) -> Token {
+    fn make_token_with_val(&mut self, kind: TokenKind, value: Option<TokenValue>) -> Token {
         // Construct the token
         // let text: String = self
         //     .text

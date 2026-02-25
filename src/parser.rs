@@ -65,12 +65,13 @@ impl Parser {
     }
 
     // program ::= decls;
-    pub fn parse(&mut self) -> CompileResult<ast::Program> {
-        let program = ast::Program {
-            decls: self.parse_decls()?,
-        };
+    pub fn parse(&mut self) -> CompileResult<ast::Object> {
+        let decls = self.parse_decls()?;
         if self.errors.is_empty() {
-            Ok(program)
+            Ok(ast::Object::Module {
+                line_info: decls.get_line_info(),
+                decls,
+            })
         } else {
             Err(CompileError::Errors(self.errors.clone()))
         }
@@ -165,7 +166,7 @@ impl Parser {
     }
 
     // object ::= module | struct | union | fun
-    //          | 'type' type ';'
+    //          | 'typedef' type ';'
     //          | expr ';'
     //          ;
     fn parse_object(&mut self) -> CompileResult<ast::Object> {
@@ -175,9 +176,11 @@ impl Parser {
                 Struct => self.parse_struct(),
                 Union => self.parse_union(),
                 Fun => self.parse_fun(),
-                Type => {
+                Typedef => {
                     self.get_token()?;
-                    Ok(ast::Object::Typedef(self.parse_type()?))
+                    let result = ast::Object::Typedef(self.parse_type()?);
+                    self.expect_term()?;
+                    Ok(result)
                 }
                 _ => {
                     if self.is_expr_start() {
@@ -187,11 +190,12 @@ impl Parser {
                     } else {
                         Err(self.expect_err(&[
                             // Object begin tokens
-                            Module, Struct, Union, Fun, Type, //
+                            Module, Struct, Union, Fun, Typedef, //
                             // Expr begin tokens
                             Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
                             // Primary expr begin tokens
-                            True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
+                            True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace,
+                            LBrack, //
                         ]))
                     }
                 }
@@ -199,11 +203,11 @@ impl Parser {
         } else {
             Err(self.expect_err(&[
                 // Object begin tokens
-                Module, Struct, Union, Fun, Type, //
+                Module, Struct, Union, Fun, Typedef, //
                 // Expr begin tokens
                 Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
                 // Primary expr begin tokens
-                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
+                True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
             ]))
         }
     }
@@ -399,7 +403,8 @@ impl Parser {
                             // Expr begin tokens
                             Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
                             // Primary expr begin tokens
-                            True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
+                            True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace,
+                            LBrack, //
                         ]))
                     }
                 }
@@ -411,7 +416,7 @@ impl Parser {
                 // Expr begin tokens
                 Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
                 // Primary expr begin tokens
-                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
+                True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
             ]))
         }
     }
@@ -531,13 +536,13 @@ impl Parser {
 
     // type ::= identifier ('.' identifier)*
     //        | 'fun' '(' type_fun_param_list ')' '->' type
-    //        | 'const' type
+    //        | 'const' type                 # duplicate const is handled in the parser
     //        | '*' type
     //        | '[' ('_' | expr) ']' type
     //        | '['']' type
     //        | '(' type ')'
     //        | type_tuple
-    //        | 'void' | 'noreturn' | 'type'
+    //        | 'void' | 'noreturn' | 'typedef'
     //        ;
     fn parse_type(&mut self) -> CompileResult<ast::Type> {
         if let Some(tok) = self.peek() {
@@ -568,6 +573,11 @@ impl Parser {
                 }
                 Const => {
                     let token = self.get_token()?;
+                    if let Some(tok) = self.peek()
+                        && tok.kind == Const
+                    {
+                        return Err(self.make_error(&tok, "duplicate 'const' is not allowed"));
+                    }
                     let taipe = self.parse_type()?;
                     Ok(ast::Type::Const {
                         token,
@@ -635,14 +645,14 @@ impl Parser {
                         taipe: Box::new(taipe),
                     })
                 }
-                Void | Noreturn | Type => Ok(ast::Type::Literal(self.get_token()?)),
+                Void | Noreturn | Typedef => Ok(ast::Type::Literal(self.get_token()?)),
                 _ => Err(self.expect_err(&[
-                    Ident, Fun, Const, Star, LBrack, LParen, Void, Noreturn, Type,
+                    Ident, Fun, Const, Star, LBrack, LParen, Void, Noreturn, Typedef,
                 ])),
             }
         } else {
             Err(self.expect_err(&[
-                Ident, Fun, Const, Star, LBrack, LParen, Void, Noreturn, Type,
+                Ident, Fun, Const, Star, LBrack, LParen, Void, Noreturn, Typedef,
             ]))
         }
     }
@@ -652,7 +662,7 @@ impl Parser {
             // Expr begin tokens
             Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
             // Primary expr begin tokens
-            True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
+            True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
         ]
         .into_iter()
         .any(|kind| {
