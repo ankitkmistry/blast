@@ -7,9 +7,10 @@ pub enum Decl {
     Decl {
         name: Token,
         taipe: Option<Type>,
+        eq_token: Option<Token>,
         object: Option<Object>,
     },
-    Import {
+    Use {
         line_info: LineInfo,
         items: Vec<Token>,
     },
@@ -203,11 +204,28 @@ pub enum Expr {
 impl Object {
     pub fn get_decls(&self) -> Option<&[Decl]> {
         match self {
-            Object::ExternModule { line_info: _, value:_ } => None,
-            Object::Module { line_info:_, decls } => Some(&decls),
-            Object::Struct { line_info:_, decls } => Some(&decls),
-            Object::Union { line_info:_, decls } => Some(&decls),
-            Object::Fun { line_info:_, params:_, ret:_, body:_ } => None,
+            Object::ExternModule {
+                line_info: _,
+                value: _,
+            } => None,
+            Object::Module {
+                line_info: _,
+                decls,
+            } => Some(&decls),
+            Object::Struct {
+                line_info: _,
+                decls,
+            } => Some(&decls),
+            Object::Union {
+                line_info: _,
+                decls,
+            } => Some(&decls),
+            Object::Fun {
+                line_info: _,
+                params: _,
+                ret: _,
+                body: _,
+            } => None,
             Object::Typedef(_) => None,
             Object::Expr(_) => None,
         }
@@ -220,6 +238,7 @@ impl HasLineInfo for Decl {
             Decl::Decl {
                 name,
                 taipe,
+                eq_token: _,
                 object,
             } => {
                 if let Some(obj) = object {
@@ -230,7 +249,7 @@ impl HasLineInfo for Decl {
                     name.get_line_info()
                 }
             }
-            Decl::Import {
+            Decl::Use {
                 line_info,
                 items: _,
             } => *line_info,

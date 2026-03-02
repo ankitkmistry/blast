@@ -11,12 +11,19 @@ use crate::{
     lexer::Token,
 };
 
+#[derive(Clone)]
+pub enum State<'a> {
+    NotEvaled(&'a ast::Decl),
+    EvalInProg,
+    Evaled(Context<'a>),
+}
+
 pub struct Scope<'a> {
     pub parent: Weak<RefCell<Scope<'a>>>,
     pub file_path: Option<String>,
     pub name: Option<Token>,
-    pub node: &'a ast::Object,
-    pub ctx: Context<'a>,
+    pub node: Option<&'a ast::Object>,
+    pub state: State<'a>,
     pub children: HashMap<String, Rc<RefCell<Scope<'a>>>>,
 }
 
@@ -27,29 +34,29 @@ impl<'a> Scope<'a> {
                 parent: Weak::new(),
                 file_path: Some(file_path.to_owned()),
                 name: None,
-                node,
-                ctx: Context::from_module(module.clone()),
+                node: Some(node),
+                state: State::Evaled(Context::from_module(module.clone())),
                 children: HashMap::new(),
             })
         })
     }
 
     pub fn add_child(
-        scope: &Rc<RefCell<Scope<'a>>>,
+        parent: &Rc<RefCell<Scope<'a>>>,
         name: &str,
         name_tok: Option<Token>,
-        ctx: Context<'a>,
-        node: &'a ast::Object,
-    ) {
+        state: State<'a>,
+        node: Option<&'a ast::Object>,
+    ) -> Option<Rc<RefCell<Scope<'a>>>> {
         let result = Rc::new(RefCell::new(Self {
-            parent: Rc::downgrade(scope),
+            parent: Rc::downgrade(parent),
             file_path: None,
             name: name_tok,
             node,
-            ctx,
+            state,
             children: HashMap::new(),
         }));
-        scope.borrow_mut().children.insert(name.to_owned(), result);
+        parent.borrow_mut().children.insert(name.to_owned(), result)
     }
 }
 
@@ -59,10 +66,13 @@ pub trait HasSrcInfo: HasLineInfo {
 
 impl<'a> HasLineInfo for Scope<'a> {
     fn get_line_info(&self) -> LineInfo {
-        match &self.name {
-            Some(tok) => tok.get_line_info(),
-            _ => self.node.get_line_info(),
+        if let Some(tok) = &self.name {
+            return tok.get_line_info();
         }
+        if let Some(node) = &self.node {
+            return node.get_line_info();
+        }
+        panic!("oops! no line info...");
     }
 }
 

@@ -5,11 +5,6 @@
 //     raw: u64;
 // }
 //
-// Numbers :: struct {
-//     items: *i32;
-//     size: usize;
-//     capacity: usize;
-// }
 //
 // exit :: fun (code: i32) -> noreturn;
 //
@@ -20,5 +15,19 @@
 //     io.println("Hello, World");
 // }
 
-a :: typedef const b;
+// TODO: modifiers
+// comptime
+// extern "C"
+// public
+// public(current)
+// mutable
+
+a :: "aboba";
 b :: true;
+// c :: typedef;
+
+Numbers :: struct {
+    items: *__bool;
+    size: __bool;
+    capacity: __bool;
+}

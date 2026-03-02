@@ -1,6 +1,9 @@
 use std::{
+    cell::{Ref, RefCell},
+    collections::HashMap,
     fmt::{self, Write},
     fs,
+    rc::Rc,
 };
 
 use color_print::{cprint, cprintln, cwrite};
@@ -9,6 +12,7 @@ use crate::{
     ast,
     common::{CompileError, HasLineInfo, LineInfo},
     lexer::Token,
+    scope,
 };
 
 enum DiagKind {
@@ -239,6 +243,49 @@ impl fmt::Display for Token {
     }
 }
 
+pub fn print_scopes<'a>(scopes: &HashMap<String, Rc<RefCell<scope::Scope<'a>>>>) {
+    for (name, scope) in scopes {
+        print_scope(name, scope.borrow(), &mut Vec::new());
+    }
+}
+
+fn print_scope<'a>(name: &str, scope: Ref<'_, scope::Scope<'a>>, is_last_vec: &mut Vec<bool>) {
+    for (i, &is_last) in is_last_vec.iter().enumerate() {
+        if i == is_last_vec.len() - 1 {
+            if is_last {
+                print!("└──");
+            } else {
+                print!("├──");
+            }
+        } else if is_last {
+            print!("   ");
+        } else {
+            print!("│  ");
+        }
+    }
+    print!("{}: ", name);
+    match &scope.state {
+        scope::State::NotEvaled(_) => print!("not evaluated"),
+        scope::State::EvalInProg => print!("evaluation in progress"),
+        scope::State::Evaled(ctx) => {
+            print!("{}", ctx.to_string());
+            if let Some(value) = &ctx.value {
+                let repr = value.to_string();
+                if !repr.is_empty() {
+                    print!(" = {}", repr);
+                }
+            }
+        }
+    }
+    println!();
+
+    for (i, (name, child)) in scope.children.iter().enumerate() {
+        is_last_vec.push(i + 1 >= scope.children.len());
+        print_scope(name, child.borrow(), is_last_vec);
+        is_last_vec.pop();
+    }
+}
+
 pub fn print_ast(name: &str, ast: &impl PrintableNode) {
     let mut printer = AstPrinter::new();
     let node = ast.print_ast(name, &mut printer);
@@ -385,6 +432,7 @@ impl AstPrinter {
             ast::Decl::Decl {
                 name,
                 taipe,
+                eq_token,
                 object,
             } => {
                 write!(self, "::Decl")?;
@@ -392,11 +440,14 @@ impl AstPrinter {
                 if let Some(taipe) = taipe {
                     self.print_type("type", taipe)?;
                 }
+                if let Some(eq_token) = eq_token {
+                    self.print_tok("eq_token", eq_token)?;
+                }
                 if let Some(object) = object {
                     self.print_object("object", object)?;
                 }
             }
-            ast::Decl::Import {
+            ast::Decl::Use {
                 line_info: _,
                 items,
             } => {

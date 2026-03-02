@@ -79,7 +79,7 @@ impl Parser {
 
     // decl ::= (identifier | '_') ':' type (';' | (':' '=' object))
     //        | (identifier | '_') ':' ((':'|'=') object)
-    //        | 'import' identifier ('.' identifier)* ('.' '*')
+    //        | 'use' identifier ('.' identifier)* ('.' '*')
     //        ;
     fn parse_decl(&mut self) -> CompileResult<ast::Decl> {
         if let Some(tok) = self.peek() {
@@ -88,37 +88,44 @@ impl Parser {
                     let name = self.get_token()?;
                     self.expect(Colon)?;
                     if let Some(taipe) = self.rule_optional(Self::parse_type) {
-                        let object = if let Some(tok) = self.peek()
+                        if let Some(tok) = self.peek()
                             && (tok.kind == Equal || tok.kind == Colon)
                         {
-                            self.get_token()?;
-                            Some(self.parse_object()?)
+                            let eq_tok = self.get_token()?;
+                            let object = self.parse_object()?;
+                            Ok(ast::Decl::Decl {
+                                name,
+                                taipe: Some(taipe),
+                                eq_token: Some(eq_tok),
+                                object: Some(object),
+                            })
                         } else {
                             self.expect_term()?;
-                            None
-                        };
-                        Ok(ast::Decl::Decl {
-                            name,
-                            taipe: Some(taipe),
-                            object,
-                        })
+                            Ok(ast::Decl::Decl {
+                                name,
+                                taipe: Some(taipe),
+                                eq_token: None,
+                                object: None,
+                            })
+                        }
                     } else {
-                        let object = if let Some(tok) = self.peek()
+                        if let Some(tok) = self.peek()
                             && (tok.kind == Equal || tok.kind == Colon)
                         {
-                            self.get_token()?;
-                            Some(self.parse_object()?)
+                            let eq_tok = self.get_token()?;
+                            let object = self.parse_object()?;
+                            Ok(ast::Decl::Decl {
+                                name,
+                                taipe: None,
+                                eq_token: Some(eq_tok),
+                                object: Some(object),
+                            })
                         } else {
-                            return Err(self.expect_err_more(&["<type>"], &[Equal, Colon]));
-                        };
-                        Ok(ast::Decl::Decl {
-                            name,
-                            taipe: None,
-                            object,
-                        })
+                            Err(self.expect_err_more(&["<type>"], &[Equal, Colon]))
+                        }
                     }
                 }
-                Import => {
+                Use => {
                     let start = self.get_token()?;
 
                     let mut items = Vec::new();
@@ -142,7 +149,7 @@ impl Parser {
                     }
 
                     let end = self.expect_term()?;
-                    Ok(ast::Decl::Import {
+                    Ok(ast::Decl::Use {
                         line_info: LineInfo::from_range(&start, &end),
                         items,
                     })

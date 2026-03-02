@@ -11,7 +11,7 @@ mod lexer;
 mod parser;
 mod printer;
 mod scope;
-mod taipe;
+// mod taipe;
 
 fn compile_file(file_path: &str) -> CompileResult<()> {
     let matches = command!()
@@ -49,12 +49,13 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
     if matches.get_flag("show_ast") {
         printer::print_ast("program", &ast);
     }
-    let mut analyzer = Analyzer::new(
+    let analyzer = Analyzer::new(
         file_path,
         Path::new(file_path).file_stem().unwrap().to_str().unwrap(),
         &ast,
     );
-    analyzer.analyze()?;
+    let scopes = analyzer.analyze()?;
+    printer::print_scopes(&scopes);
     Ok(())
 }
 

@@ -6,10 +6,10 @@ use std::{
 
 use crate::{
     ast,
-    common::{CompileError, CompileResult, HasLineInfo},
+    common::{CompileError, CompileResult, HasLineInfo, LineInfo},
     context::{self, Context},
-    lexer::{TokenKind, TokenValue},
-    scope::{self, HasSrcInfo},
+    lexer::{Token, TokenKind, TokenValue},
+    scope::{self, HasSrcInfo, State},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -45,46 +45,10 @@ impl SymbolPath {
     }
 }
 
-struct Name<'a> {
-    in_prog: bool,
-    node: &'a ast::Decl,
-}
-
-impl<'a> Name<'a> {
-    fn new(node: &'a ast::Decl) -> Self {
-        Self {
-            in_prog: false,
-            node,
-        }
-    }
-}
-
-fn get_names<'a>(decls: &'a [ast::Decl]) -> HashMap<&'a str, Name<'a>> {
-    let mut names = HashMap::new();
-    for decl in decls {
-        match decl {
-            ast::Decl::Decl {
-                name,
-                taipe: _,
-                object: _,
-            } => {
-                names.insert(name.text.as_str(), Name::new(decl));
-            }
-            ast::Decl::Import {
-                line_info: _,
-                items: _,
-            } => {
-                todo!("import statements are not supported yet")
-            }
-        }
-    }
-    names
-}
-
 pub struct Analyzer<'a> {
-    cur_syms: HashMap<&'a str, Name<'a>>,
     roots: HashMap<String, Rc<RefCell<scope::Scope<'a>>>>,
     cur_scope: Rc<RefCell<scope::Scope<'a>>>,
+    saved_errs: Vec<CompileError>,
 }
 
 impl<'a> Analyzer<'a> {
@@ -93,89 +57,287 @@ impl<'a> Analyzer<'a> {
         let mut roots = HashMap::new();
         roots.insert(name.to_owned(), Rc::clone(&scope));
         Self {
-            cur_syms: HashMap::new(),
             roots,
             cur_scope: scope,
+            saved_errs: Vec::new(),
         }
     }
 
-    pub fn analyze(&mut self) -> CompileResult<()> {
+    pub fn analyze(mut self) -> CompileResult<HashMap<String, Rc<RefCell<scope::Scope<'a>>>>> {
+        let result = self.sem_analysis();
+        // If there are any accumulated errors throw them
+        if !self.saved_errs.is_empty() {
+            if let Err(err) = result {
+                return Err(err.chain(CompileError::Errors(self.saved_errs.clone())));
+            } else {
+                return Err(CompileError::Errors(self.saved_errs.clone()));
+            }
+        }
+        Ok(self.roots)
+    }
+
+    fn sem_analysis(&mut self) -> CompileResult<()> {
         let root = self.roots.values().next().unwrap();
-        let Some(decls) = root.borrow().node.get_decls().take() else {
+        let Some(decls) = root.borrow().node.unwrap().get_decls().take() else {
             // TODO: handle the else situation here
             return Ok(());
         };
-        self.cur_syms = get_names(decls);
-        for decl in decls {
+        self.pre_declare_decls(decls)?;
+        Ok(for decl in decls {
             self.visit_decl(decl)?;
+        })
+    }
+
+    pub fn pre_declare_decls(&mut self, decls: &'a [ast::Decl]) -> CompileResult<()> {
+        // Pre declare all the symbols without visiting
+        // So that symbols that are declared later
+        // are also accessible before they are introduced.
+        //
+        // We also accumalate the errors.
+        let mut errs = Vec::new();
+        for decl in decls {
+            let result = match decl {
+                ast::Decl::Decl {
+                    name,
+                    taipe: _,
+                    eq_token: _,
+                    object,
+                } => self.declare_sym(decl, &name, object.as_ref()),
+                ast::Decl::Use {
+                    line_info: _,
+                    items: _,
+                } => todo!("import statements are not yet supported"),
+            };
+            if let Err(err) = result {
+                errs.push(err);
+            }
         }
-        // dbg!(
-        //     &self.get_cur_scope()
-        //         .children
-        //         .get("a")
-        //         .unwrap()
-        //         .borrow()
-        //         .ctx
-        //         .taipe
-        // );
-        // dbg!(
-        //     &self.get_cur_scope()
-        //         .children
-        //         .get("b")
-        //         .unwrap()
-        //         .borrow()
-        //         .ctx
-        //         .taipe
-        // );
+        if !errs.is_empty() {
+            return Err(CompileError::Errors(errs));
+        }
         Ok(())
     }
 
+    pub fn pre_declare_fields(&mut self, decls: &'a [ast::Decl]) -> CompileResult<()> {
+        // Pre declare all the members (of struct/union) except real fields
+        // without visiting so that fields that are declared before
+        // can access these types without interfering
+        //
+        // We also accumalate the errors.
+        let mut errs = Vec::new();
+        for decl in decls {
+            let result = match decl {
+                ast::Decl::Decl {
+                    name,
+                    taipe: _,
+                    eq_token: _,
+                    object,
+                } => {
+                    if let Some(obj) = object {
+                        match obj {
+                            ast::Object::ExternModule {
+                                line_info: _,
+                                value: _,
+                            } => Err(self.make_err("'module' cannot used as a field", decl)),
+                            ast::Object::Module {
+                                line_info: _,
+                                decls: _,
+                            } => Err(self.make_err("'module' cannot used as a field", decl)),
+                            ast::Object::Fun {
+                                line_info: _,
+                                params: _,
+                                ret: _,
+                                body: _,
+                            } => Err(self.make_err("'function' cannot used as a field", decl)),
+                            ast::Object::Typedef(_) => continue,
+                            ast::Object::Expr(_) => continue,
+                            _ => self.declare_sym(decl, &name, object.as_ref()),
+                        }
+                    } else {
+                        self.declare_sym(decl, &name, object.as_ref())
+                    }
+                }
+                ast::Decl::Use {
+                    line_info: _,
+                    items: _,
+                } => Err(self.make_err("'use' declaration cannot used in a 'struct'", decl)),
+            };
+            if let Err(err) = result {
+                errs.push(err);
+            }
+        }
+        if !errs.is_empty() {
+            return Err(CompileError::Errors(errs));
+        }
+        Ok(())
+    }
+
+    fn declare_sym(
+        &mut self,
+        node: &'a ast::Decl,
+        name: &Token,
+        object: Option<&'a ast::Object>,
+    ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
+        let result = scope::Scope::add_child(
+            &self.cur_scope,
+            &name.text,
+            Some(name.clone()),
+            scope::State::NotEvaled(node),
+            object,
+        );
+        // Check for redeclaration
+        if let Some(prev_scope) = result {
+            Err(self
+                .make_err("redeclaration of symbol", name)
+                .chain(self.make_note("already declared here", &prev_scope.borrow())))
+        } else {
+            Ok(Rc::clone(
+                self.get_cur_scope().children.get(&name.text).unwrap(),
+            ))
+        }
+    }
+
     pub fn visit_decl(&mut self, node: &'a ast::Decl) -> CompileResult<Context<'a>> {
+        macro_rules! colon_compulsory {
+            ($parser:expr, $token:expr) => {
+                // Check the colon thing
+                let Some(eq_token) = $token else {
+                    unreachable!("probably some parser bug");
+                };
+                if eq_token.kind != TokenKind::Colon {
+                    self.saved_errs
+                        .push(self.make_err("expected ':'", eq_token));
+                }
+            };
+        }
+
         match node {
             ast::Decl::Decl {
                 name,
                 taipe,
+                eq_token,
                 object,
             } => {
-                {
-                    // Check for redeclaration
-                    let scope = self.get_cur_scope();
-                    let result = scope.children.get(&name.text);
-                    if let Some(shit) = result {
-                        let scope = shit.borrow();
-                        let Some(object) = object else {
-                            return Err(self
-                                .make_err("redeclaration of symbol", name)
-                                .chain(self.make_note("already declared here", &scope)));
-                        };
-                        if scope.node.get_line_info() != object.get_line_info() {
-                            return Err(self
-                                .make_err("redeclaration of symbol", name)
-                                .chain(self.make_note("already declared here", &scope)));
-                        }
-                    }
-                }
+                let scope = if let Some(child) = self.get_cur_scope().children.get(&name.text) {
+                    Rc::clone(child)
+                } else {
+                    println!("should be pre declared: {}", name.text);
+                    self.declare_sym(node, name, object.as_ref())?
+                };
                 // Set in progress
-                if let Some(sym) = self.cur_syms.get_mut(name.text.as_str()) {
-                    sym.in_prog = true;
-                }
+                scope.borrow_mut().state = scope::State::EvalInProg;
+                // Unwrap the object
                 let Some(object) = object else {
-                    let Some(_) = taipe else {
+                    // Situation
+                    // ---------------------------------
+                    // name : type;
+                    // ---------------------------------
+                    let Some(taipe) = taipe else {
                         unreachable!("probably some parser bug");
                     };
-                    todo!("variables with types only are not supported yet")
+                    let type_ctx = self.visit_type(taipe)?;
+                    match type_ctx {
+                        context::Type::Const(_) => todo!("mark scope as constant"),
+                        context::Type::Module | context::Type::Typedef => {
+                            return Err(self.make_err("value must be specified", node));
+                        }
+                        context::Type::Noreturn => {
+                            return Err(self.make_err(
+                                format!(
+                                    "'{}' cannot be the type of a declaration",
+                                    type_ctx.to_string()
+                                ),
+                                node,
+                            ));
+                        }
+                        _ => {}
+                    }
+                    let ctx = Context {
+                        taipe: type_ctx,
+                        value: None,
+                    };
+                    scope.borrow_mut().state = State::Evaled(ctx.clone());
+                    return Ok(ctx);
                 };
-                let result = match object {
+                let ctx: Context<'_> = match object {
                     ast::Object::ExternModule { line_info, value } => {
+                        colon_compulsory!(self, eq_token);
                         todo!("modules are not supported yet")
                     }
                     ast::Object::Module { line_info, decls } => {
+                        colon_compulsory!(self, eq_token);
                         todo!("modules are not supported yet")
                     }
                     ast::Object::Struct { line_info, decls } => {
-                        todo!("structs are not supported yet")
+                        // TODO: type punning syntax
+                        // A :: struct {
+                        //     foo: i32;
+                        // }
+                        // B :: struct {
+                        //     use struct A;
+                        //     bar: i32;
+                        // }
+                        colon_compulsory!(self, eq_token);
+                        // Begin new scope
+                        let old_cur_scope = Rc::clone(&self.cur_scope);
+                        self.cur_scope = Rc::clone(&scope);
+                        // Pre declaration round
+                        self.pre_declare_fields(decls)?;
+                        // Start visiting
+                        let mut fields: HashMap<String, Context<'a>> = HashMap::new();
+                        for decl in decls {
+                            let ctx = self.visit_decl(decl)?;
+                            // Check the type of the fields
+                            match ctx.taipe {
+                                context::Type::Function { ret: _, params: _ } => {
+                                    return Err(
+                                        self.make_err("function cannot be used as a field", decl)
+                                    );
+                                }
+                                context::Type::Module
+                                | context::Type::Typedef
+                                | context::Type::Noreturn => {
+                                    return Err(self.make_err(
+                                        format!(
+                                            "'{}' cannot be used as a field",
+                                            ctx.taipe.to_string()
+                                        ),
+                                        decl,
+                                    ));
+                                }
+                                _ => {}
+                            }
+                            // Retrieve the name
+                            let name = match decl {
+                                ast::Decl::Decl {
+                                    name,
+                                    taipe: _,
+                                    eq_token: _,
+                                    object: _,
+                                } => name.text.clone(),
+                                ast::Decl::Use {
+                                    line_info: _,
+                                    items: _,
+                                } => unreachable!(),
+                            };
+                            fields.insert(name, ctx);
+                        }
+                        // Create the context
+                        let ctx = Context {
+                            taipe: context::Type::Typedef,
+                            value: Some(context::Value::Struct(context::Struct {
+                                fields,
+                                node: object,
+                            })),
+                        };
+                        // Mark it evaluated
+                        scope.borrow_mut().state = State::Evaled(ctx.clone());
+                        // Restore old scope
+                        self.cur_scope = old_cur_scope;
+                        ctx
                     }
                     ast::Object::Union { line_info, decls } => {
+                        colon_compulsory!(self, eq_token);
                         todo!("unions are not supported yet")
                     }
                     ast::Object::Fun {
@@ -183,8 +345,12 @@ impl<'a> Analyzer<'a> {
                         params,
                         ret,
                         body,
-                    } => todo!("functions are not supported yet"),
+                    } => {
+                        colon_compulsory!(self, eq_token);
+                        todo!("functions are not supported yet")
+                    }
                     ast::Object::Typedef(node) => {
+                        colon_compulsory!(self, eq_token);
                         let taipe = self.visit_type(node)?;
                         if let context::Type::Typedef = taipe {
                             // context: type -> typedef, value -> typedef
@@ -193,24 +359,20 @@ impl<'a> Analyzer<'a> {
                             return Err(self.make_err("invalid type alias", node));
                         }
                         let ctx = Context::from_type(taipe);
-                        scope::Scope::add_child(
-                            &self.cur_scope,
-                            &name.text,
-                            Some(name.clone()),
-                            ctx.clone(),
-                            object,
-                        );
-                        Ok(ctx)
+                        scope.borrow_mut().state = scope::State::Evaled(ctx.clone());
+                        ctx
                     }
-                    ast::Object::Expr(expr) => self.define_global(name, object, expr),
+                    ast::Object::Expr(expr) => {
+                        // TODO: Handle module variables and type variables
+                        // They should be constant
+                        let ctx = self.visit_var(name, expr)?;
+                        scope.borrow_mut().state = scope::State::Evaled(ctx.clone());
+                        ctx
+                    }
                 };
-                // Set not in progress
-                if let Some(sym) = self.cur_syms.get_mut(name.text.as_str()) {
-                    sym.in_prog = false;
-                }
-                result
+                self.resolve_assign(taipe.as_ref(), eq_token.as_ref(), object, ctx)
             }
-            ast::Decl::Import {
+            ast::Decl::Use {
                 line_info: _,
                 items: _,
             } => {
@@ -219,23 +381,13 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn define_global(
+    fn visit_var(
         &mut self,
         name: &crate::lexer::Token,
-        node: &'a ast::Object,
         expr: &'a ast::Expr,
     ) -> CompileResult<Context<'a>> {
         match self.visit_expr(expr) {
-            Ok(ctx) => {
-                scope::Scope::add_child(
-                    &self.cur_scope,
-                    &name.text,
-                    Some(name.clone()),
-                    ctx.clone(),
-                    node,
-                );
-                Ok(ctx)
-            }
+            Ok(ctx) => Ok(ctx),
             Err(err) => {
                 if let CompileError::SemCyclic {
                     file_path,
@@ -243,8 +395,15 @@ impl<'a> Analyzer<'a> {
                 } = err
                 {
                     Err(self
-                        .make_err("type inference is ambiguous", name)
-                        .chain(self.make_note_with_path("declared here", file_path, &line_info)))
+                        .make_err(
+                            "declaration is ambiguous, encountered cyclic references",
+                            name,
+                        )
+                        .chain(self.make_note_with_path(
+                            "another one declared here",
+                            file_path,
+                            &line_info,
+                        )))
                 } else {
                     Err(err)
                 }
@@ -280,6 +439,7 @@ impl<'a> Analyzer<'a> {
                             );
                         }
                         context::Type::Typedef => {
+                            // TODO: Think about this
                             return Err(
                                 self.make_err("'typedef' cannot be a parameter type", &param.taipe)
                             );
@@ -298,7 +458,6 @@ impl<'a> Analyzer<'a> {
                         return Err(self.make_err("'module' cannot be a return type", ret));
                     }
                     context::Type::Typedef => {
-                        // TODO: Think about this
                         return Err(self.make_err("'typedef' cannot be a return type", ret));
                     }
                     _ => {}
@@ -308,7 +467,10 @@ impl<'a> Analyzer<'a> {
                     params: ctx_params,
                 })
             }
-            ast::Type::Const { token, taipe: node } => {
+            ast::Type::Const {
+                token: _,
+                taipe: node,
+            } => {
                 let taipe = self.visit_type(node)?;
                 match &taipe {
                     context::Type::Const(_) => {
@@ -393,12 +555,14 @@ impl<'a> Analyzer<'a> {
             },
         };
         // Post checks
-        if let context::Type::Typedef = &ctx.taipe {
-        } else {
-            return Err(self.make_err(
-                format!("expression is not a type: '{}'", ctx.to_string()),
-                node,
-            ));
+        match &ctx.taipe {
+            context::Type::Typedef => {}
+            _ => {
+                return Err(self.make_err(
+                    format!("expression is not a type: '{}'", ctx.to_string()),
+                    node,
+                ));
+            }
         }
         let Some(taipe) = ctx.value else {
             unreachable!("not supposed to happen");
@@ -479,32 +643,98 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn resolve_name(&mut self, name: &str) -> CompileResult<Option<Context<'a>>> {
-        {
-            // First, check in the current scope
-            let scope = self.get_cur_scope();
-            if let Some(child) = scope.children.get(name) {
-                return Ok(Some(child.borrow().ctx.clone()));
+    fn resolve_assign(
+        &mut self,
+        taipe: Option<&'a ast::Type>,
+        eq_token: Option<&Token>,
+        object: &ast::Object,
+        ctx: Context<'a>,
+    ) -> CompileResult<Context<'a>> {
+        // Type checking
+        // TODO: Type checking done here is strict
+        // And assignment should not be this strict.
+        // For example:
+        //      val : i32 = 0i64;
+        // Does not work.
+        if let Some(type_node) = taipe {
+            // Situation
+            // ---------------------------------
+            // name : type : object;
+            // name : type = object;
+            // ---------------------------------
+            let mut errs = Vec::new();
+            let type_ctx = self.visit_type(type_node)?;
+            if type_ctx != ctx.taipe {
+                errs.push(
+                    self.make_err("types do not match", type_node)
+                        .chain(self.make_note(
+                            format!("type of value is '{}'", ctx.taipe.to_string()),
+                            object,
+                        )),
+                );
+            }
+            let eq_token = eq_token.unwrap();
+            if eq_token.kind == TokenKind::Colon {
+                // Situation
+                // ---------------------------------
+                // name : type : object;
+                // ---------------------------------
+                if !ctx.taipe.is_const() {
+                    errs.push(
+                        self.make_err("type should be 'const'", type_node)
+                            .chain(self.make_note("':' is used here", eq_token)),
+                    );
+                }
+            } else if eq_token.kind == TokenKind::Equal {
+                // Situation
+                // ---------------------------------
+                // name : type = object;
+                // ---------------------------------
+                if ctx.taipe.is_const() {
+                    errs.push(
+                        self.make_err("expected ':'", eq_token)
+                            .chain(self.make_note("type is declared 'const' here", type_node)),
+                    );
+                }
+            } else {
+                unreachable!("probably some parser bug");
+            }
+            // Return the accumulated errors
+            if !errs.is_empty() {
+                return Err(CompileError::Errors(errs));
             }
         }
-        // Then, check whether it is declared later maybe
-        if let Some(sym) = self.cur_syms.get(name) {
-            if sym.in_prog {
-                Err(CompileError::SemCyclic {
+        Ok(ctx)
+    }
+
+    fn resolve_name(&mut self, name: &str) -> CompileResult<Option<Context<'a>>> {
+        struct Result<'a> {
+            state: scope::State<'a>,
+            line_info: LineInfo,
+        }
+        let result: Option<Result<'a>>;
+        result = {
+            if name == "__bool" {
+                return Ok(Some(Context {
+                    taipe: context::Type::Typedef,
+                    value: Some(context::Value::Type(context::Type::Bool)),
+                }));
+            }
+            // First, check in the current scope
+            let scope = self.get_cur_scope();
+            scope.children.get(name).map(|child| Result {
+                state: child.borrow().state.clone(),
+                line_info: child.borrow().get_line_info(),
+            })
+        };
+        if let Some(result) = result {
+            match result.state {
+                scope::State::NotEvaled(node) => Ok(Some(self.visit_decl(node)?)),
+                scope::State::EvalInProg => Err(CompileError::SemCyclic {
                     file_path: self.get_cur_scope().get_src_path(),
-                    line_info: if let ast::Decl::Decl {
-                        name,
-                        taipe: _,
-                        object: _,
-                    } = sym.node
-                    {
-                        name.get_line_info()
-                    } else {
-                        panic!("aashashahsh!!!!!!")
-                    },
-                })
-            } else {
-                Ok(Some(self.visit_decl(sym.node)?))
+                    line_info: result.line_info,
+                }),
+                scope::State::Evaled(ctx) => Ok(Some(ctx.clone())),
             }
         } else {
             Ok(None)

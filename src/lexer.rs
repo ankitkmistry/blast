@@ -69,7 +69,7 @@ pub enum TokenKind {
     Module,
     Struct,
     Union,
-    Import,
+    Use,
     Sizeof,
     Typeof,
 }
@@ -136,7 +136,7 @@ impl TokenKind {
             TokenKind::Module => "'module'",
             TokenKind::Struct => "'struct'",
             TokenKind::Union => "'union'",
-            TokenKind::Import => "'import'",
+            TokenKind::Use => "'use'",
             TokenKind::Sizeof => "'sizeof'",
             TokenKind::Typeof => "'typeof'",
         }
@@ -197,7 +197,7 @@ static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("module", TokenKind::Module);
     keywords.insert("struct", TokenKind::Struct);
     keywords.insert("union", TokenKind::Union);
-    keywords.insert("import", TokenKind::Import);
+    keywords.insert("use", TokenKind::Use);
     keywords.insert("sizeof", TokenKind::Sizeof);
     keywords.insert("typeof", TokenKind::Typeof);
     keywords
@@ -219,6 +219,7 @@ impl Lexer {
     }
 
     pub fn next_token(&mut self) -> CompileResult<Token> {
+        // FIXME: Fix comments as the last line in files
         macro_rules! token {
             ($kind:ident) => {
                 return Ok(self.make_token($kind))
