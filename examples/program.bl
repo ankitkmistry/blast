@@ -23,11 +23,11 @@
 // mutable
 
 a :: "aboba";
-b :: true;
+b :: false;
 // c :: typedef;
 
 Numbers :: struct {
     items: *__bool;
-    size: __bool;
-    capacity: __bool;
+    size: __bool = false;
+    capacity: __bool = "aboba";
 }

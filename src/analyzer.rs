@@ -65,15 +65,12 @@ impl<'a> Analyzer<'a> {
 
     pub fn analyze(mut self) -> CompileResult<HashMap<String, Rc<RefCell<scope::Scope<'a>>>>> {
         let result = self.sem_analysis();
-        // If there are any accumulated errors throw them
-        if !self.saved_errs.is_empty() {
-            if let Err(err) = result {
-                return Err(err.chain(CompileError::Errors(self.saved_errs.clone())));
-            } else {
-                return Err(CompileError::Errors(self.saved_errs.clone()));
-            }
+        if let Err(err) = result {
+            // If there are any accumulated errors return them
+            Err(err.chain(CompileError::Errors(self.saved_errs.clone())))
+        } else {
+            Ok(self.roots)
         }
-        Ok(self.roots)
     }
 
     fn sem_analysis(&mut self) -> CompileResult<()> {
@@ -83,9 +80,10 @@ impl<'a> Analyzer<'a> {
             return Ok(());
         };
         self.pre_declare_decls(decls)?;
-        Ok(for decl in decls {
+        for decl in decls {
             self.visit_decl(decl)?;
-        })
+        }
+        Ok(())
     }
 
     pub fn pre_declare_decls(&mut self, decls: &'a [ast::Decl]) -> CompileResult<()> {
@@ -221,7 +219,6 @@ impl<'a> Analyzer<'a> {
                 let scope = if let Some(child) = self.get_cur_scope().children.get(&name.text) {
                     Rc::clone(child)
                 } else {
-                    println!("should be pre declared: {}", name.text);
                     self.declare_sym(node, name, object.as_ref())?
                 };
                 // Set in progress
