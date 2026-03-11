@@ -101,7 +101,7 @@ impl<'a> Analyzer<'a> {
                     eq_token: _,
                     object,
                 } => self.declare_sym(decl, &name, object.as_ref()),
-                ast::Decl::Use {
+                ast::Decl::Using {
                     line_info: _,
                     items: _,
                 } => todo!("import statements are not yet supported"),
@@ -155,7 +155,7 @@ impl<'a> Analyzer<'a> {
                         self.declare_sym(decl, &name, object.as_ref())
                     }
                 }
-                ast::Decl::Use {
+                ast::Decl::Using {
                     line_info: _,
                     items: _,
                 } => Err(self.make_err("'use' declaration cannot used in a 'struct'", decl)),
@@ -271,7 +271,7 @@ impl<'a> Analyzer<'a> {
                         //     foo: i32;
                         // }
                         // B :: struct {
-                        //     use struct A;
+                        //     using A;
                         //     bar: i32;
                         // }
                         colon_compulsory!(self, eq_token);
@@ -312,7 +312,7 @@ impl<'a> Analyzer<'a> {
                                     eq_token: _,
                                     object: _,
                                 } => name.text.clone(),
-                                ast::Decl::Use {
+                                ast::Decl::Using {
                                     line_info: _,
                                     items: _,
                                 } => unreachable!(),
@@ -369,7 +369,7 @@ impl<'a> Analyzer<'a> {
                 };
                 self.resolve_assign(taipe.as_ref(), eq_token.as_ref(), object, ctx)
             }
-            ast::Decl::Use {
+            ast::Decl::Using {
                 line_info: _,
                 items: _,
             } => {
@@ -709,6 +709,7 @@ impl<'a> Analyzer<'a> {
             state: scope::State<'a>,
             line_info: LineInfo,
         }
+
         let result: Option<Result<'a>>;
         result = {
             if name == "__bool" {

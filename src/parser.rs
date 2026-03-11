@@ -77,7 +77,7 @@ impl Parser {
         }
     }
 
-    // decl ::= (identifier | '_') ':' type (';' | (':' '=' object))
+    // decl ::= (identifier | '_') ':' type (';' | ((':'|'=') object))
     //        | (identifier | '_') ':' ((':'|'=') object)
     //        | 'use' identifier ('.' identifier)* ('.' '*')
     //        ;
@@ -125,7 +125,7 @@ impl Parser {
                         }
                     }
                 }
-                Use => {
+                Using => {
                     let start = self.get_token()?;
 
                     let mut items = Vec::new();
@@ -149,7 +149,7 @@ impl Parser {
                     }
 
                     let end = self.expect_term()?;
-                    Ok(ast::Decl::Use {
+                    Ok(ast::Decl::Using {
                         line_info: LineInfo::from_range(&start, &end),
                         items,
                     })
@@ -248,11 +248,11 @@ impl Parser {
         }
     }
 
-    // struct ::= 'struct' '{' decls '}';
+    // struct ::= 'struct' '{' fields '}';
     fn parse_struct(&mut self) -> CompileResult<ast::Object> {
         let start = self.expect(Struct)?;
         self.expect(LBrace)?;
-        let decls = self.parse_decls()?;
+        let decls = self.parse_fields()?;
         let end = self.expect(RBrace)?;
         Ok(ast::Object::Struct {
             line_info: LineInfo::from_range(&start, &end),
@@ -260,16 +260,61 @@ impl Parser {
         })
     }
 
-    // union ::= 'union' '{' decls '}';
+    // union ::= 'union' '{' fields '}';
     fn parse_union(&mut self) -> CompileResult<ast::Object> {
         let start = self.expect(Union)?;
         self.expect(LBrace)?;
-        let decls = self.parse_decls()?;
+        let decls = self.parse_fields()?;
         let end = self.expect(RBrace)?;
         Ok(ast::Object::Union {
             line_info: LineInfo::from_range(&start, &end),
             decls,
         })
+    }
+
+    // field ::= (identifier | '_') ':' type ((':'|'=') expr)? ';';
+    fn parse_field(&mut self) -> CompileResult<ast::Decl> {
+        if let Some(tok) = self.peek()
+            && (tok.kind == Ident || tok.kind == Underscore)
+        {
+            let name = self.get_token()?;
+            self.expect(Colon)?;
+            let taipe = self.parse_type()?;
+            if let Some(tok) = self.peek()
+                && (tok.kind == Equal || tok.kind == Colon)
+            {
+                let eq_tok = self.get_token()?;
+                let expr = self.parse_expr()?;
+                self.expect_term()?;
+                Ok(ast::Decl::Decl {
+                    name,
+                    taipe: Some(taipe),
+                    eq_token: Some(eq_tok),
+                    object: Some(ast::Object::Expr(expr)),
+                })
+            } else {
+                self.expect_term()?;
+                Ok(ast::Decl::Decl {
+                    name,
+                    taipe: Some(taipe),
+                    eq_token: None,
+                    object: None,
+                })
+            }
+        } else {
+            Err(self.expect_err(&[Ident, Underscore]))
+        }
+    }
+
+    // fields ::= field*
+    fn parse_fields(&mut self) -> CompileResult<Vec<ast::Decl>> {
+        let mut fields = Vec::new();
+        while let Some(tok) = self.peek()
+            && (tok.kind == Ident || tok.kind == Underscore)
+        {
+            fields.push(self.parse_field()?);
+        }
+        Ok(fields)
     }
 
     // fun ::= 'fun' '(' param_list ')' ('->' type)? (';' | block);

@@ -57,7 +57,9 @@ Struct      <- 'struct' '{' Fields '}';
 Union       <- 'union' '{' Fields '}';
 Function    <- 'fun' '(' Params ')' ('->' Type)? (';' / Block);
 
-Fields      <- Decl*;
+Fields      <- Field*;
+Field       <- (Identifier / '_') ':' Type ([=:] Expr)? ';';
+
 Params      <- (Param (',' Param)* ','?)?;
 Param       <- Identifier ':' Type;
 

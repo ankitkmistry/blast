@@ -69,7 +69,7 @@ pub enum TokenKind {
     Module,
     Struct,
     Union,
-    Use,
+    Using,
     Sizeof,
     Typeof,
 }
@@ -136,7 +136,7 @@ impl TokenKind {
             TokenKind::Module => "'module'",
             TokenKind::Struct => "'struct'",
             TokenKind::Union => "'union'",
-            TokenKind::Use => "'use'",
+            TokenKind::Using => "'using'",
             TokenKind::Sizeof => "'sizeof'",
             TokenKind::Typeof => "'typeof'",
         }
@@ -197,7 +197,7 @@ static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("module", TokenKind::Module);
     keywords.insert("struct", TokenKind::Struct);
     keywords.insert("union", TokenKind::Union);
-    keywords.insert("use", TokenKind::Use);
+    keywords.insert("using", TokenKind::Using);
     keywords.insert("sizeof", TokenKind::Sizeof);
     keywords.insert("typeof", TokenKind::Typeof);
     keywords

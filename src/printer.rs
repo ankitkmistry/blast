@@ -447,11 +447,11 @@ impl AstPrinter {
                     self.print_object("object", object)?;
                 }
             }
-            ast::Decl::Use {
+            ast::Decl::Using {
                 line_info: _,
                 items,
             } => {
-                write!(self, "::Import")?;
+                write!(self, "::Using")?;
                 self.print_toks("items", items)?;
             }
         }

@@ -284,7 +284,7 @@ impl<'a> Context<'a> {
     }
     pub fn from_char(c: char) -> Self {
         Self {
-            taipe: Type::Char,
+            taipe: Type::Const(Box::new(Type::Char)),
             value: Some(Value::Char(c)),
         }
     }
@@ -293,7 +293,7 @@ impl<'a> Context<'a> {
         Context {
             taipe: Type::Array {
                 count: chars.len(),
-                taipe: Box::new(Type::Char),
+                taipe: Box::new(Type::Const(Box::new(Type::Char))),
             },
             value: Some(Value::Array(chars)),
         }

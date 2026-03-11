@@ -10,7 +10,7 @@ pub enum Decl {
         eq_token: Option<Token>,
         object: Option<Object>,
     },
-    Use {
+    Using {
         line_info: LineInfo,
         items: Vec<Token>,
     },
@@ -249,7 +249,7 @@ impl HasLineInfo for Decl {
                     name.get_line_info()
                 }
             }
-            Decl::Use {
+            Decl::Using {
                 line_info,
                 items: _,
             } => *line_info,
