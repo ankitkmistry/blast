@@ -81,8 +81,6 @@ pub enum Type<'a> {
     // Value can be:
     // - None => type literal itself: 'typedef'
     // - Value::Type => type reference
-    // - Value::Struct => anonymous struct value
-    // - Value::Union => anonymous union value
     Typedef,
     // Value can be:
     // - Value::Noreturn => just a noreturn marker
@@ -90,7 +88,7 @@ pub enum Type<'a> {
 }
 
 impl<'a> Type<'a> {
-    pub fn is_type_lit(&self) -> bool {
+    pub fn is_typedef(&self) -> bool {
         if let Type::Typedef = self {
             true
         } else {
@@ -100,6 +98,15 @@ impl<'a> Type<'a> {
     pub fn is_const(&self) -> bool {
         match self {
             Type::Const(_) => true,
+            Type::Function { ret, params } => true,
+            Type::Module => true,
+            Type::Typedef => true,
+            _ => false,
+        }
+    }
+    pub fn is_module(&self) -> bool {
+        match self {
+            Type::Module => true,
             _ => false,
         }
     }
@@ -146,7 +153,7 @@ impl<'a> ToString for Type<'a> {
             Type::Bool => "__bool".to_string(),
             Type::Char => "__char".to_string(),
             Type::Const(taipe) => format!("const {}", taipe.to_string()),
-            Type::Basic(weak) => todo!(),
+            Type::Basic(scope) => scope.upgrade().unwrap().borrow().sym_path.to_string(),
             Type::Function { ret, params } => format!(
                 "fun ({}) -> ({})",
                 params
@@ -174,34 +181,6 @@ impl<'a> ToString for Type<'a> {
     }
 }
 
-#[derive(Clone)]
-pub struct Union<'a> {
-    pub fields: HashMap<String, Context<'a>>,
-    pub node: &'a ast::Object,
-}
-
-impl<'a> fmt::Debug for Union<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Union")
-            .field("fields", &self.fields)
-            .finish()
-    }
-}
-
-#[derive(Clone)]
-pub struct Struct<'a> {
-    pub fields: HashMap<String, Context<'a>>,
-    pub node: &'a ast::Object,
-}
-
-impl<'a> fmt::Debug for Struct<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Struct")
-            .field("fields", &self.fields)
-            .finish()
-    }
-}
-
 #[derive(Clone, Debug)]
 pub enum Value<'a> {
     Bool(bool),
@@ -210,8 +189,6 @@ pub enum Value<'a> {
     Tuple(Vec<Value<'a>>),
     // Typedef values
     Type(Type<'a>),
-    Struct(Struct<'a>),
-    Union(Union<'a>),
     // Noreturn
     Noreturn,
     // Module
@@ -255,8 +232,6 @@ impl<'a> ToString for Value<'a> {
                     .join(", ")
             ),
             Value::Type(t) => t.to_string(),
-            Value::Struct(_) => "struct".to_string(),
-            Value::Union(union) => "union".to_string(),
             Value::Noreturn => String::new(),
             Value::Module(weak) => String::new(),
         }
@@ -278,12 +253,16 @@ pub struct Context<'a> {
 impl<'a> Context<'a> {
     pub fn from_bool(value: bool) -> Self {
         Self {
-            taipe: Type::Bool,
+            // TODO: making this const has implications on
+            // assigning a simple string to a variable (that is not const)
+            taipe: Type::Const(Box::new(Type::Bool)),
             value: Some(Value::Bool(value)),
         }
     }
     pub fn from_char(c: char) -> Self {
         Self {
+            // TODO: making this const has implications on
+            // assigning a simple string to a variable (that is not const)
             taipe: Type::Const(Box::new(Type::Char)),
             value: Some(Value::Char(c)),
         }

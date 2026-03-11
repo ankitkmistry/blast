@@ -1,0 +1,17 @@
+Compilation Process
+=================================================
+
+Step 1: Input file is given through the command line. The compiler reads the file in one go.
+Step 2: The lexer tokenizes the source file.
+Step 3: The parser parses the tokens and creates an Abstract Syntax Tree (ast).
+Step 4: The ast is passed to the semantic analyzer (sem analyzer).
+
+  * Semantic Analysis Process
+Step 5: Sem analyzer goes through the top level declaration declared in lexical order and
+    predeclares each one of them.
+Step 6: Analyzes the declaration according to its type.
+    If the decl is variable decl, it declares a global variable.
+    If the decl is constant decl, it declares a global constant.
+    If the decl is struct decl, it declares a struct.
+    If the decl is union decl, it declares a union. (Not implemented yet)
+

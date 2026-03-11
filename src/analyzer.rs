@@ -9,46 +9,14 @@ use crate::{
     common::{CompileError, CompileResult, HasLineInfo, LineInfo},
     context::{self, Context},
     lexer::{Token, TokenKind, TokenValue},
-    scope::{self, HasSrcInfo, State},
+    scope::{self, HasSrcInfo, Payload, State},
 };
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SymbolPath {
-    elms: Vec<String>,
-}
-
-impl From<&str> for SymbolPath {
-    fn from(value: &str) -> Self {
-        SymbolPath {
-            elms: value
-                .to_string()
-                .split('.')
-                .map(|item| item.to_owned())
-                .collect::<Vec<String>>(),
-        }
-    }
-}
-
-impl ToString for SymbolPath {
-    fn to_string(&self) -> String {
-        self.elms.join(".")
-    }
-}
-
-impl SymbolPath {
-    pub fn is_empty(&self) -> bool {
-        self.elms.is_empty()
-    }
-
-    pub fn get_elements(&self) -> &[String] {
-        &self.elms
-    }
-}
 
 pub struct Analyzer<'a> {
     roots: HashMap<String, Rc<RefCell<scope::Scope<'a>>>>,
     cur_scope: Rc<RefCell<scope::Scope<'a>>>,
     saved_errs: Vec<CompileError>,
+    warnings: Vec<CompileError>,
 }
 
 impl<'a> Analyzer<'a> {
@@ -60,6 +28,7 @@ impl<'a> Analyzer<'a> {
             roots,
             cur_scope: scope,
             saved_errs: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -116,60 +85,6 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
-    pub fn pre_declare_fields(&mut self, decls: &'a [ast::Decl]) -> CompileResult<()> {
-        // Pre declare all the members (of struct/union) except real fields
-        // without visiting so that fields that are declared before
-        // can access these types without interfering
-        //
-        // We also accumalate the errors.
-        let mut errs = Vec::new();
-        for decl in decls {
-            let result = match decl {
-                ast::Decl::Decl {
-                    name,
-                    taipe: _,
-                    eq_token: _,
-                    object,
-                } => {
-                    if let Some(obj) = object {
-                        match obj {
-                            ast::Object::ExternModule {
-                                line_info: _,
-                                value: _,
-                            } => Err(self.make_err("'module' cannot used as a field", decl)),
-                            ast::Object::Module {
-                                line_info: _,
-                                decls: _,
-                            } => Err(self.make_err("'module' cannot used as a field", decl)),
-                            ast::Object::Fun {
-                                line_info: _,
-                                params: _,
-                                ret: _,
-                                body: _,
-                            } => Err(self.make_err("'function' cannot used as a field", decl)),
-                            ast::Object::Typedef(_) => continue,
-                            ast::Object::Expr(_) => continue,
-                            _ => self.declare_sym(decl, &name, object.as_ref()),
-                        }
-                    } else {
-                        self.declare_sym(decl, &name, object.as_ref())
-                    }
-                }
-                ast::Decl::Using {
-                    line_info: _,
-                    items: _,
-                } => Err(self.make_err("'use' declaration cannot used in a 'struct'", decl)),
-            };
-            if let Err(err) = result {
-                errs.push(err);
-            }
-        }
-        if !errs.is_empty() {
-            return Err(CompileError::Errors(errs));
-        }
-        Ok(())
-    }
-
     fn declare_sym(
         &mut self,
         node: &'a ast::Decl,
@@ -184,7 +99,10 @@ impl<'a> Analyzer<'a> {
             object,
         );
         // Check for redeclaration
-        if let Some(prev_scope) = result {
+        // Except for '_' declarations
+        if name.kind != TokenKind::Underscore
+            && let Some(prev_scope) = result
+        {
             Err(self
                 .make_err("redeclaration of symbol", name)
                 .chain(self.make_note("already declared here", &prev_scope.borrow())))
@@ -234,7 +152,11 @@ impl<'a> Analyzer<'a> {
                     };
                     let type_ctx = self.visit_type(taipe)?;
                     match type_ctx {
-                        context::Type::Const(_) => todo!("mark scope as constant"),
+                        context::Type::Const(_) => {
+                            return Err(
+                                self.make_err("value must be specified for a constant", node)
+                            );
+                        }
                         context::Type::Module | context::Type::Typedef => {
                             return Err(self.make_err("value must be specified", node));
                         }
@@ -278,10 +200,8 @@ impl<'a> Analyzer<'a> {
                         // Begin new scope
                         let old_cur_scope = Rc::clone(&self.cur_scope);
                         self.cur_scope = Rc::clone(&scope);
-                        // Pre declaration round
-                        self.pre_declare_fields(decls)?;
                         // Start visiting
-                        let mut fields: HashMap<String, Context<'a>> = HashMap::new();
+                        let mut fields = Vec::new();
                         for decl in decls {
                             let ctx = self.visit_decl(decl)?;
                             // Check the type of the fields
@@ -317,18 +237,20 @@ impl<'a> Analyzer<'a> {
                                     items: _,
                                 } => unreachable!(),
                             };
-                            fields.insert(name, ctx);
+                            fields.push((name, ctx));
                         }
                         // Create the context
                         let ctx = Context {
                             taipe: context::Type::Typedef,
-                            value: Some(context::Value::Struct(context::Struct {
-                                fields,
-                                node: object,
-                            })),
+                            value: Some(context::Value::Type(context::Type::Basic(Rc::downgrade(
+                                &scope,
+                            )))),
                         };
                         // Mark it evaluated
                         scope.borrow_mut().state = State::Evaled(ctx.clone());
+                        // TODO: improve payload
+                        scope.borrow_mut().payload =
+                            Some(Payload::Compound(scope::Compound::new(&fields, object)));
                         // Restore old scope
                         self.cur_scope = old_cur_scope;
                         ctx
@@ -360,8 +282,6 @@ impl<'a> Analyzer<'a> {
                         ctx
                     }
                     ast::Object::Expr(expr) => {
-                        // TODO: Handle module variables and type variables
-                        // They should be constant
                         let ctx = self.visit_var(name, expr)?;
                         scope.borrow_mut().state = scope::State::Evaled(ctx.clone());
                         ctx
@@ -464,26 +384,26 @@ impl<'a> Analyzer<'a> {
                     params: ctx_params,
                 })
             }
-            ast::Type::Const {
-                token: _,
-                taipe: node,
-            } => {
+            ast::Type::Const { token, taipe: node } => {
                 let taipe = self.visit_type(node)?;
                 match &taipe {
                     context::Type::Const(_) => {
                         unreachable!("already handled in the parser");
                     }
-                    context::Type::Module => {
-                        return Err(
-                            self.make_err("'const' qualifier cannot be applied on 'module'", node)
-                        );
+                    _ => {
+                        if taipe.is_const() {
+                            self.warnings.push(self.make_err(
+                                format!(
+                                    "'const' is redundant here, '{}' is always a constant",
+                                    taipe.to_string()
+                                ),
+                                token,
+                            ));
+                            Context::from_type(taipe)
+                        } else {
+                            Context::from_type(context::Type::Const(Box::new(taipe)))
+                        }
                     }
-                    context::Type::Typedef => {
-                        return Err(
-                            self.make_err("'const' qualifier cannot be applied on 'typedef'", node)
-                        );
-                    }
-                    _ => Context::from_type(context::Type::Const(Box::new(taipe))),
                 }
             }
             ast::Type::Pointer {
@@ -645,7 +565,7 @@ impl<'a> Analyzer<'a> {
         taipe: Option<&'a ast::Type>,
         eq_token: Option<&Token>,
         object: &ast::Object,
-        ctx: Context<'a>,
+        mut ctx: Context<'a>,
     ) -> CompileResult<Context<'a>> {
         // Type checking
         // TODO: Type checking done here is strict
@@ -660,14 +580,25 @@ impl<'a> Analyzer<'a> {
             // name : type = object;
             // ---------------------------------
             let mut errs = Vec::new();
-            let type_ctx = self.visit_type(type_node)?;
+            let mut type_ctx = self.visit_type(type_node)?;
+            // Extract the const
+            if let context::Type::Const(taipe) = type_ctx {
+                type_ctx = *taipe;
+            }
+            // Extract the const
+            if let context::Type::Const(taipe) = ctx.taipe {
+                ctx.taipe = *taipe;
+            }
             if type_ctx != ctx.taipe {
                 errs.push(
-                    self.make_err("types do not match", type_node)
-                        .chain(self.make_note(
-                            format!("type of value is '{}'", ctx.taipe.to_string()),
-                            object,
-                        )),
+                    self.make_err(
+                        format!("types do not match: '{}'", type_ctx.to_string()),
+                        type_node,
+                    )
+                    .chain(self.make_note(
+                        format!("type of value is '{}'", ctx.taipe.to_string()),
+                        object,
+                    )),
                 );
             }
             let eq_token = eq_token.unwrap();
@@ -677,10 +608,8 @@ impl<'a> Analyzer<'a> {
                 // name : type : object;
                 // ---------------------------------
                 if !ctx.taipe.is_const() {
-                    errs.push(
-                        self.make_err("type should be 'const'", type_node)
-                            .chain(self.make_note("':' is used here", eq_token)),
-                    );
+                    // Make it const
+                    ctx.taipe = context::Type::Const(Box::new(ctx.taipe));
                 }
             } else if eq_token.kind == TokenKind::Equal {
                 // Situation
@@ -688,9 +617,11 @@ impl<'a> Analyzer<'a> {
                 // name : type = object;
                 // ---------------------------------
                 if ctx.taipe.is_const() {
+                    // Module, function and typedef should defined with ':', is_const handles that
+                    // TODO: Maybe put a help message about that
                     errs.push(
                         self.make_err("expected ':'", eq_token)
-                            .chain(self.make_note("type is declared 'const' here", type_node)),
+                            .chain(self.make_note("type is a constant", type_node)),
                     );
                 }
             } else {
@@ -705,19 +636,28 @@ impl<'a> Analyzer<'a> {
     }
 
     fn resolve_name(&mut self, name: &str) -> CompileResult<Option<Context<'a>>> {
-        struct Result<'a> {
-            state: scope::State<'a>,
-            line_info: LineInfo,
-        }
-
-        let result: Option<Result<'a>>;
-        result = {
-            if name == "__bool" {
+        match name {
+            "__bool" => {
                 return Ok(Some(Context {
                     taipe: context::Type::Typedef,
                     value: Some(context::Value::Type(context::Type::Bool)),
                 }));
             }
+            "__char" => {
+                return Ok(Some(Context {
+                    taipe: context::Type::Typedef,
+                    value: Some(context::Value::Type(context::Type::Char)),
+                }));
+            }
+            _ => {}
+        }
+
+        struct Result<'a> {
+            state: scope::State<'a>,
+            line_info: LineInfo,
+        }
+        let result: Option<Result<'a>>;
+        result = {
             // First, check in the current scope
             let scope = self.get_cur_scope();
             scope.children.get(name).map(|child| Result {

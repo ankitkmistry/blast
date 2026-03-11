@@ -95,6 +95,11 @@ pub enum CompileError {
         line_info: LineInfo,
         msg: String,
     },
+    SemWarning {
+        file_path: String,
+        line_info: LineInfo,
+        msg: String,
+    },
     SemNote {
         file_path: String,
         line_info: LineInfo,

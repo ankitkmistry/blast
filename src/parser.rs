@@ -847,14 +847,21 @@ impl Parser {
         Ok(expr)
     }
 
-    // unary ::= ('+'|'-'|'~'|'*'|'&'|'sizeof'|'typeof')* primary;
+    // unary ::= primary
+    //         | ('+'|'-'|'~'|'*'|'&')+ primary
+    //         | ('sizeof'|'typedef') primary
+    //         ;
     fn parse_unary(&mut self) -> CompileResult<ast::Expr> {
         let mut ops = Vec::new();
         loop {
             if let Some(tok) = self.peek() {
                 match tok.kind {
-                    Plus | Minus | Tilde | Star | Ampersand | Sizeof | Typeof => {
-                        ops.push(self.get_token()?)
+                    Plus | Minus | Tilde | Star | Ampersand => {
+                        ops.push(self.get_token()?);
+                    }
+                    Sizeof | Typeof => {
+                        ops.push(self.get_token()?);
+                        break;
                     }
                     _ => break,
                 }

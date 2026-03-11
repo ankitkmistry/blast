@@ -24,10 +24,10 @@
 
 a :: "aboba";
 b :: false;
-// c :: typedef;
+c: const __bool : false;
 
 Numbers :: struct {
     items: *__bool;
     size: __bool = false;
-    capacity: __bool = "aboba";
+    capacity: __bool = true;
 }

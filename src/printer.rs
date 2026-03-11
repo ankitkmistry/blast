@@ -17,6 +17,7 @@ use crate::{
 
 enum DiagKind {
     Error,
+    Warning,
     Note,
 }
 
@@ -42,6 +43,11 @@ pub fn print_error(err: CompileError) {
             line_info,
             msg,
         } => print_diagnostic(DiagKind::Error, &file_path, line_info, &msg),
+        CompileError::SemWarning {
+            file_path,
+            line_info,
+            msg,
+        } => print_diagnostic(DiagKind::Warning, &file_path, line_info, &msg),
         CompileError::SemNote {
             file_path,
             line_info,
@@ -136,6 +142,7 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
     match kind {
         DiagKind::Error => cprint!("<r,s>error</>: "),
         DiagKind::Note => cprint!("<b,s>note</>: "),
+        DiagKind::Warning => cprint!("<y,s>warning</>: "),
     }
     cprintln!("<s>{}</>", result);
     cprintln!(
@@ -250,6 +257,8 @@ pub fn print_scopes<'a>(scopes: &HashMap<String, Rc<RefCell<scope::Scope<'a>>>>)
 }
 
 fn print_scope<'a>(name: &str, scope: Ref<'_, scope::Scope<'a>>, is_last_vec: &mut Vec<bool>) {
+    // TODO: show payload
+
     for (i, &is_last) in is_last_vec.iter().enumerate() {
         if i == is_last_vec.len() - 1 {
             if is_last {
