@@ -103,6 +103,48 @@ impl<'a> Type<'a> {
             taipe => taipe,
         }
     }
+
+    pub fn get_size(&self) -> Option<usize> {
+        Some(self.get_layout()?.0)
+    }
+
+    pub fn get_align(&self) -> Option<usize> {
+        Some(self.get_layout()?.1)
+    }
+
+    pub fn get_layout(&self) -> Option<(usize, usize)> {
+        // (usize, usize) -> (size, alignment)
+        // size (in bytes) -> always a multiple of alignment
+        // alignment (in bytes) -> always a power of 2
+        match self {
+            Type::Bool => Some((1, 1)),
+            Type::Char => Some((1, 1)),
+            Type::Int => None,
+            Type::Float32 => Some((4, 4)),
+            Type::Float64 => Some((4, 4)),
+            Type::Const(taipe) => taipe.get_layout(),
+            Type::Basic(weak) => todo!("layout of user defined types is not implemented"),
+            Type::Function { ret, params } => None,
+            Type::Pointer(_) => {
+                // TODO: make this compatible with multiple targets
+                Some((8, 8))
+            }
+            Type::Array { count, taipe } => {
+                let (size, align) = taipe.get_layout()?;
+                Some((count * size, align))
+            }
+            Type::Fat(_) => {
+                // pointer_size + pointer_size
+                Some((2 * 8, 2 * 8))
+            }
+            // TODO: layout of tuples is the same as the layout of values in a struct
+            Type::Tuple(items) => todo!("layout of tuples is not implemented"),
+            Type::Module => None,
+            Type::Typedef => None,
+            Type::Noreturn => None,
+        }
+    }
+
     pub fn is_integer(&self) -> bool {
         match self {
             Type::Int => true,
@@ -223,10 +265,6 @@ pub enum Value<'a> {
 }
 
 impl<'a> Value<'a> {
-    pub fn from_str(text: &str) -> Self {
-        Self::Array(text.chars().map(|c| Value::Char(c)).collect::<Vec<_>>())
-    }
-
     pub fn negate(mut self) -> Option<Self> {
         match self {
             Value::Int(int) => Some(Value::Int(int.negate())),
@@ -304,6 +342,12 @@ impl<'a> Context<'a> {
             // assigning a simple string to a variable (that is not const)
             taipe: Type::Const(Box::new(Type::Char)),
             value: Some(Value::Char(c)),
+        }
+    }
+    pub fn from_int(int: Int) -> Self {
+        Self {
+            taipe: Type::Int,
+            value: Some(Value::Int(int)),
         }
     }
     pub fn from_str(text: &str) -> Self {

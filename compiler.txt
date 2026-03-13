@@ -15,6 +15,24 @@ Step 6: Analyzes the declaration according to its type.
     If the decl is struct decl, it declares a struct.
     If the decl is union decl, it declares a union. (Not implemented yet)
 
+Data types
+=================================================
+Boolean type : bool
+- The boolean type can take on only two values: true and false
+- Size: 1, Alignment: 1
+- Range: 0x00 to 0xFF
+- The value 0x00 is designated as false and any value other than 0x00 is designated as true
+
+Char type : char
+- char type can hold a value of a Unicode scalar value (i.e. codepoint that is not a surrogate)
+    represented by a 32-bit unsigned word.
+- Size: 1, Alignment: 1
+- Range: 0x0000 to 0xD7FF or 0xE000 to 0x10FFFF
+- char is effectively a UTF-32 string of length 1.
+
+Noreturn type : noreturn
+- noreturn is type with no values and represents the value of computations that never return
+- noreturn type can be coerced (or be casted) into any type
 
 Predefined operators
 =================================================

@@ -25,7 +25,7 @@
 a :: "aboba";
 // b :: a[-1];
 // b :: a[6];
-b :: a[1];
+b :: sizeof a[1];
 c: const __bool : false;
 d :: ~0;
 

@@ -847,7 +847,7 @@ impl Parser {
         Ok(expr)
     }
 
-    // unary ::= ('sizeof'|'typeof')? ('-'|'~'|'*'|'&')* primary;
+    // unary ::= ('sizeof'|'typeof'|'alignof')? ('-'|'~'|'*'|'&')* primary;
     fn parse_unary(&mut self) -> CompileResult<ast::Expr> {
         let mut ops = Vec::new();
         loop {
@@ -856,7 +856,7 @@ impl Parser {
                     Minus | Tilde | Star | Ampersand => {
                         ops.push(self.get_token()?);
                     }
-                    Sizeof | Typeof => {
+                    Sizeof | Typeof | Alignof => {
                         ops.push(self.get_token()?);
                         break;
                     }

@@ -8,7 +8,7 @@ use num_bigint::{BigInt, ToBigInt};
 
 use crate::{
     ast,
-    common::{CompileError, CompileResult, HasLineInfo, LineInfo},
+    common::{CompileError, CompileResult, HasLineInfo, Int, LineInfo},
     context::{self, Context},
     lexer::{Token, TokenKind, TokenValue},
     scope::{self, HasSrcInfo, Payload, State},
@@ -565,8 +565,51 @@ impl<'a> Analyzer<'a> {
                         }
                     },
                     TokenKind::Ampersand => todo!(),
-                    TokenKind::Sizeof => todo!(),
+                    TokenKind::Sizeof => {
+                        let taipe = match ctx.taipe {
+                            context::Type::Typedef => {
+                                let Some(taipe) = ctx.value else {
+                                    unreachable!("probably some analyzer bug");
+                                };
+                                let context::Value::Type(taipe) = taipe else {
+                                    unreachable!("probably some analyzer bug");
+                                };
+                                taipe
+                            }
+                            taipe => taipe,
+                        };
+                        let Some(size) = taipe.get_size() else {
+                            return Err(self.make_err(
+                                format!("type has no size: '{}'", taipe.to_string()),
+                                node,
+                            ));
+                        };
+                        // TODO: make this usize not variable int
+                        Ok(Context::from_int(Int::from_arbitrary(size as u64)))
+                    }
                     TokenKind::Typeof => todo!(),
+                    TokenKind::Alignof => {
+                        let taipe = match ctx.taipe {
+                            context::Type::Typedef => {
+                                let Some(taipe) = ctx.value else {
+                                    unreachable!("probably some analyzer bug");
+                                };
+                                let context::Value::Type(taipe) = taipe else {
+                                    unreachable!("probably some analyzer bug");
+                                };
+                                taipe
+                            }
+                            taipe => taipe,
+                        };
+                        let Some(size) = taipe.get_align() else {
+                            return Err(self.make_err(
+                                format!("type has no alignment: '{}'", taipe.to_string()),
+                                node,
+                            ));
+                        };
+                        // TODO: make this usize not variable int
+                        Ok(Context::from_int(Int::from_arbitrary(size as u64)))
+                    }
                     TokenKind::Not => todo!(),
                     _ => unreachable!("probably some parser bug"),
                 }
@@ -801,6 +844,18 @@ impl<'a> Analyzer<'a> {
                 return Ok(Some(Context {
                     taipe: context::Type::Typedef,
                     value: Some(context::Value::Type(context::Type::Char)),
+                }));
+            }
+            "__f32" => {
+                return Ok(Some(Context {
+                    taipe: context::Type::Typedef,
+                    value: Some(context::Value::Type(context::Type::Float32)),
+                }));
+            }
+            "__f64" => {
+                return Ok(Some(Context {
+                    taipe: context::Type::Typedef,
+                    value: Some(context::Value::Type(context::Type::Float64)),
                 }));
             }
             _ => {}
