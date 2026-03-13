@@ -767,7 +767,7 @@ impl Parser {
         let mut expr = self.parse_relational()?;
         for op in ops.into_iter().rev() {
             expr = ast::Expr::Unary {
-                op: Some(op),
+                op,
                 expr: Box::new(expr),
             };
         }
@@ -847,16 +847,13 @@ impl Parser {
         Ok(expr)
     }
 
-    // unary ::= primary
-    //         | ('+'|'-'|'~'|'*'|'&')+ primary
-    //         | ('sizeof'|'typedef') primary
-    //         ;
+    // unary ::= ('sizeof'|'typeof')? ('-'|'~'|'*'|'&')* primary;
     fn parse_unary(&mut self) -> CompileResult<ast::Expr> {
         let mut ops = Vec::new();
         loop {
             if let Some(tok) = self.peek() {
                 match tok.kind {
-                    Plus | Minus | Tilde | Star | Ampersand => {
+                    Minus | Tilde | Star | Ampersand => {
                         ops.push(self.get_token()?);
                     }
                     Sizeof | Typeof => {
@@ -872,7 +869,7 @@ impl Parser {
         let mut expr = self.parse_postfix()?;
         for op in ops.into_iter().rev() {
             expr = ast::Expr::Unary {
-                op: Some(op),
+                op,
                 expr: Box::new(expr),
             };
         }

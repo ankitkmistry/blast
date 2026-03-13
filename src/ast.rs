@@ -167,7 +167,7 @@ pub enum Expr {
         taipe: Box<Type>,
     },
     Unary {
-        op: Option<Token>,
+        op: Token,
         expr: Box<Expr>,
     },
     // Postfix
@@ -420,13 +420,7 @@ impl HasLineInfo for Expr {
             } => LineInfo::from_range(left, right),
             Expr::Binary { left, op: _, right } => LineInfo::from_range(left, right),
             Expr::Cast { expr, taipe } => LineInfo::from_range(expr, taipe),
-            Expr::Unary { op, expr } => {
-                if let Some(tok) = op {
-                    LineInfo::from_range(tok, expr)
-                } else {
-                    expr.get_line_info()
-                }
-            }
+            Expr::Unary { op, expr } => LineInfo::from_range(op, expr),
             Expr::Member { expr, name } => LineInfo::from_range(expr, name),
             Expr::Call {
                 line_info,

@@ -18,10 +18,39 @@ Step 6: Analyzes the declaration according to its type.
 
 Predefined operators
 =================================================
-1. operator '[]'
-    Input can be of type:
-        [_] T               -- Array type
-        [] T                -- Fat pointer type
-    Output will be of type:
-        [_] T -> T          -- Array type
-        [] T  -> T          -- Fat pointer type
+int: i8, i16, i32, i64, isize
+     u8, u16, u32, u64, usize
+signed_int: i8, i16, i32, i64, isize
+unsigned_int: u8, u16, u32, u64, usize
+float: f32, f64
+
+1. postfix operator 'a = b[c]'
+    b can be of type:
+        1)  [_] T               -- Array type
+        2)  [] T                -- Fat pointer type
+    c can be of type:
+        1)  int                 -- Array type
+        2)  int                 -- Fat pointer type
+    a will be of type:
+        1)  [_] T -> T          -- Array type
+        2)  [] T  -> T          -- Fat pointer type
+
+2. unary operator 'a = *b'
+    b can be of type:
+        *T                  -- Pointer
+    a will be of type:
+        *T -> T             -- Pointer
+
+3. unary operator 'a = -b'
+    b can be of type:
+        int                 -- Integer
+        float               -- Float
+    a will be of type:
+        int -> int          -- Integer
+        float -> float      -- Float
+
+3. unary operator 'a = ~b'
+    b can be of type:
+        int                 -- Integer
+    a will be of type:
+        int -> int          -- Integer

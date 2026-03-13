@@ -733,9 +733,7 @@ impl AstPrinter {
             }
             ast::Expr::Unary { op, expr } => {
                 write!(self, "::Unary")?;
-                if let Some(op) = op {
-                    self.print_tok("op", op)?;
-                }
+                self.print_tok("op", op)?;
                 self.print_expr("expr", expr)?;
             }
             ast::Expr::Member { expr, name } => {

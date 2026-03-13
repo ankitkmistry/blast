@@ -145,6 +145,7 @@ impl TokenKind {
 pub enum TokenValue {
     String(String),
     Int(Int),
+    // TODO: float
 }
 
 #[derive(Clone, Debug)]

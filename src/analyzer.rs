@@ -207,7 +207,7 @@ impl<'a> Analyzer<'a> {
                         for decl in decls {
                             let ctx = self.visit_decl(decl)?;
                             // Check the type of the fields
-                            match ctx.taipe {
+                            match ctx.taipe.remove_const() {
                                 context::Type::Function { ret: _, params: _ } => {
                                     return Err(
                                         self.make_err("function cannot be used as a field", decl)
@@ -315,7 +315,7 @@ impl<'a> Analyzer<'a> {
                 {
                     Err(self
                         .make_err(
-                            "declaration is ambiguous, encountered cyclic references",
+                            "type inference is ambiguous, encountered cyclic references",
                             name,
                         )
                         .chain(self.make_note_with_path(
@@ -503,7 +503,74 @@ impl<'a> Analyzer<'a> {
             } => todo!(),
             ast::Expr::Binary { left, op, right } => todo!(),
             ast::Expr::Cast { expr, taipe } => todo!(),
-            ast::Expr::Unary { op, expr } => todo!(),
+            ast::Expr::Unary { op, expr } => {
+                let ctx = self.visit_expr(expr)?;
+                match op.kind {
+                    TokenKind::Minus => match ctx.taipe.remove_const() {
+                        context::Type::Int => Ok(Context {
+                            taipe: ctx.taipe,
+                            value: if let Some(value) = ctx.value {
+                                value.negate()
+                            } else {
+                                None
+                            },
+                        }),
+                        context::Type::Float32 | context::Type::Float64 => Ok(Context {
+                            taipe: ctx.taipe,
+                            value: if let Some(value) = ctx.value {
+                                value.negate()
+                            } else {
+                                None
+                            },
+                        }),
+                        _ => {
+                            return Err(self.make_err(
+                                format!(
+                                    "cannot apply '-' operator on type '{}'",
+                                    ctx.taipe.to_string()
+                                ),
+                                expr,
+                            ));
+                        }
+                    },
+                    TokenKind::Tilde => match ctx.taipe.remove_const() {
+                        // TODO: comptime: implement this
+                        // ~ operator is not possible on variable sized integers
+                        context::Type::Int => Ok(Context {
+                            taipe: ctx.taipe,
+                            value: None,
+                        }),
+                        _ => {
+                            return Err(self.make_err(
+                                format!(
+                                    "cannot apply '~' operator on type '{}'",
+                                    ctx.taipe.to_string()
+                                ),
+                                expr,
+                            ));
+                        }
+                    },
+                    TokenKind::Star => match ctx.taipe.remove_const() {
+                        // TODO: comptime: what about implementing this in comptime
+                        // There are many edge cases and memory safety violation
+                        context::Type::Pointer(taipe) => Ok(Context {
+                            taipe: *taipe,
+                            value: None,
+                        }),
+                        _ => {
+                            return Err(self.make_err(
+                                format!("cannot dereference type '{}'", ctx.taipe.to_string()),
+                                expr,
+                            ));
+                        }
+                    },
+                    TokenKind::Ampersand => todo!(),
+                    TokenKind::Sizeof => todo!(),
+                    TokenKind::Typeof => todo!(),
+                    TokenKind::Not => todo!(),
+                    _ => unreachable!("probably some parser bug"),
+                }
+            }
             ast::Expr::Member { expr, name } => todo!(),
             ast::Expr::Call {
                 line_info,
@@ -531,7 +598,7 @@ impl<'a> Analyzer<'a> {
                             &items[0],
                         )));
                 }
-                match ctx.taipe {
+                match ctx.taipe.remove_const() {
                     context::Type::Array { count, taipe } => {
                         let mut value: Option<context::Value<'a>> = None;
                         if let Some(index) = index.value {
@@ -542,7 +609,7 @@ impl<'a> Analyzer<'a> {
                             if index.num < BigInt::ZERO || index.num >= count.to_bigint().unwrap() {
                                 return Err(self.make_err(
                                     format!(
-                                        "index out of bounds, range: [0, {}], found: '{}'",
+                                        "index out of bounds, array length: {}, index: '{}'",
                                         count, index
                                     ),
                                     &items[0],
@@ -575,7 +642,10 @@ impl<'a> Analyzer<'a> {
                     }
                     _ => {
                         return Err(self.make_err(
-                            format!("cannot apply index operator to '{}'", ctx.taipe.to_string()),
+                            format!(
+                                "cannot apply index operator on type '{}'",
+                                ctx.taipe.to_string()
+                            ),
                             expr,
                         ));
                     }
@@ -594,7 +664,6 @@ impl<'a> Analyzer<'a> {
                     Ok(Context::from_str(str))
                 }
                 TokenKind::IntLit => {
-                    println!("int lit tok val: {:?}", token.value.as_ref().unwrap());
                     let Some(tok_val) = token.value.as_ref() else {
                         unreachable!("probably some parser bug");
                     };
@@ -603,11 +672,15 @@ impl<'a> Analyzer<'a> {
                     };
                     // TODO: check suffix
                     Ok(Context {
-                        taipe: context::Type::Int,
+                        taipe: context::Type::Const(Box::new(context::Type::Int)),
                         value: Some(context::Value::Int(tok_val.clone())),
                     })
                 }
-                TokenKind::FloatLit => todo!("floating point literals are not supported yet"),
+                // TODO: get value from token
+                TokenKind::FloatLit => Ok(Context {
+                    taipe: context::Type::Const(Box::new(context::Type::Float64)),
+                    value: None,
+                }),
                 TokenKind::Ident => {
                     if let Some(ctx) = self.resolve_name(&token.text)? {
                         Ok(ctx)

@@ -131,7 +131,8 @@ Factor      <- Power ([*/%] Power)*;
 Power       <- (Cast '**')* Cast;
 Cast        <- Unary ('as' Type)*;
 
-Unary       <- ([-+~*&] | 'typeof' | 'sizeof')* Postfix;
+Unary       <- Postfix
+             / ('typeof'/'sizeof')? [-~*&]* Postfix;
 Postfix     <- Primary
              (('.' Identifier)
             / ('(' Arguments ')')

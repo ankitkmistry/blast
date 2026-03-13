@@ -274,6 +274,11 @@ impl Int {
             min,
         }
     }
+
+    pub fn negate(mut self) -> Self {
+        self.num = -self.num;
+        self
+    }
 }
 
 impl fmt::Display for Int {

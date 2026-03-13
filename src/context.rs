@@ -52,6 +52,12 @@ pub enum Type<'a> {
     // - Value::Int => integer value
     Int,
     // Value can be:
+    // - Value::Float32 => float32 value
+    Float32,
+    // Value can be:
+    // - Value::Float64 => float64 value
+    Float64,
+    // Value can be:
     // - depending on Type::Const.0
     Const(Box<Type<'a>>),
     // Value can be:
@@ -91,9 +97,16 @@ pub enum Type<'a> {
 }
 
 impl<'a> Type<'a> {
+    pub fn remove_const(&self) -> Self {
+        match self.clone() {
+            Type::Const(taipe) => *taipe,
+            taipe => taipe,
+        }
+    }
     pub fn is_integer(&self) -> bool {
         match self {
             Type::Int => true,
+            Type::Const(taipe) => taipe.is_integer(),
             _ => false,
         }
     }
@@ -160,8 +173,9 @@ impl<'a> ToString for Type<'a> {
         match self {
             Type::Bool => "__bool".to_string(),
             Type::Char => "__char".to_string(),
-            // TODO: how to resolve other int types
             Type::Int => "__int".to_string(),
+            Type::Float32 => "__f32".to_string(),
+            Type::Float64 => "__f64".to_string(),
             Type::Const(taipe) => format!("const {}", taipe.to_string()),
             Type::Basic(scope) => scope.upgrade().unwrap().borrow().sym_path.to_string(),
             Type::Function { ret, params } => format!(
@@ -196,6 +210,8 @@ pub enum Value<'a> {
     Bool(bool),
     Char(char),
     Int(Int),
+    Float32(f32),
+    Float64(f64),
     Array(Vec<Value<'a>>),
     Tuple(Vec<Value<'a>>),
     // Typedef values
@@ -206,12 +222,29 @@ pub enum Value<'a> {
     Module(Weak<RefCell<scope::Scope<'a>>>),
 }
 
+impl<'a> Value<'a> {
+    pub fn from_str(text: &str) -> Self {
+        Self::Array(text.chars().map(|c| Value::Char(c)).collect::<Vec<_>>())
+    }
+
+    pub fn negate(mut self) -> Option<Self> {
+        match self {
+            Value::Int(int) => Some(Value::Int(int.negate())),
+            Value::Float32(val) => Some(Value::Float32(-val)),
+            Value::Float64(val) => Some(Value::Float64(-val)),
+            _ => None,
+        }
+    }
+}
+
 impl<'a> ToString for Value<'a> {
     fn to_string(&self) -> String {
         match self {
             Value::Bool(b) => b.to_string(),
             Value::Char(c) => format!("'{}'", c.to_string()),
             Value::Int(num) => num.to_string(),
+            Value::Float32(num) => num.to_string(),
+            Value::Float64(num) => num.to_string(),
             Value::Array(values) => {
                 let mut result = String::new();
                 let mut is_string = false;
@@ -247,12 +280,6 @@ impl<'a> ToString for Value<'a> {
             Value::Noreturn => String::new(),
             Value::Module(weak) => String::new(),
         }
-    }
-}
-
-impl<'a> Value<'a> {
-    pub fn from_str(text: &str) -> Self {
-        Self::Array(text.chars().map(|c| Value::Char(c)).collect::<Vec<_>>())
     }
 }
 
