@@ -202,6 +202,14 @@ pub enum Expr {
 }
 
 impl Object {
+    pub fn is_module(&self) -> bool {
+        match self {
+            Object::ExternModule { line_info, value } => true,
+            Object::Module { line_info, decls } => true,
+            _ => false,
+        }
+    }
+
     pub fn get_decls(&self) -> Option<&[Decl]> {
         match self {
             Object::ExternModule {

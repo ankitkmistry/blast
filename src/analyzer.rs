@@ -45,8 +45,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn sem_analysis(&mut self) -> CompileResult<()> {
-        let root = self.roots.values().next().unwrap();
-        let Some(decls) = root.borrow().node.unwrap().get_decls().take() else {
+        let Some(decls) = self.cur_scope.borrow().node.unwrap().get_decls().take() else {
             // TODO: handle the else situation here
             return Ok(());
         };
@@ -93,26 +92,47 @@ impl<'a> Analyzer<'a> {
         name: &Token,
         object: Option<&'a ast::Object>,
     ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
-        let result = scope::Scope::add_child(
+        // Check for redeclaration
+        // Except for '_' declarations
+        if name.kind != TokenKind::Underscore
+            && let Some(prev_scope_ref) = self.get_cur_scope().children.get(&name.text)
+        {
+            let prev_scope = prev_scope_ref.borrow();
+            if let Some(object) = object
+                && object.is_module()
+            {
+                // Allow merging module declarations
+                if let scope::State::Evaled(prev_ctx) = &prev_scope.state {
+                    if prev_ctx.taipe.is_module() {
+                        return Ok(Rc::clone(prev_scope_ref));
+                    }
+                }
+                if let scope::State::NotEvaled(prev_decl) = prev_scope.state
+                    && let ast::Decl::Decl {
+                        name: _,
+                        taipe: _,
+                        eq_token: _,
+                        object: prev_object,
+                    } = prev_decl
+                    && let Some(prev_object) = prev_object
+                    && prev_object.is_module()
+                {
+                    return Ok(Rc::clone(prev_scope_ref));
+                }
+            }
+            // No module then error
+            return Err(self
+                .make_err("redeclaration of symbol", name)
+                .chain(self.make_note("already declared here", &prev_scope)));
+        }
+
+        Ok(scope::Scope::add_child(
             &self.cur_scope,
             &name.text,
             Some(name.clone()),
             scope::State::NotEvaled(node),
             object,
-        );
-        // Check for redeclaration
-        // Except for '_' declarations
-        if name.kind != TokenKind::Underscore
-            && let Some(prev_scope) = result
-        {
-            Err(self
-                .make_err("redeclaration of symbol", name)
-                .chain(self.make_note("already declared here", &prev_scope.borrow())))
-        } else {
-            Ok(Rc::clone(
-                self.get_cur_scope().children.get(&name.text).unwrap(),
-            ))
-        }
+        ))
     }
 
     pub fn visit_decl(&mut self, node: &'a ast::Decl) -> CompileResult<Context<'a>> {
@@ -181,15 +201,43 @@ impl<'a> Analyzer<'a> {
                     return Ok(ctx);
                 };
                 let ctx: Context<'_> = match object {
-                    ast::Object::ExternModule { line_info, value } => {
+                    ast::Object::ExternModule {
+                        line_info: _,
+                        value,
+                    } => {
                         colon_compulsory!(self, eq_token);
                         todo!("modules are not supported yet")
                     }
-                    ast::Object::Module { line_info, decls } => {
+                    ast::Object::Module {
+                        line_info: _,
+                        decls,
+                    } => {
                         colon_compulsory!(self, eq_token);
-                        todo!("modules are not supported yet")
+                        // Begin new scope
+                        let old_cur_scope = Rc::clone(&self.cur_scope);
+                        self.cur_scope = Rc::clone(&scope);
+                        // Predeclare all declarations
+                        self.pre_declare_decls(decls)?;
+                        // Mark it evaluated if not already
+                        let ctx = if let scope::State::Evaled(ctx) = &scope.borrow().state {
+                            ctx.clone()
+                        } else {
+                            let ctx = Context::from_module(Rc::downgrade(&scope));
+                            scope.borrow_mut().state = State::Evaled(ctx.clone());
+                            ctx
+                        };
+                        // Visit every decl
+                        for decl in decls {
+                            self.visit_decl(decl)?;
+                        }
+                        // Restore old scope
+                        self.cur_scope = old_cur_scope;
+                        ctx
                     }
-                    ast::Object::Struct { line_info, decls } => {
+                    ast::Object::Struct {
+                        line_info: _,
+                        decls,
+                    } => {
                         // TODO: type punning syntax
                         // A :: struct {
                         //     foo: i32;
@@ -199,70 +247,18 @@ impl<'a> Analyzer<'a> {
                         //     bar: i32;
                         // }
                         colon_compulsory!(self, eq_token);
-                        // Begin new scope
-                        let old_cur_scope = Rc::clone(&self.cur_scope);
-                        self.cur_scope = Rc::clone(&scope);
-                        // Start visiting
-                        let mut fields = Vec::new();
-                        for decl in decls {
-                            let ctx = self.visit_decl(decl)?;
-                            // Check the type of the fields
-                            match ctx.taipe.remove_const() {
-                                context::Type::Function { ret: _, params: _ } => {
-                                    return Err(
-                                        self.make_err("function cannot be used as a field", decl)
-                                    );
-                                }
-                                context::Type::Module
-                                | context::Type::Typedef
-                                | context::Type::Noreturn => {
-                                    return Err(self.make_err(
-                                        format!(
-                                            "'{}' cannot be used as a field",
-                                            ctx.taipe.to_string()
-                                        ),
-                                        decl,
-                                    ));
-                                }
-                                _ => {}
-                            }
-                            // Retrieve the name
-                            let name = match decl {
-                                ast::Decl::Decl {
-                                    name,
-                                    taipe: _,
-                                    eq_token: _,
-                                    object: _,
-                                } => name.text.clone(),
-                                ast::Decl::Using {
-                                    line_info: _,
-                                    items: _,
-                                } => unreachable!(),
-                            };
-                            fields.push((name, ctx));
-                        }
-                        // Create the context
-                        let ctx = Context {
-                            taipe: context::Type::Typedef,
-                            value: Some(context::Value::Type(context::Type::Basic(Rc::downgrade(
-                                &scope,
-                            )))),
-                        };
-                        // Mark it evaluated
-                        scope.borrow_mut().state = State::Evaled(ctx.clone());
-                        // TODO: improve payload
-                        scope.borrow_mut().payload =
-                            Some(Payload::Compound(scope::Compound::new(&fields, object)));
-                        // Restore old scope
-                        self.cur_scope = old_cur_scope;
-                        ctx
+                        self.visit_compound(scope, object, decls)?
                     }
-                    ast::Object::Union { line_info, decls } => {
+                    ast::Object::Union {
+                        line_info: _,
+                        decls,
+                    } => {
                         colon_compulsory!(self, eq_token);
-                        todo!("unions are not supported yet")
+                        // TODO: implement field layout to distinguish between union and struct
+                        self.visit_compound(scope, object, decls)?
                     }
                     ast::Object::Fun {
-                        line_info,
+                        line_info: _,
                         params,
                         ret,
                         body,
@@ -300,13 +296,76 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn visit_compound(
+        &mut self,
+        scope: Rc<RefCell<scope::Scope<'a>>>,
+        object: &'a ast::Object,
+        decls: &'a Vec<ast::Decl>,
+    ) -> CompileResult<Context<'a>> {
+        // Begin new scope
+        let old_cur_scope = Rc::clone(&self.cur_scope);
+        self.cur_scope = Rc::clone(&scope);
+        // Mark it evaluated
+        let ctx = Context {
+            taipe: context::Type::Typedef,
+            value: Some(context::Value::Type(context::Type::Basic(Rc::downgrade(
+                &scope,
+            )))),
+        };
+        scope.borrow_mut().state = State::Evaled(ctx.clone());
+        // Visit every field
+        let mut fields = Vec::new();
+        for decl in decls {
+            let ctx = self.visit_decl(decl)?;
+            // Check the type of the fields
+            match ctx.taipe.remove_const() {
+                context::Type::Function { ret: _, params: _ } => {
+                    return Err(self.make_err("function cannot be used as a field", decl));
+                }
+                context::Type::Module | context::Type::Typedef | context::Type::Noreturn => {
+                    return Err(self.make_err(
+                        format!("'{}' cannot be used as a field", ctx.taipe.to_string()),
+                        decl,
+                    ));
+                }
+                _ => {}
+            }
+            // Retrieve the name
+            let name = match decl {
+                ast::Decl::Decl {
+                    name,
+                    taipe: _,
+                    eq_token: _,
+                    object: _,
+                } => name.text.clone(),
+                ast::Decl::Using {
+                    line_info: _,
+                    items: _,
+                } => unreachable!(),
+            };
+            fields.push((name, ctx));
+        }
+        // TODO: improve payload
+        // provide advanced field layout information
+        scope.borrow_mut().payload = Some(Payload::Compound(scope::Compound::new(&fields, object)));
+        // Restore old scope
+        self.cur_scope = old_cur_scope;
+        Ok(ctx)
+    }
+
     fn visit_var(
         &mut self,
         name: &crate::lexer::Token,
         expr: &'a ast::Expr,
     ) -> CompileResult<Context<'a>> {
         match self.visit_expr(expr) {
-            Ok(ctx) => Ok(ctx),
+            Ok(ctx) => {
+                if ctx.taipe.is_module() {
+                    Err(self.make_err("cannot assign a module to a variable", expr))
+                } else {
+                    Ok(ctx)
+                }
+            }
             Err(err) => {
                 if let CompileError::SemCyclic {
                     file_path,
@@ -344,7 +403,7 @@ impl<'a> Analyzer<'a> {
                 ctx
             }
             ast::Type::Function {
-                line_info,
+                line_info: _,
                 params,
                 ret,
             } => {
@@ -616,7 +675,7 @@ impl<'a> Analyzer<'a> {
             }
             ast::Expr::Member { expr, name } => todo!(),
             ast::Expr::Call {
-                line_info,
+                line_info: _,
                 expr,
                 args,
             } => todo!(),
@@ -753,7 +812,10 @@ impl<'a> Analyzer<'a> {
                 );
                 Ok(Context::from_tuple(types, values))
             }
-            ast::Expr::ArrayLit { line_info, items } => todo!(),
+            ast::Expr::ArrayLit {
+                line_info: _,
+                items,
+            } => todo!(),
         }
     }
 

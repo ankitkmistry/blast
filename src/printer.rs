@@ -70,8 +70,6 @@ fn interpolate_char(c1: char, c2: char) -> char {
     }
 }
 
-const UNDERLINE_CHAR: char = '^';
-
 fn num_digits(x: usize) -> usize {
     if x < 10 {
         1
@@ -139,11 +137,20 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
             }
         }
     }
-    match kind {
-        DiagKind::Error => cprint!("<r,s>error</>: "),
-        DiagKind::Note => cprint!("<b,s>note</>: "),
-        DiagKind::Warning => cprint!("<y,s>warning</>: "),
-    }
+    let underline_char = match kind {
+        DiagKind::Error => {
+            cprint!("<r,s>error</>: ");
+            '^'
+        }
+        DiagKind::Note => {
+            cprint!("<b,s>note</>: ");
+            '-'
+        }
+        DiagKind::Warning => {
+            cprint!("<y,s>warning</>: ");
+            '~'
+        }
+    };
     cprintln!("<s>{}</>", result);
     cprintln!(
         "in file: {}:<m!>{}</>:<m!>{}</>",
@@ -172,7 +179,7 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
                     let _ = cwrite!(
                         &mut underline,
                         "<y!>{}</>",
-                        interpolate_char(c, UNDERLINE_CHAR)
+                        interpolate_char(c, underline_char)
                     );
                 } else {
                     underline.push(interpolate_char(c, ' '));
@@ -187,7 +194,7 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
                     let _ = cwrite!(
                         &mut underline,
                         "<y!>{}</>",
-                        interpolate_char(c, UNDERLINE_CHAR)
+                        interpolate_char(c, underline_char)
                     );
                 } else {
                     underline.push(interpolate_char(c, ' '));
@@ -202,7 +209,7 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
                     let _ = cwrite!(
                         &mut underline,
                         "<y!>{}</>",
-                        interpolate_char(c, UNDERLINE_CHAR)
+                        interpolate_char(c, underline_char)
                     );
                 } else {
                     underline.push(interpolate_char(c, ' '));
@@ -215,7 +222,7 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
                 let _ = cwrite!(
                     &mut underline,
                     "<y!>{}</>",
-                    interpolate_char(c, UNDERLINE_CHAR)
+                    interpolate_char(c, underline_char)
                 );
             }
         }

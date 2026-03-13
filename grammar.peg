@@ -47,7 +47,7 @@ Program     <- Decl*;
 
 Decl        <- (Identifier / '_') ':' Type (';' / [=:] Object)
              | (Identifier / '_') ':' ([=:] Object)
-             | 'use' Identifier ('.' Identifier)* ('.' '*'); ';'
+             | 'using' Identifier ('.' Identifier)* ('.' '*'); ';'
 Object      <- Module / Struct / Union / Function
              / 'type' Type ';'
              / Expr ';'

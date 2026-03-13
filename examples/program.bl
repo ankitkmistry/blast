@@ -29,6 +29,19 @@ b :: sizeof a[1];
 c: const __bool : false;
 d :: ~0;
 
+std :: module {
+    io :: module {
+        // File operations here
+        File :: struct {}
+    }
+}
+
+std :: module {
+    fs :: module {
+        // Write here something
+    }
+}
+
 Numbers :: struct {
     items: *__bool;
     size: __bool = false;

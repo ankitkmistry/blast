@@ -79,7 +79,7 @@ impl Parser {
 
     // decl ::= (identifier | '_') ':' type (';' | ((':'|'=') object))
     //        | (identifier | '_') ':' ((':'|'=') object)
-    //        | 'use' identifier ('.' identifier)* ('.' '*')
+    //        | 'using' identifier ('.' identifier)* ('.' '*')
     //        ;
     fn parse_decl(&mut self) -> CompileResult<ast::Decl> {
         if let Some(tok) = self.peek() {

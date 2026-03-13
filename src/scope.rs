@@ -131,11 +131,12 @@ impl<'a> Scope<'a> {
         name_tok: Option<Token>,
         state: State<'a>,
         node: Option<&'a ast::Object>,
-    ) -> Option<Rc<RefCell<Scope<'a>>>> {
+    ) -> Rc<RefCell<Scope<'a>>> {
+        // Create the symbol path
         let mut sym_path = parent.borrow().sym_path.clone();
         sym_path.push_name(name);
-
-        let result = Rc::new(RefCell::new(Self {
+        // Create the child scope
+        let child = Rc::new(RefCell::new(Self {
             parent: Rc::downgrade(parent),
             file_path: None,
             sym_path,
@@ -145,8 +146,17 @@ impl<'a> Scope<'a> {
             payload: None,
             children: HashMap::new(),
         }));
-
-        parent.borrow_mut().children.insert(name.to_owned(), result)
+        // Clone it so we can return later
+        let result = Rc::clone(&child);
+        // Finishing up
+        let ret = parent.borrow_mut().children.insert(name.to_owned(), child);
+        if name != "_" {
+            assert!(
+                ret.is_none(),
+                "redeclaration should be prohibited from analyzer"
+            );
+        }
+        result
     }
 }
 

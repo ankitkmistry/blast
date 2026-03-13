@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, process::ExitCode};
 
 use crate::{analyzer::Analyzer, common::CompileResult, lexer::Lexer, parser::Parser};
 use clap::{self, ArgAction, command};
@@ -59,8 +59,15 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
     Ok(())
 }
 
-fn main() {
+fn main() -> ExitCode {
     if let Err(err) = compile_file("examples/program.bl") {
         printer::print_error(err);
+        if cfg!(debug_assertions) {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        }
+    } else {
+        ExitCode::SUCCESS
     }
 }
