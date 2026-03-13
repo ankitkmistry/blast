@@ -15,3 +15,13 @@ Step 6: Analyzes the declaration according to its type.
     If the decl is struct decl, it declares a struct.
     If the decl is union decl, it declares a union. (Not implemented yet)
 
+
+Predefined operators
+=================================================
+1. operator '[]'
+    Input can be of type:
+        [_] T               -- Array type
+        [] T                -- Fat pointer type
+    Output will be of type:
+        [_] T -> T          -- Array type
+        [] T  -> T          -- Fat pointer type

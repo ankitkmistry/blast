@@ -4,6 +4,8 @@ use std::{
     rc::Rc,
 };
 
+use num_bigint::{BigInt, ToBigInt};
+
 use crate::{
     ast,
     common::{CompileError, CompileResult, HasLineInfo, LineInfo},
@@ -509,10 +511,76 @@ impl<'a> Analyzer<'a> {
                 args,
             } => todo!(),
             ast::Expr::Index {
-                line_info,
+                line_info: _,
                 expr,
                 items,
-            } => todo!(),
+            } => {
+                if items.len() != 1 {
+                    // TODO: to be changed
+                    return Err(
+                        self.make_err("number of arguments to index operator should be 1", items)
+                    );
+                }
+                let ctx = self.visit_expr(expr)?;
+                let index = self.visit_expr(&items[0])?;
+                if !index.taipe.is_integer() {
+                    return Err(self
+                        .make_err("argument of index operator should be an integer type", node)
+                        .chain(self.make_note(
+                            format!("but got '{}'", index.taipe.to_string()),
+                            &items[0],
+                        )));
+                }
+                match ctx.taipe {
+                    context::Type::Array { count, taipe } => {
+                        let mut value: Option<context::Value<'a>> = None;
+                        if let Some(index) = index.value {
+                            let context::Value::Int(index) = index else {
+                                unreachable!("probably some analyzer bug");
+                            };
+                            // comptime: bounds checking
+                            if index.num < BigInt::ZERO || index.num >= count.to_bigint().unwrap() {
+                                return Err(self.make_err(
+                                    format!(
+                                        "index out of bounds, range: [0, {}], found: '{}'",
+                                        count, index
+                                    ),
+                                    &items[0],
+                                ));
+                            }
+                            // comptime: array indexing
+                            // TODO: check usize for target system and retrieve the index
+                            // Also check the value is in hardware allowed range
+                            let digits = &index.num.to_u64_digits().1;
+                            let index = *digits.first().unwrap_or(&0);
+                            if let Some(array) = ctx.value {
+                                let context::Value::Array(array) = array else {
+                                    unreachable!("probably some analyzer bug");
+                                };
+                                // INFO: beware of this usize
+                                value = Some(array[index as usize].clone());
+                            }
+                        }
+                        Ok(Context {
+                            taipe: *taipe,
+                            value,
+                        })
+                    }
+                    context::Type::Fat(taipe) => {
+                        // TODO: comptime: do bounds checking
+                        Ok(Context {
+                            taipe: *taipe,
+                            value: None,
+                        })
+                    }
+                    _ => {
+                        return Err(self.make_err(
+                            format!("cannot apply index operator to '{}'", ctx.taipe.to_string()),
+                            expr,
+                        ));
+                    }
+                }
+            }
             ast::Expr::Literal(token) => match token.kind {
                 TokenKind::True => Ok(Context::from_bool(true)),
                 TokenKind::False => Ok(Context::from_bool(false)),
@@ -525,7 +593,20 @@ impl<'a> Analyzer<'a> {
                     };
                     Ok(Context::from_str(str))
                 }
-                TokenKind::IntLit => todo!("integer literals are not supported yet"),
+                TokenKind::IntLit => {
+                    println!("int lit tok val: {:?}", token.value.as_ref().unwrap());
+                    let Some(tok_val) = token.value.as_ref() else {
+                        unreachable!("probably some parser bug");
+                    };
+                    let TokenValue::Int(tok_val) = tok_val else {
+                        unreachable!("probably some parser bug");
+                    };
+                    // TODO: check suffix
+                    Ok(Context {
+                        taipe: context::Type::Int,
+                        value: Some(context::Value::Int(tok_val.clone())),
+                    })
+                }
                 TokenKind::FloatLit => todo!("floating point literals are not supported yet"),
                 TokenKind::Ident => {
                     if let Some(ctx) = self.resolve_name(&token.text)? {
@@ -656,15 +737,26 @@ impl<'a> Analyzer<'a> {
             state: scope::State<'a>,
             line_info: LineInfo,
         }
-        let result: Option<Result<'a>>;
-        result = {
-            // First, check in the current scope
-            let scope = self.get_cur_scope();
-            scope.children.get(name).map(|child| Result {
-                state: child.borrow().state.clone(),
-                line_info: child.borrow().get_line_info(),
-            })
-        };
+        let mut result: Option<Result<'a>> = None;
+        {
+            // Check in the current scope and go upwards
+            let mut scope = Rc::clone(&self.cur_scope);
+            loop {
+                if let Some(child) = scope.borrow().children.get(name) {
+                    result = Some(Result {
+                        state: child.borrow().state.clone(),
+                        line_info: child.borrow().get_line_info(),
+                    });
+                    break;
+                }
+                let parent_opt = scope.borrow().parent.upgrade();
+                if let Some(parent) = parent_opt.as_ref() {
+                    scope = Rc::clone(parent);
+                } else {
+                    break;
+                }
+            }
+        }
         if let Some(result) = result {
             match result.state {
                 scope::State::NotEvaled(node) => Ok(Some(self.visit_decl(node)?)),

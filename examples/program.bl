@@ -23,7 +23,7 @@
 // mutable
 
 a :: "aboba";
-b :: false;
+b :: a[2];
 c: const __bool : false;
 
 Numbers :: struct {

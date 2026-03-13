@@ -1,8 +1,6 @@
 use std::{collections::HashMap, sync::LazyLock};
 
-use crate::
-    common::{CompileError, CompileResult, HasLineInfo, LineInfo}
-;
+use crate::common::{CompileError, CompileResult, HasLineInfo, Int, LineInfo};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
@@ -146,8 +144,7 @@ impl TokenKind {
 #[derive(Clone, Debug)]
 pub enum TokenValue {
     String(String),
-    // TODO: add integers and floats
-    Unknown,
+    Int(Int),
 }
 
 #[derive(Clone, Debug)]
@@ -330,6 +327,7 @@ impl Lexer {
                     token!(StringLit, Some(TokenValue::String(str)))
                 }
                 '1'..='9' => {
+                    let num_start = self.index - 1;
                     self.expect_decimal(false)?;
                     if let Some(c) = self.peek()
                         && c == '.'
@@ -340,22 +338,57 @@ impl Lexer {
                         self.check_float_suffix();
                         token!(FloatLit)
                     } else {
-                        self.check_int_suffix();
-                        token!(IntLit)
+                        let suffix_start = self.index;
+                        if self.check_int_suffix() {
+                            return self.make_int_tok_with_suffix(num_start, suffix_start, 10);
+                        } else {
+                            let buf = self
+                                .text
+                                .chars()
+                                .skip(suffix_start - 1)
+                                .take(suffix_start - num_start)
+                                .collect::<String>()
+                                .bytes()
+                                .collect::<Vec<_>>();
+                            token!(
+                                IntLit,
+                                Some(TokenValue::Int(Int::parse_arbitrary(&buf, 10)))
+                            )
+                        }
                     }
                 }
                 '0' => {
+                    let num_start = self.index - 1;
                     match self.peek() {
                         Some(c) => match c {
+                            // binary
                             'b' | 'B' => {
-                                // binary
                                 self.advance();
                                 self.expect_binary()?;
-                                self.check_int_suffix();
-                                token!(IntLit)
+                                let suffix_start = self.index;
+                                if self.check_int_suffix() {
+                                    return self.make_int_tok_with_suffix(
+                                        num_start,
+                                        suffix_start,
+                                        2,
+                                    );
+                                } else {
+                                    let buf = self
+                                        .text
+                                        .chars()
+                                        .skip(suffix_start - 1)
+                                        .take(suffix_start - num_start)
+                                        .collect::<String>()
+                                        .bytes()
+                                        .collect::<Vec<_>>();
+                                    token!(
+                                        IntLit,
+                                        Some(TokenValue::Int(Int::parse_arbitrary(&buf, 2)))
+                                    )
+                                }
                             }
+                            // hex
                             'x' | 'X' => {
-                                // hex
                                 self.advance();
                                 self.expect_hex()?;
                                 if let Some(c) = self.peek()
@@ -367,29 +400,89 @@ impl Lexer {
                                     self.check_float_suffix();
                                     token!(FloatLit)
                                 } else {
-                                    self.check_int_suffix();
-                                    token!(IntLit)
+                                    let suffix_start = self.index;
+                                    if self.check_int_suffix() {
+                                        return self.make_int_tok_with_suffix(
+                                            num_start,
+                                            suffix_start,
+                                            16,
+                                        );
+                                    } else {
+                                        let buf = self
+                                            .text
+                                            .chars()
+                                            .skip(suffix_start - 1)
+                                            .take(suffix_start - num_start)
+                                            .collect::<String>()
+                                            .bytes()
+                                            .collect::<Vec<_>>();
+                                        token!(
+                                            IntLit,
+                                            Some(TokenValue::Int(Int::parse_arbitrary(&buf, 16)))
+                                        )
+                                    }
                                 }
                             }
+                            // octal
                             'o' | 'O' => {
                                 self.advance();
                                 self.expect_octal()?;
-                                self.check_int_suffix();
-                                token!(IntLit)
+                                let suffix_start = self.index;
+                                if self.check_int_suffix() {
+                                    return self.make_int_tok_with_suffix(
+                                        num_start,
+                                        suffix_start,
+                                        8,
+                                    );
+                                } else {
+                                    let buf = self
+                                        .text
+                                        .chars()
+                                        .skip(suffix_start - 1)
+                                        .take(suffix_start - num_start)
+                                        .collect::<String>()
+                                        .bytes()
+                                        .collect::<Vec<_>>();
+                                    token!(
+                                        IntLit,
+                                        Some(TokenValue::Int(Int::parse_arbitrary(&buf, 8)))
+                                    )
+                                }
                             }
+                            // decimal float
                             '.' => {
-                                // decimal float
                                 self.advance();
                                 self.expect_float('e', false)?;
                                 self.check_float_suffix();
                                 token!(FloatLit)
                             }
+                            // decimal
                             _ => {
-                                self.check_int_suffix();
-                                token!(IntLit)
+                                self.expect_decimal(false)?;
+                                let suffix_start = self.index;
+                                if self.check_int_suffix() {
+                                    return self.make_int_tok_with_suffix(
+                                        num_start,
+                                        suffix_start,
+                                        10,
+                                    );
+                                } else {
+                                    let buf = self
+                                        .text
+                                        .chars()
+                                        .skip(suffix_start - 1)
+                                        .take(suffix_start - num_start)
+                                        .collect::<String>()
+                                        .bytes()
+                                        .collect::<Vec<_>>();
+                                    token!(
+                                        IntLit,
+                                        Some(TokenValue::Int(Int::parse_arbitrary(&buf, 10)))
+                                    )
+                                }
                             }
                         },
-                        None => token!(IntLit),
+                        None => token!(IntLit, Some(TokenValue::Int(Int::from_arbitrary(0)))),
                     }
                 }
                 ' ' | '\t' | '\r' | '\n' => {
@@ -400,6 +493,28 @@ impl Lexer {
                 _ => return Err(self.make_error_cur(format!("unexpected char '{}'", c))),
             }
         }
+    }
+
+    fn make_int_tok_with_suffix(
+        &mut self,
+        num_start: usize,
+        suffix_start: usize,
+        radix: u32,
+    ) -> CompileResult<Token> {
+        let buf = self.text[num_start..suffix_start]
+            .bytes()
+            .collect::<Vec<_>>();
+        let mut iter = self.text.chars();
+        let signed = iter.nth(suffix_start).unwrap() == 'i';
+        let size = iter
+            .take(self.index - suffix_start - 1)
+            .collect::<String>()
+            .parse::<u32>()
+            .unwrap();
+        Ok(self.make_token_with_val(
+            TokenKind::IntLit,
+            Some(TokenValue::Int(Int::parse(&buf, radix, signed, size))),
+        ))
     }
 
     fn get_ident_kind(text: &str) -> TokenKind {
@@ -517,22 +632,22 @@ impl Lexer {
     }
 
     fn check_float_suffix(&mut self) -> bool {
-        !self.check("f16") && !self.check("f32") && !self.check("f64")
+        self.check("f16") || self.check("f32") || self.check("f64")
     }
 
     fn check_int_suffix(&mut self) -> bool {
-        !self.check("i8")
-            && !self.check("i16")
-            && !self.check("i32")
-            && !self.check("i64")
-            && !self.check("i128")
-            && !self.check("isize")
-            && !self.check("u8")
-            && !self.check("u16")
-            && !self.check("u32")
-            && !self.check("u64")
-            && !self.check("u128")
-            && !self.check("usize")
+        self.check("i8")
+            || self.check("i16")
+            || self.check("i32")
+            || self.check("i64")
+            || self.check("i128")
+            || self.check("isize")
+            || self.check("u8")
+            || self.check("u16")
+            || self.check("u32")
+            || self.check("u64")
+            || self.check("u128")
+            || self.check("usize")
     }
 
     fn expect_binary(&mut self) -> CompileResult<()> {

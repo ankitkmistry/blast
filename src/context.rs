@@ -5,7 +5,7 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use crate::{ast, scope};
+use crate::{ast, common::Int, scope};
 
 #[derive(Clone)]
 pub struct Param<'a> {
@@ -49,6 +49,9 @@ pub enum Type<'a> {
     // - Value::Char => char value
     Char,
     // Value can be:
+    // - Value::Int => integer value
+    Int,
+    // Value can be:
     // - depending on Type::Const.0
     Const(Box<Type<'a>>),
     // Value can be:
@@ -88,11 +91,16 @@ pub enum Type<'a> {
 }
 
 impl<'a> Type<'a> {
+    pub fn is_integer(&self) -> bool {
+        match self {
+            Type::Int => true,
+            _ => false,
+        }
+    }
     pub fn is_typedef(&self) -> bool {
-        if let Type::Typedef = self {
-            true
-        } else {
-            false
+        match self {
+            Type::Typedef => true,
+            _ => false,
         }
     }
     pub fn is_const(&self) -> bool {
@@ -152,6 +160,8 @@ impl<'a> ToString for Type<'a> {
         match self {
             Type::Bool => "__bool".to_string(),
             Type::Char => "__char".to_string(),
+            // TODO: how to resolve other int types
+            Type::Int => "__int".to_string(),
             Type::Const(taipe) => format!("const {}", taipe.to_string()),
             Type::Basic(scope) => scope.upgrade().unwrap().borrow().sym_path.to_string(),
             Type::Function { ret, params } => format!(
@@ -185,6 +195,7 @@ impl<'a> ToString for Type<'a> {
 pub enum Value<'a> {
     Bool(bool),
     Char(char),
+    Int(Int),
     Array(Vec<Value<'a>>),
     Tuple(Vec<Value<'a>>),
     // Typedef values
@@ -200,6 +211,7 @@ impl<'a> ToString for Value<'a> {
         match self {
             Value::Bool(b) => b.to_string(),
             Value::Char(c) => format!("'{}'", c.to_string()),
+            Value::Int(num) => num.to_string(),
             Value::Array(values) => {
                 let mut result = String::new();
                 let mut is_string = false;
