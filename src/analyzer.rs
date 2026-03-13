@@ -143,8 +143,9 @@ impl<'a> Analyzer<'a> {
                     unreachable!("probably some parser bug");
                 };
                 if eq_token.kind != TokenKind::Colon {
-                    self.saved_errs
-                        .push(self.make_err("expected ':'", eq_token));
+                    $parser
+                        .saved_errs
+                        .push($parser.make_err("expected ':'", eq_token));
                 }
             };
         }
