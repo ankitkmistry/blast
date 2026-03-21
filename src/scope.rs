@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::BTreeMap,
     fmt,
     rc::{Rc, Weak},
 };
@@ -55,13 +55,17 @@ impl SymbolPath {
 
 #[derive(Clone)]
 pub enum State<'a> {
-    NotEvaled(&'a ast::Decl),
-    EvalInProg,
-    Evaled(Context<'a>),
+    /// Scope is not visited yet
+    NotVisited(&'a ast::Decl),
+    /// Visitation is in progress
+    VisitInProg,
+    /// Scope has been visited including the children
+    Visited(Context<'a>),
 }
 
 pub enum Payload<'a> {
     Compound(Compound<'a>),
+    None,
 }
 
 #[derive(Clone)]
@@ -87,6 +91,8 @@ impl<'a> fmt::Debug for Compound<'a> {
     }
 }
 
+pub type Map<K, V> = BTreeMap<K, V>;
+
 pub struct Scope<'a> {
     /// Weak reference to the parent scope
     pub parent: Weak<RefCell<Scope<'a>>>,
@@ -102,11 +108,12 @@ pub struct Scope<'a> {
     pub node: Option<&'a ast::Object>,
     /// The state for the context evaluation of this scope
     pub state: State<'a>,
-    /// The payload data for this scope. For example, a struct scope can have a payload
-    /// related to field layout, padding, etc.
-    pub payload: Option<Payload<'a>>,
+    /// The payload data for this scope.
+    /// For example, a struct scope can have a payload related to field layout, padding, etc.
+    pub payload: Payload<'a>,
     /// The children of this scope
-    pub children: HashMap<String, Rc<RefCell<Scope<'a>>>>,
+    // pub children: HashMap<String, Rc<RefCell<Scope<'a>>>>,
+    pub children: Map<String, Rc<RefCell<Scope<'a>>>>,
 }
 
 impl<'a> Scope<'a> {
@@ -118,9 +125,10 @@ impl<'a> Scope<'a> {
                 sym_path: SymbolPath::new(),
                 name: None,
                 node: Some(node),
-                state: State::Evaled(Context::from_module(module.clone())),
-                payload: None,
-                children: HashMap::new(),
+                state: State::Visited(Context::from_module(module.clone())),
+                payload: Payload::None,
+                // children: HashMap::new(),
+                children: Map::new(),
             })
         })
     }
@@ -143,8 +151,9 @@ impl<'a> Scope<'a> {
             name: name_tok,
             node,
             state,
-            payload: None,
-            children: HashMap::new(),
+            payload: Payload::None,
+            // children: HashMap::new(),
+            children: Map::new(),
         }));
         // Clone it so we can return later
         let result = Rc::clone(&child);

@@ -104,6 +104,13 @@ impl<'a> Type<'a> {
         }
     }
 
+    pub fn remove_pointer(&self) -> Self {
+        match self.clone() {
+            Type::Pointer(taipe) => *taipe,
+            taipe => taipe,
+        }
+    }
+
     pub fn get_size(&self) -> Option<usize> {
         Some(self.get_layout()?.0)
     }
@@ -316,7 +323,14 @@ impl<'a> ToString for Value<'a> {
             ),
             Value::Type(t) => t.to_string(),
             Value::Noreturn => String::new(),
-            Value::Module(weak) => String::new(),
+            Value::Module(weak) => format!(
+                "module {}",
+                weak.upgrade()
+                    .expect("what da hell just happened")
+                    .borrow()
+                    .sym_path
+                    .to_string()
+            ),
         }
     }
 }

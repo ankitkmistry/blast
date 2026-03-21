@@ -29,6 +29,13 @@ b :: sizeof a[1];
 c: const __bool : false;
 d :: ~0;
 
+Bax :: FooM.Bar;
+
+FooM :: module {
+    Foo :: Bax;
+    Bar :: struct {}
+}
+
 std :: module {
     io :: module {
         // File operations here

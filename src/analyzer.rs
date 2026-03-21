@@ -51,7 +51,7 @@ impl<'a> Analyzer<'a> {
         };
         self.pre_declare_decls(decls)?;
         for decl in decls {
-            self.visit_decl(decl)?;
+            self.visit_decl(decl, true)?;
         }
         Ok(())
     }
@@ -102,12 +102,12 @@ impl<'a> Analyzer<'a> {
                 && object.is_module()
             {
                 // Allow merging module declarations
-                if let scope::State::Evaled(prev_ctx) = &prev_scope.state {
+                if let scope::State::Visited(prev_ctx) = &prev_scope.state {
                     if prev_ctx.taipe.is_module() {
                         return Ok(Rc::clone(prev_scope_ref));
                     }
                 }
-                if let scope::State::NotEvaled(prev_decl) = prev_scope.state
+                if let scope::State::NotVisited(prev_decl) = prev_scope.state
                     && let ast::Decl::Decl {
                         name: _,
                         taipe: _,
@@ -130,12 +130,16 @@ impl<'a> Analyzer<'a> {
             &self.cur_scope,
             &name.text,
             Some(name.clone()),
-            scope::State::NotEvaled(node),
+            scope::State::NotVisited(node),
             object,
         ))
     }
 
-    pub fn visit_decl(&mut self, node: &'a ast::Decl) -> CompileResult<Context<'a>> {
+    pub fn visit_decl(
+        &mut self,
+        node: &'a ast::Decl,
+        should_visit_children: bool,
+    ) -> CompileResult<Context<'a>> {
         macro_rules! colon_compulsory {
             ($parser:expr, $token:expr) => {
                 // Check the colon thing
@@ -162,8 +166,18 @@ impl<'a> Analyzer<'a> {
                 } else {
                     self.declare_sym(node, name, object.as_ref())?
                 };
-                // Set in progress
-                scope.borrow_mut().state = scope::State::EvalInProg;
+                {
+                    // Set in progress
+                    let mut scope = scope.borrow_mut();
+                    match &scope.state {
+                        State::NotVisited(_) => {
+                            scope.state = scope::State::VisitInProg;
+                        }
+                        State::VisitInProg => unreachable!("probably some analyzer bug"),
+                        // INFO: Bug prone line (maybe)
+                        State::Visited(context) => return Ok(context.clone()),
+                    }
+                }
                 // Unwrap the object
                 let Some(object) = object else {
                     // Situation
@@ -198,7 +212,7 @@ impl<'a> Analyzer<'a> {
                         taipe: type_ctx,
                         value: None,
                     };
-                    scope.borrow_mut().state = State::Evaled(ctx.clone());
+                    scope.borrow_mut().state = State::Visited(ctx.clone());
                     return Ok(ctx);
                 };
                 let ctx: Context<'_> = match object {
@@ -207,7 +221,7 @@ impl<'a> Analyzer<'a> {
                         value,
                     } => {
                         colon_compulsory!(self, eq_token);
-                        todo!("modules are not supported yet")
+                        todo!("extern modules are not supported yet")
                     }
                     ast::Object::Module {
                         line_info: _,
@@ -220,16 +234,18 @@ impl<'a> Analyzer<'a> {
                         // Predeclare all declarations
                         self.pre_declare_decls(decls)?;
                         // Mark it evaluated if not already
-                        let ctx = if let scope::State::Evaled(ctx) = &scope.borrow().state {
+                        let ctx = if let scope::State::Visited(ctx) = &scope.borrow().state {
                             ctx.clone()
                         } else {
                             let ctx = Context::from_module(Rc::downgrade(&scope));
-                            scope.borrow_mut().state = State::Evaled(ctx.clone());
+                            scope.borrow_mut().state = State::Visited(ctx.clone());
                             ctx
                         };
-                        // Visit every decl
-                        for decl in decls {
-                            self.visit_decl(decl)?;
+                        if should_visit_children {
+                            // Visit every decl
+                            for decl in decls {
+                                self.visit_decl(decl, true)?;
+                            }
                         }
                         // Restore old scope
                         self.cur_scope = old_cur_scope;
@@ -277,12 +293,12 @@ impl<'a> Analyzer<'a> {
                             return Err(self.make_err("invalid type alias", node));
                         }
                         let ctx = Context::from_type(taipe);
-                        scope.borrow_mut().state = scope::State::Evaled(ctx.clone());
+                        scope.borrow_mut().state = scope::State::Visited(ctx.clone());
                         ctx
                     }
                     ast::Object::Expr(expr) => {
                         let ctx = self.visit_var(name, expr)?;
-                        scope.borrow_mut().state = scope::State::Evaled(ctx.clone());
+                        scope.borrow_mut().state = scope::State::Visited(ctx.clone());
                         ctx
                     }
                 };
@@ -313,11 +329,11 @@ impl<'a> Analyzer<'a> {
                 &scope,
             )))),
         };
-        scope.borrow_mut().state = State::Evaled(ctx.clone());
+        scope.borrow_mut().state = State::Visited(ctx.clone());
         // Visit every field
         let mut fields = Vec::new();
         for decl in decls {
-            let ctx = self.visit_decl(decl)?;
+            let ctx = self.visit_decl(decl, true)?;
             // Check the type of the fields
             match ctx.taipe.remove_const() {
                 context::Type::Function { ret: _, params: _ } => {
@@ -348,7 +364,7 @@ impl<'a> Analyzer<'a> {
         }
         // TODO: improve payload
         // provide advanced field layout information
-        scope.borrow_mut().payload = Some(Payload::Compound(scope::Compound::new(&fields, object)));
+        scope.borrow_mut().payload = Payload::Compound(scope::Compound::new(&fields, object));
         // Restore old scope
         self.cur_scope = old_cur_scope;
         Ok(ctx)
@@ -674,7 +690,35 @@ impl<'a> Analyzer<'a> {
                     _ => unreachable!("probably some parser bug"),
                 }
             }
-            ast::Expr::Member { expr, name } => todo!(),
+            ast::Expr::Member { expr, name } => {
+                let ctx = self.visit_expr(expr)?;
+                // Remember const
+                // let is_const = ctx.taipe.is_const();
+                match ctx.taipe.remove_const().remove_pointer().remove_const() {
+                    context::Type::Basic(weak) => todo!(),
+                    context::Type::Pointer(_) => todo!(),
+                    context::Type::Array { count, taipe } => todo!(),
+                    context::Type::Fat(_) => todo!(),
+                    context::Type::Tuple(items) => todo!(),
+                    context::Type::Module => {
+                        let Some(value) = ctx.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let context::Value::Module(module) = value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let Some(module) = module.upgrade() else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        self.get_member(&module, &name)
+                    }
+                    context::Type::Typedef => todo!(),
+                    _ => Err(self.make_err(
+                        format!("cannot use '.' operator on '{}'", ctx.taipe.to_string()),
+                        expr,
+                    )),
+                }
+            }
             ast::Expr::Call {
                 line_info: _,
                 expr,
@@ -746,7 +790,7 @@ impl<'a> Analyzer<'a> {
                     _ => {
                         return Err(self.make_err(
                             format!(
-                                "cannot apply index operator on type '{}'",
+                                "cannot use index operator on type '{}'",
                                 ctx.taipe.to_string()
                             ),
                             expr,
@@ -895,7 +939,69 @@ impl<'a> Analyzer<'a> {
         Ok(ctx)
     }
 
+    fn get_member(
+        &mut self,
+        scope: &Rc<RefCell<scope::Scope<'a>>>,
+        name: &Token,
+    ) -> CompileResult<Context<'a>> {
+        if let Some(ctx) = self.resolve_member(&scope, &name.text)? {
+            Ok(ctx)
+        } else {
+            Err(self.make_err(
+                format!(
+                    "'{}' has no member named '{}'",
+                    scope.borrow().sym_path.to_string(),
+                    &name.text
+                ),
+                name,
+            ))
+        }
+    }
+
+    fn resolve_member(
+        &mut self,
+        scope: &Rc<RefCell<scope::Scope<'a>>>,
+        name: &str,
+    ) -> CompileResult<Option<Context<'a>>> {
+        if let Some(child) = scope.borrow().children.get(name) {
+            let node = match &child.borrow().state {
+                scope::State::NotVisited(node) => *node,
+                scope::State::VisitInProg => {
+                    return Err(CompileError::SemCyclic {
+                        file_path: child.borrow().get_src_path(),
+                        line_info: child.borrow().get_line_info(),
+                    });
+                }
+                scope::State::Visited(ctx) => return Ok(Some(ctx.clone())),
+            };
+            // Begin new scope
+            let old_cur_scope = Rc::clone(&self.cur_scope);
+            self.cur_scope = Rc::clone(&scope);
+            // Visit the decl (and not the subsequent children)
+            let ctx = self.visit_decl(node, false)?;
+            // Restore old scope
+            self.cur_scope = old_cur_scope;
+            return Ok(Some(ctx));
+        }
+        Ok(None)
+    }
+
     fn resolve_name(&mut self, name: &str) -> CompileResult<Option<Context<'a>>> {
+        {
+            // Check in the current scope and go upwards
+            let mut scope = Rc::clone(&self.cur_scope);
+            loop {
+                if let Some(ctx) = self.resolve_member(&scope, name)? {
+                    return Ok(Some(ctx));
+                }
+                let parent_opt = scope.borrow().parent.upgrade();
+                if let Some(parent) = parent_opt.as_ref() {
+                    scope = Rc::clone(parent);
+                } else {
+                    break;
+                }
+            }
+        }
         match name {
             "__bool" => {
                 return Ok(Some(Context {
@@ -921,44 +1027,7 @@ impl<'a> Analyzer<'a> {
                     value: Some(context::Value::Type(context::Type::Float64)),
                 }));
             }
-            _ => {}
-        }
-
-        struct Result<'a> {
-            state: scope::State<'a>,
-            line_info: LineInfo,
-        }
-        let mut result: Option<Result<'a>> = None;
-        {
-            // Check in the current scope and go upwards
-            let mut scope = Rc::clone(&self.cur_scope);
-            loop {
-                if let Some(child) = scope.borrow().children.get(name) {
-                    result = Some(Result {
-                        state: child.borrow().state.clone(),
-                        line_info: child.borrow().get_line_info(),
-                    });
-                    break;
-                }
-                let parent_opt = scope.borrow().parent.upgrade();
-                if let Some(parent) = parent_opt.as_ref() {
-                    scope = Rc::clone(parent);
-                } else {
-                    break;
-                }
-            }
-        }
-        if let Some(result) = result {
-            match result.state {
-                scope::State::NotEvaled(node) => Ok(Some(self.visit_decl(node)?)),
-                scope::State::EvalInProg => Err(CompileError::SemCyclic {
-                    file_path: self.get_cur_scope().get_src_path(),
-                    line_info: result.line_info,
-                }),
-                scope::State::Evaled(ctx) => Ok(Some(ctx.clone())),
-            }
-        } else {
-            Ok(None)
+            _ => Ok(None),
         }
     }
 

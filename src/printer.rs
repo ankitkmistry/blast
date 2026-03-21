@@ -281,9 +281,9 @@ fn print_scope<'a>(name: &str, scope: Ref<'_, scope::Scope<'a>>, is_last_vec: &m
     }
     print!("{}: ", name);
     match &scope.state {
-        scope::State::NotEvaled(_) => print!("not evaluated"),
-        scope::State::EvalInProg => print!("evaluation in progress"),
-        scope::State::Evaled(ctx) => {
+        scope::State::NotVisited(_) => print!("not evaluated"),
+        scope::State::VisitInProg => print!("evaluation in progress"),
+        scope::State::Visited(ctx) => {
             print!("{}", ctx.to_string());
             if let Some(value) = &ctx.value {
                 let repr = value.to_string();
