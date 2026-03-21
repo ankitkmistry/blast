@@ -175,7 +175,11 @@ impl<'a> Analyzer<'a> {
                         }
                         State::VisitInProg => unreachable!("probably some analyzer bug"),
                         // INFO: Bug prone line (maybe)
-                        State::Visited(context) => return Ok(context.clone()),
+                        State::Visited(context) => {
+                            if !context.taipe.is_module() {
+                                return Ok(context.clone());
+                            }
+                        }
                     }
                 }
                 // Unwrap the object
@@ -231,12 +235,12 @@ impl<'a> Analyzer<'a> {
                         // Begin new scope
                         let old_cur_scope = Rc::clone(&self.cur_scope);
                         self.cur_scope = Rc::clone(&scope);
-                        // Predeclare all declarations
-                        self.pre_declare_decls(decls)?;
                         // Mark it evaluated if not already
                         let ctx = if let scope::State::Visited(ctx) = &scope.borrow().state {
                             ctx.clone()
                         } else {
+                            // Predeclare all declarations (only if not already visited)
+                            self.pre_declare_decls(decls)?;
                             let ctx = Context::from_module(Rc::downgrade(&scope));
                             scope.borrow_mut().state = State::Visited(ctx.clone());
                             ctx
@@ -693,13 +697,63 @@ impl<'a> Analyzer<'a> {
             ast::Expr::Member { expr, name } => {
                 let ctx = self.visit_expr(expr)?;
                 // Remember const
-                // let is_const = ctx.taipe.is_const();
+                let is_const = ctx.taipe.remove_pointer().is_const();
+                // Turn `const *const T' => `T'
                 match ctx.taipe.remove_const().remove_pointer().remove_const() {
-                    context::Type::Basic(weak) => todo!(),
-                    context::Type::Pointer(_) => todo!(),
+                    context::Type::Basic(scope) => {
+                        let Some(scope) = scope.upgrade() else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let mut ctx = self.get_member(&scope, &name)?;
+                        if is_const && !ctx.taipe.is_const() {
+                            ctx.taipe = context::Type::Const(Box::new(ctx.taipe));
+                        }
+                        Ok(ctx)
+                    }
                     context::Type::Array { count, taipe } => todo!(),
                     context::Type::Fat(_) => todo!(),
-                    context::Type::Tuple(items) => todo!(),
+                    context::Type::Tuple(items) => {
+                        if name.kind != TokenKind::IntLit {
+                            return Err(self.make_err(
+                                format!("expected {}", TokenKind::IntLit.get_repr()),
+                                name,
+                            ));
+                        }
+                        let Some(index) = name.value.clone() else {
+                            unreachable!("probably some lexer bug");
+                        };
+                        let TokenValue::Int(index) = index else {
+                            unreachable!("probably some lexer bug");
+                        };
+                        // comptime: bounds checking
+                        if index.num >= items.len().to_bigint().unwrap() {
+                            return Err(self.make_err(
+                                format!(
+                                    "index out of bounds, tuple length: {}, index: '{}'",
+                                    items.len(),
+                                    index
+                                ),
+                                node,
+                            ));
+                        }
+                        // comptime: array indexing
+                        // TODO: check usize for target system and retrieve the index
+                        // Also check the value is in hardware allowed range
+                        let digits = &index.num.to_u64_digits().1;
+                        // INFO: beware of this usize cast
+                        let index = *digits.first().unwrap_or(&0) as usize;
+                        // Get the type and value respectively
+                        let taipe = items[index].clone();
+                        let value = if let Some(tuple) = ctx.value {
+                            let context::Value::Tuple(tuple) = tuple else {
+                                unreachable!("probably some analyzer bug");
+                            };
+                            Some(tuple[index].clone())
+                        } else {
+                            None
+                        };
+                        Ok(Context { taipe, value })
+                    }
                     context::Type::Module => {
                         let Some(value) = ctx.value else {
                             unreachable!("probably some analyzer bug");
@@ -829,7 +883,10 @@ impl<'a> Analyzer<'a> {
                     value: None,
                 }),
                 TokenKind::Ident => {
-                    if let Some(ctx) = self.resolve_name(&token.text)? {
+                    if let Some(mut ctx) = self.resolve_name(&token.text)? {
+                        if !ctx.taipe.is_const() {
+                            ctx.value = None;
+                        }
                         Ok(ctx)
                     } else {
                         Err(self.make_err("undefined reference", token))
@@ -851,11 +908,17 @@ impl<'a> Analyzer<'a> {
                         values.push(value);
                     }
                 }
-                assert!(
-                    values.len() == 0,
-                    "compile time evaluation not supported yet"
-                );
-                Ok(Context::from_tuple(types, values))
+                if types.len() == values.len() {
+                    Ok(Context {
+                        taipe: context::Type::Const(Box::new(context::Type::Tuple(types))),
+                        value: Some(context::Value::Tuple(values)),
+                    })
+                } else {
+                    Ok(Context {
+                        taipe: context::Type::Const(Box::new(context::Type::Tuple(types))),
+                        value: None,
+                    })
+                }
             }
             ast::Expr::ArrayLit {
                 line_info: _,

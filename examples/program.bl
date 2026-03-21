@@ -22,6 +22,9 @@
 // public(current)
 // mutable
 
+tup :: (11, 22, 33);
+tup_mem :: tup.1;
+
 a :: "aboba";
 // b :: a[-1];
 // b :: a[6];

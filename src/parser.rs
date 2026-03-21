@@ -891,7 +891,7 @@ impl Parser {
         Ok(ast::Arg { name, expr })
     }
 
-    // postifix ::= primary ('.' identifier | '(' args_list ')' | '[' expr_list ']');
+    // postifix ::= primary ('.' (identifier | integer) | '(' args_list ')' | '[' expr_list ']')*;
     fn parse_postfix(&mut self) -> CompileResult<ast::Expr> {
         let mut expr = self.parse_primary()?;
         loop {
@@ -899,7 +899,13 @@ impl Parser {
                 match tok.kind {
                     Dot => {
                         self.get_token()?;
-                        let name = self.expect(Ident)?;
+                        let name = if let Some(tok) = self.peek()
+                            && (tok.kind == Ident || tok.kind == IntLit)
+                        {
+                            self.get_token()?
+                        } else {
+                            return Err(self.expect_err(&[Ident, IntLit]));
+                        };
                         expr = ast::Expr::Member {
                             expr: Box::new(expr),
                             name,
@@ -1094,19 +1100,31 @@ impl Parser {
     }
 
     fn expect_err_more(&self, items: &[&str], kinds: &[TokenKind]) -> CompileError {
-        let mut msg = String::new();
-        msg.push_str("expected ");
+        assert!(!items.is_empty() || !kinds.is_empty());
+
+        let mut elements = Vec::new();
         for item in items {
-            msg.push_str(item);
-            msg.push_str(", ");
+            elements.push(item.to_string());
         }
         for kind in kinds {
-            msg.push_str(kind.get_repr());
-            msg.push_str(", ");
+            elements.push(kind.get_repr().to_string());
         }
-        if items.len() > 0 || kinds.len() > 0 {
-            msg.pop();
-            msg.pop();
+
+        let mut msg = String::new();
+        msg.push_str("expected ");
+
+        let count = elements.len();
+        let mut i = 0;
+        for element in elements {
+            msg.push_str(&element);
+            if count >= 2 {
+                if i < count - 2 {
+                    msg.push_str(", ");
+                } else if i == count - 2 {
+                    msg.push_str(" or ");
+                }
+            }
+            i += 1;
         }
         let line_info = self.get_holy_line_info(self.cur().map(|tok| LineInfo {
             line_start: tok.line_info.line_end,

@@ -374,12 +374,6 @@ impl<'a> Context<'a> {
             value: Some(Value::Array(chars)),
         }
     }
-    pub fn from_tuple(types: Vec<Type<'a>>, values: Vec<Value<'a>>) -> Self {
-        Context {
-            taipe: Type::Tuple(types),
-            value: Some(Value::Tuple(values)),
-        }
-    }
     pub fn from_type(taipe: Type<'a>) -> Self {
         Self {
             taipe: Type::Typedef,

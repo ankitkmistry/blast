@@ -134,9 +134,9 @@ Cast        <- Unary ('as' Type)*;
 Unary       <- Postfix
              / ('typeof'/'sizeof')? [-~*&]* Postfix;
 Postfix     <- Primary
-             (('.' Identifier)
-            / ('(' Arguments ')')
-            / ('[' Exprs ']'));
+             (   ('.' (Identifier / Integer))
+               / ('(' Arguments ')')
+               / ('[' Exprs ']'))*;
 Arguments   <- (Argument (',' Argument)* ','?)?;
 Argument    <- (Identifier ':')? Expr;
 Primary     <- 'true' / 'false'

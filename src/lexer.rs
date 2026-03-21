@@ -349,7 +349,7 @@ impl Lexer {
                             let buf = self
                                 .text
                                 .chars()
-                                .skip(suffix_start - 1)
+                                .skip(num_start)
                                 .take(suffix_start - num_start)
                                 .collect::<String>()
                                 .bytes()
@@ -380,7 +380,7 @@ impl Lexer {
                                     let buf = self
                                         .text
                                         .chars()
-                                        .skip(suffix_start - 1)
+                                        .skip(num_start)
                                         .take(suffix_start - num_start)
                                         .collect::<String>()
                                         .bytes()
@@ -415,7 +415,7 @@ impl Lexer {
                                         let buf = self
                                             .text
                                             .chars()
-                                            .skip(suffix_start - 1)
+                                            .skip(num_start)
                                             .take(suffix_start - num_start)
                                             .collect::<String>()
                                             .bytes()
@@ -442,7 +442,7 @@ impl Lexer {
                                     let buf = self
                                         .text
                                         .chars()
-                                        .skip(suffix_start - 1)
+                                        .skip(num_start)
                                         .take(suffix_start - num_start)
                                         .collect::<String>()
                                         .bytes()
@@ -474,7 +474,7 @@ impl Lexer {
                                     let buf = self
                                         .text
                                         .chars()
-                                        .skip(suffix_start - 1)
+                                        .skip(num_start)
                                         .take(suffix_start - num_start)
                                         .collect::<String>()
                                         .bytes()
