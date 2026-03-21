@@ -70,16 +70,16 @@ pub enum Type<'a> {
         params: Vec<Param<'a>>,
     },
     // Value can be:
-    // - depending on Type::Const.0
+    // - TODO: pointer
     Pointer(Box<Type<'a>>),
     // Value can be:
-    // - depending on Type::Const.taipe
+    // - Value::Array => array value
     Array {
         count: usize,
         taipe: Box<Type<'a>>,
     },
     // Value can be:
-    // - depending on Type::Const.0
+    // - Value::Array => array value
     Fat(Box<Type<'a>>),
     // Value can be:
     // - Value::Tuple => tuple value
@@ -92,7 +92,7 @@ pub enum Type<'a> {
     // - Value::Type => type reference
     Typedef,
     // Value can be:
-    // - Value::Noreturn => just a noreturn marker
+    // - None
     Noreturn,
 }
 
@@ -234,7 +234,12 @@ impl<'a> ToString for Type<'a> {
             Type::Float32 => "__f32".to_string(),
             Type::Float64 => "__f64".to_string(),
             Type::Const(taipe) => format!("const {}", taipe.to_string()),
-            Type::Basic(scope) => scope.upgrade().unwrap().borrow().sym_path.to_string(),
+            Type::Basic(scope) => scope
+                .upgrade()
+                .expect("this should not occur")
+                .borrow()
+                .sym_path
+                .to_string(),
             Type::Function { ret, params } => format!(
                 "fun ({}) -> ({})",
                 params
@@ -273,8 +278,6 @@ pub enum Value<'a> {
     Tuple(Vec<Value<'a>>),
     // Typedef values
     Type(Type<'a>),
-    // Noreturn
-    Noreturn,
     // Module
     Module(Weak<RefCell<scope::Scope<'a>>>),
 }
@@ -330,15 +333,12 @@ impl<'a> ToString for Value<'a> {
                     .join(", ")
             ),
             Value::Type(t) => t.to_string(),
-            Value::Noreturn => String::new(),
-            Value::Module(weak) => format!(
-                "module {}",
-                weak.upgrade()
-                    .expect("what da hell just happened")
-                    .borrow()
-                    .sym_path
-                    .to_string()
-            ),
+            Value::Module(weak) => weak
+                .upgrade()
+                .expect("what da hell just happened")
+                .borrow()
+                .sym_path
+                .to_string(),
         }
     }
 }
@@ -397,7 +397,7 @@ impl<'a> Context<'a> {
     pub fn from_noreturn() -> Self {
         Self {
             taipe: Type::Noreturn,
-            value: Some(Value::Noreturn),
+            value: None,
         }
     }
     pub fn from_module(module: Weak<RefCell<scope::Scope<'a>>>) -> Self {

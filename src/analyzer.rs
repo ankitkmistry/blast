@@ -174,7 +174,6 @@ impl<'a> Analyzer<'a> {
                             scope.state = scope::State::VisitInProg;
                         }
                         State::VisitInProg => unreachable!("probably some analyzer bug"),
-                        // INFO: Bug prone line (maybe)
                         State::Visited(context) => {
                             if !context.taipe.is_module() {
                                 return Ok(context.clone());
@@ -420,14 +419,35 @@ impl<'a> Analyzer<'a> {
     pub fn visit_type(&mut self, node: &'a ast::Type) -> CompileResult<context::Type<'a>> {
         let ctx = match node {
             ast::Type::Path { items } => {
-                assert!(
-                    items.len() == 1,
-                    "type resolution more than 1 not implemented yet"
-                );
-                let result = self.resolve_name(&items[0].text)?;
-                let Some(ctx) = result else {
-                    return Err(self.make_err("undefined reference", &items[0]));
-                };
+                let mut index = 0;
+                let mut ctx = self.get_name(&items[index])?;
+                index += 1;
+                while index < items.len() {
+                    let name = &items[index];
+                    ctx = match ctx.taipe.remove_const() {
+                        context::Type::Module => {
+                            let Some(value) = ctx.value else {
+                                unreachable!("probably some analyzer bug");
+                            };
+                            let context::Value::Module(module) = value else {
+                                unreachable!("probably some analyzer bug");
+                            };
+                            let Some(module) = module.upgrade() else {
+                                unreachable!("probably some analyzer bug");
+                            };
+                            self.get_member(&module, &name)?
+                        }
+                        // TODO: implement this after struct functions
+                        // context::Type::Typedef => todo!(),
+                        _ => {
+                            return Err(self.make_err(
+                                format!("cannot use '.' operator on '{}'", ctx.taipe.to_string()),
+                                &items[..index].to_vec(),
+                            ));
+                        }
+                    };
+                    index += 1;
+                }
                 ctx
             }
             ast::Type::Function {
@@ -514,7 +534,30 @@ impl<'a> Analyzer<'a> {
                 line_info: _,
                 taipe,
                 expr,
-            } => todo!("implement this after implementing comptime eval"),
+            } => {
+                let taipe = self.visit_type(taipe)?;
+                let Some(expr) = expr else {
+                    return Err(self.make_err("array length must be specified", node));
+                };
+                let length = self.visit_expr(expr)?;
+                if !length.taipe.is_integer() {
+                    return Err(self
+                        .make_err("argument of index operator should be an integer type", expr)
+                        .chain(
+                            self.make_note(format!("but got '{}'", length.taipe.to_string()), expr),
+                        ));
+                }
+                let Some(length) = length.value else {
+                    return Err(self.make_err("value cannot be evaluated at compile time", expr));
+                };
+                let context::Value::Int(length) = length else {
+                    unreachable!("probably some analyzer bug");
+                };
+                Context::from_type(context::Type::Array {
+                    count: self.bigint2usize(length, expr.get_line_info())?,
+                    taipe: Box::new(taipe),
+                })
+            }
             ast::Type::Fat {
                 line_info: _,
                 taipe: node,
@@ -746,9 +789,7 @@ impl<'a> Analyzer<'a> {
                         // comptime: array indexing
                         // TODO: check usize for target system and retrieve the index
                         // Also check the value is in hardware allowed range
-                        let digits = &index.num.to_u64_digits().1;
-                        // INFO: beware of this usize cast
-                        let index = *digits.first().unwrap_or(&0) as usize;
+                        let index = self.bigint2usize(index, name.get_line_info())?;
                         // Get the type and value respectively
                         let taipe = items[index].clone();
                         let value = if let Some(tuple) = ctx.value {
@@ -773,7 +814,8 @@ impl<'a> Analyzer<'a> {
                         };
                         self.get_member(&module, &name)
                     }
-                    context::Type::Typedef => todo!(),
+                    // TODO: implement this after struct functions
+                    // context::Type::Typedef => todo!(),
                     _ => Err(self.make_err(
                         format!("cannot use '.' operator on '{}'", ctx.taipe.to_string()),
                         expr,
@@ -797,13 +839,14 @@ impl<'a> Analyzer<'a> {
                     );
                 }
                 let ctx = self.visit_expr(expr)?;
-                let index = self.visit_expr(&items[0])?;
+                let index_node = &items[0];
+                let index = self.visit_expr(index_node)?;
                 if !index.taipe.is_integer() {
                     return Err(self
                         .make_err("argument of index operator should be an integer type", node)
                         .chain(self.make_note(
                             format!("but got '{}'", index.taipe.to_string()),
-                            &items[0],
+                            index_node,
                         )));
                 }
                 match ctx.taipe.remove_const() {
@@ -820,20 +863,18 @@ impl<'a> Analyzer<'a> {
                                         "index out of bounds, array length: {}, index: '{}'",
                                         count, index
                                     ),
-                                    &items[0],
+                                    index_node,
                                 ));
                             }
                             // comptime: array indexing
                             // TODO: check usize for target system and retrieve the index
                             // Also check the value is in hardware allowed range
-                            let digits = &index.num.to_u64_digits().1;
-                            let index = *digits.first().unwrap_or(&0);
+                            let index = self.bigint2usize(index, index_node.get_line_info())?;
                             if let Some(array) = ctx.value {
                                 let context::Value::Array(array) = array else {
                                     unreachable!("probably some analyzer bug");
                                 };
-                                // INFO: beware of this usize
-                                value = Some(array[index as usize].clone());
+                                value = Some(array[index].clone());
                             }
                         }
                         Ok(Context {
@@ -842,10 +883,38 @@ impl<'a> Analyzer<'a> {
                         })
                     }
                     context::Type::Fat(taipe) => {
-                        // TODO: comptime: do bounds checking
+                        let mut value: Option<context::Value<'a>> = None;
+                        if let Some(array) = ctx.value
+                            && let Some(index) = index.value
+                        {
+                            let context::Value::Array(array) = array else {
+                                unreachable!("probably some analyzer bug");
+                            };
+                            let context::Value::Int(index) = index else {
+                                unreachable!("probably some analyzer bug");
+                            };
+                            // comptime: bounds checking
+                            if index.num < BigInt::ZERO
+                                || index.num >= array.len().to_bigint().unwrap()
+                            {
+                                return Err(self.make_err(
+                                    format!(
+                                        "index out of bounds, array length: {}, index: '{}'",
+                                        array.len(),
+                                        index
+                                    ),
+                                    index_node,
+                                ));
+                            }
+                            // comptime: array indexing
+                            // TODO: check usize for target system and retrieve the index
+                            // Also check the value is in hardware allowed range
+                            let index = self.bigint2usize(index, index_node.get_line_info())?;
+                            value = Some(array[index].clone());
+                        }
                         Ok(Context {
                             taipe: *taipe,
-                            value: None,
+                            value,
                         })
                     }
                     _ => {
@@ -889,16 +958,7 @@ impl<'a> Analyzer<'a> {
                     taipe: context::Type::Const(Box::new(context::Type::Float64)),
                     value: None,
                 }),
-                TokenKind::Ident => {
-                    if let Some(mut ctx) = self.resolve_name(&token.text)? {
-                        if !ctx.taipe.is_const() {
-                            ctx.value = None;
-                        }
-                        Ok(ctx)
-                    } else {
-                        Err(self.make_err("undefined reference", token))
-                    }
-                }
+                TokenKind::Ident => self.get_name(&token),
                 _ => unreachable!("probably some parser bug"),
             },
             ast::Expr::Paren { line_info: _, expr } => self.visit_expr(expr),
@@ -927,6 +987,7 @@ impl<'a> Analyzer<'a> {
                     })
                 }
             }
+            // TODO: implement this
             ast::Expr::ArrayLit {
                 line_info: _,
                 items,
@@ -1159,6 +1220,17 @@ impl<'a> Analyzer<'a> {
         Ok(None)
     }
 
+    fn get_name(&mut self, name: &Token) -> CompileResult<Context<'a>> {
+        if let Some(mut ctx) = self.resolve_name(&name.text)? {
+            if !ctx.taipe.is_const() {
+                ctx.value = None;
+            }
+            Ok(ctx)
+        } else {
+            Err(self.make_err("undefined reference", name))
+        }
+    }
+
     fn resolve_name(&mut self, name: &str) -> CompileResult<Option<Context<'a>>> {
         {
             // Check in the current scope and go upwards
@@ -1201,6 +1273,14 @@ impl<'a> Analyzer<'a> {
                 }));
             }
             _ => Ok(None),
+        }
+    }
+
+    fn bigint2usize(&self, num: Int, line_info: LineInfo) -> CompileResult<usize> {
+        if let Some(num) = num.to_usize() {
+            Ok(num)
+        } else {
+            Err(self.make_err(format!("usize cannot hold value: '{}'", num), &line_info))
         }
     }
 

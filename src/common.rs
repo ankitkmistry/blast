@@ -279,6 +279,13 @@ impl Int {
         self.num = -self.num;
         self
     }
+
+    pub fn to_usize(&self) -> Option<usize> {
+        if self.num < BigInt::ZERO || self.num >= usize::MAX.to_bigint().unwrap() {
+            return None;
+        }
+        self.num.to_u64_digits().1.first().map(|&num| num as usize)
+    }
 }
 
 impl fmt::Display for Int {
