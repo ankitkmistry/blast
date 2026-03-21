@@ -236,10 +236,7 @@ impl<'a> Analyzer<'a> {
                         self.cur_scope = old_cur_scope;
                         Ok(ctx)
                     }
-                    ast::Object::Struct {
-                        line_info,
-                        decls,
-                    } => {
+                    ast::Object::Struct { line_info, decls } => {
                         // TODO: type punning syntax
                         // A :: struct {
                         //     foo: i32;
@@ -258,7 +255,11 @@ impl<'a> Analyzer<'a> {
                         // TODO: implement field layout to distinguish between union and struct
                         let rhs = self.visit_compound(scope, object, decls)?;
                         // Resolve assignment
-                        self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs.clone(), *line_info)))?;
+                        self.resolve_assign(
+                            lhs,
+                            eq_token.as_ref(),
+                            Some((rhs.clone(), *line_info)),
+                        )?;
                         Ok(rhs)
                     }
                     ast::Object::Union { line_info, decls } => {
@@ -272,7 +273,11 @@ impl<'a> Analyzer<'a> {
                         // TODO: implement field layout to distinguish between union and struct
                         let rhs = self.visit_compound(scope, object, decls)?;
                         // Resolve assignment
-                        self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs.clone(), *line_info)))?;
+                        self.resolve_assign(
+                            lhs,
+                            eq_token.as_ref(),
+                            Some((rhs.clone(), *line_info)),
+                        )?;
                         Ok(rhs)
                     }
                     ast::Object::Fun {
@@ -730,13 +735,24 @@ impl<'a> Analyzer<'a> {
                         let Some(size) = taipe.get_size() else {
                             return Err(self.make_err(
                                 format!("type has no size: '{}'", taipe.to_string()),
-                                node,
+                                expr,
                             ));
                         };
                         // TODO: make this usize not variable int
                         Ok(Context::from_int(Int::from_arbitrary(size as u64)))
                     }
-                    TokenKind::Typeof => todo!(),
+                    TokenKind::Typeof => {
+                        if ctx.taipe.is_typedef() {
+                            return Err(self.make_err(
+                                format!(
+                                    "cannot use typedef operator on type '{}'",
+                                    ctx.taipe.to_string()
+                                ),
+                                expr,
+                            ));
+                        }
+                        Ok(Context::from_type(ctx.taipe))
+                    }
                     TokenKind::Alignof => {
                         let taipe = match ctx.taipe {
                             context::Type::Typedef => {
@@ -753,7 +769,7 @@ impl<'a> Analyzer<'a> {
                         let Some(size) = taipe.get_align() else {
                             return Err(self.make_err(
                                 format!("type has no alignment: '{}'", taipe.to_string()),
-                                node,
+                                expr,
                             ));
                         };
                         // TODO: make this usize not variable int
@@ -1128,7 +1144,7 @@ impl<'a> Analyzer<'a> {
                     // Behave as if the constant has no const qualifier to its type
                     lhs = lhs.remove_const();
                 }
-                // Type checking
+                // Type checking and Implicit conversions
                 match (&lhs, &rhs.taipe) {
                     (context::Type::Bool, context::Type::Char) => {
                         // true  => __char != 0
