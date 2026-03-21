@@ -237,7 +237,7 @@ impl<'a> Analyzer<'a> {
                         Ok(ctx)
                     }
                     ast::Object::Struct {
-                        line_info: _,
+                        line_info,
                         decls,
                     } => {
                         // TODO: type punning syntax
@@ -249,15 +249,31 @@ impl<'a> Analyzer<'a> {
                         //     bar: i32;
                         // }
                         colon_compulsory!(self, eq_token);
-                        self.visit_compound(scope, object, decls)
-                    }
-                    ast::Object::Union {
-                        line_info: _,
-                        decls,
-                    } => {
-                        colon_compulsory!(self, eq_token);
+                        // Visit type
+                        let lhs = if let Some(taipe) = taipe {
+                            Some((self.visit_type(taipe)?, taipe.get_line_info()))
+                        } else {
+                            None
+                        };
                         // TODO: implement field layout to distinguish between union and struct
-                        self.visit_compound(scope, object, decls)
+                        let rhs = self.visit_compound(scope, object, decls)?;
+                        // Resolve assignment
+                        self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs.clone(), *line_info)))?;
+                        Ok(rhs)
+                    }
+                    ast::Object::Union { line_info, decls } => {
+                        colon_compulsory!(self, eq_token);
+                        // Visit type
+                        let lhs = if let Some(taipe) = taipe {
+                            Some((self.visit_type(taipe)?, taipe.get_line_info()))
+                        } else {
+                            None
+                        };
+                        // TODO: implement field layout to distinguish between union and struct
+                        let rhs = self.visit_compound(scope, object, decls)?;
+                        // Resolve assignment
+                        self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs.clone(), *line_info)))?;
+                        Ok(rhs)
                     }
                     ast::Object::Fun {
                         line_info: _,
@@ -345,13 +361,16 @@ impl<'a> Analyzer<'a> {
         for decl in decls {
             let ctx = self.visit_decl(decl, true)?;
             // Check the type of the fields
-            match ctx.taipe.remove_const() {
-                context::Type::Function { ret: _, params: _ } => {
-                    return Err(self.make_err("function cannot be used as a field", decl));
-                }
-                context::Type::Module | context::Type::Typedef | context::Type::Noreturn => {
+            match ctx.taipe {
+                context::Type::Const(_)
+                | context::Type::Module
+                | context::Type::Typedef
+                | context::Type::Noreturn => {
                     return Err(self.make_err(
-                        format!("'{}' cannot be used as a field", ctx.taipe.to_string()),
+                        format!(
+                            "'{}' cannot be used as a type of a field",
+                            ctx.taipe.to_string()
+                        ),
                         decl,
                     ));
                 }
@@ -760,6 +779,9 @@ impl<'a> Analyzer<'a> {
                         }
                         Ok(ctx)
                     }
+                    // array and fat pointer have two members
+                    // count => fn (*const self) -> usize
+                    // ptr   => *T
                     context::Type::Array { count, taipe } => todo!(),
                     context::Type::Fat(_) => todo!(),
                     context::Type::Tuple(items) => {
@@ -1128,15 +1150,89 @@ impl<'a> Analyzer<'a> {
                         // false => __f64 != 0
                         // TODO: record info for generating IR
                     }
+                    // (context::Type::Int, context::Type::Float32) => {
+                    //     if let Some(value) = &rhs.value {
+                    //         let context::Value::Float32(value) = value else {
+                    //             unreachable!("probably some analyzer bug");
+                    //         };
+                    //         rhs.value = Some(context::Value::Int(Int::from_f32(*value)));
+                    //     }
+                    //     // TODO: record info for generating IR
+                    // }
+                    // (context::Type::Int, context::Type::Float64) => {
+                    //     if let Some(value) = &rhs.value {
+                    //         let context::Value::Float64(value) = value else {
+                    //             unreachable!("probably some analyzer bug");
+                    //         };
+                    //         rhs.value = Some(context::Value::Int(Int::from_f64(*value)));
+                    //     }
+                    //     // TODO: record info for generating IR
+                    // }
+                    (context::Type::Float32, context::Type::Int) => {
+                        if let Some(value) = &rhs.value {
+                            let context::Value::Int(value) = value else {
+                                unreachable!("probably some analyzer bug");
+                            };
+                            let Some(value) = value.to_f32() else {
+                                return Err(self.make_err(
+                                    format!("'f32' cannot hold this value: '{}'", value),
+                                    &rhs_line_info,
+                                ));
+                            };
+                            rhs.value = Some(context::Value::Float32(value));
+                        }
+                        // TODO: record info for generating IR
+                    }
+                    (context::Type::Float64, context::Type::Int) => {
+                        if let Some(value) = &rhs.value {
+                            let context::Value::Int(value) = value else {
+                                unreachable!("probably some analyzer bug");
+                            };
+                            let Some(value) = value.to_f64() else {
+                                return Err(self.make_err(
+                                    format!("'f64' cannot hold this value: '{}'", value),
+                                    &rhs_line_info,
+                                ));
+                            };
+                            rhs.value = Some(context::Value::Float64(value));
+                        }
+                        // TODO: record info for generating IR
+                    }
+                    (context::Type::Float32, context::Type::Float64) => {
+                        if let Some(value) = &rhs.value {
+                            let context::Value::Float64(value) = value else {
+                                unreachable!("probably some analyzer bug");
+                            };
+                            rhs.value = Some(context::Value::Float32(*value as f32));
+                        }
+                        // TODO: record info for generating IR
+                    }
                     (context::Type::Const(_), _) => {
                         return Err(self.make_err(
                             format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
                             &lhs_line_info,
                         ));
                     }
-                    (context::Type::Fat(_), context::Type::Array { count, taipe }) => {
+                    (
+                        context::Type::Fat(lhs_type),
+                        context::Type::Array {
+                            count: _,
+                            taipe: rhs_type,
+                        },
+                    ) => {
                         // array type can be coerced to a fat pointer
                         // TODO: record length information (for generating IR)
+                        if lhs_type != rhs_type {
+                            return Err(self
+                                .make_err(
+                                    format!("cannot assign to: '{}'", lhs.to_string()),
+                                    &lhs_line_info,
+                                )
+                                .chain(self.make_note(
+                                    format!("type of value is '{}'", rhs.to_string()),
+                                    &rhs_line_info,
+                                )));
+                        }
                     }
                     (context::Type::Noreturn, _) => {
                         return Err(self.make_err(
@@ -1280,7 +1376,10 @@ impl<'a> Analyzer<'a> {
         if let Some(num) = num.to_usize() {
             Ok(num)
         } else {
-            Err(self.make_err(format!("usize cannot hold value: '{}'", num), &line_info))
+            Err(self.make_err(
+                format!("'usize' cannot hold this value: '{}'", num),
+                &line_info,
+            ))
         }
     }
 

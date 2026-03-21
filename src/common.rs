@@ -3,6 +3,7 @@ use std::ops::Deref;
 use std::{error::Error, fmt};
 
 use num_bigint::{BigInt, ToBigInt};
+use num_traits::ToPrimitive;
 
 // line_start and line_end is inclusive
 // col_start and col_end is exclusive
@@ -267,6 +268,22 @@ impl Int {
         Self::from_helper(num, None, None)
     }
 
+    pub fn from_f32(num: f32) -> Self {
+        Self {
+            num: num.to_bigint().unwrap(),
+            max: None,
+            min: None,
+        }
+    }
+
+    pub fn from_f64(num: f64) -> Self {
+        Self {
+            num: num.to_bigint().unwrap(),
+            max: None,
+            min: None,
+        }
+    }
+
     fn from_helper(num: u64, max: Option<BigInt>, min: Option<BigInt>) -> Self {
         Self {
             num: num.to_bigint().unwrap(),
@@ -281,10 +298,15 @@ impl Int {
     }
 
     pub fn to_usize(&self) -> Option<usize> {
-        if self.num < BigInt::ZERO || self.num >= usize::MAX.to_bigint().unwrap() {
-            return None;
-        }
-        self.num.to_u64_digits().1.first().map(|&num| num as usize)
+        self.num.to_usize()
+    }
+
+    pub fn to_f32(&self) -> Option<f32> {
+        self.num.to_f32()
+    }
+
+    pub fn to_f64(&self) -> Option<f64> {
+        self.num.to_f64()
     }
 }
 
