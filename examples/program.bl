@@ -22,7 +22,7 @@
 // public(current)
 // mutable
 
-tup :: (11, 22, 33);
+tup := (11, 22, 33);
 tup_mem :: tup.1;
 
 a :: "aboba";

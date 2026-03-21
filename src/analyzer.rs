@@ -166,8 +166,8 @@ impl<'a> Analyzer<'a> {
                 } else {
                     self.declare_sym(node, name, object.as_ref())?
                 };
+                // Set in progress
                 {
-                    // Set in progress
                     let mut scope = scope.borrow_mut();
                     match &scope.state {
                         State::NotVisited(_) => {
@@ -191,35 +191,17 @@ impl<'a> Analyzer<'a> {
                     let Some(taipe) = taipe else {
                         unreachable!("probably some parser bug");
                     };
+                    assert!(eq_token.is_none());
                     let type_ctx = self.visit_type(taipe)?;
-                    match type_ctx {
-                        context::Type::Const(_) => {
-                            return Err(
-                                self.make_err("value must be specified for a constant", node)
-                            );
-                        }
-                        context::Type::Module | context::Type::Typedef => {
-                            return Err(self.make_err("value must be specified", node));
-                        }
-                        context::Type::Noreturn => {
-                            return Err(self.make_err(
-                                format!(
-                                    "'{}' cannot be the type of a declaration",
-                                    type_ctx.to_string()
-                                ),
-                                node,
-                            ));
-                        }
-                        _ => {}
+                    if type_ctx.is_const() {
+                        return Err(self.make_err("value must be specified", node));
                     }
-                    let ctx = Context {
-                        taipe: type_ctx,
-                        value: None,
-                    };
+                    let ctx =
+                        self.resolve_assign(Some((type_ctx, taipe.get_line_info())), None, None)?;
                     scope.borrow_mut().state = State::Visited(ctx.clone());
                     return Ok(ctx);
                 };
-                let ctx: Context<'_> = match object {
+                match object {
                     ast::Object::ExternModule {
                         line_info: _,
                         value,
@@ -253,7 +235,7 @@ impl<'a> Analyzer<'a> {
                         }
                         // Restore old scope
                         self.cur_scope = old_cur_scope;
-                        ctx
+                        Ok(ctx)
                     }
                     ast::Object::Struct {
                         line_info: _,
@@ -268,7 +250,7 @@ impl<'a> Analyzer<'a> {
                         //     bar: i32;
                         // }
                         colon_compulsory!(self, eq_token);
-                        self.visit_compound(scope, object, decls)?
+                        self.visit_compound(scope, object, decls)
                     }
                     ast::Object::Union {
                         line_info: _,
@@ -276,7 +258,7 @@ impl<'a> Analyzer<'a> {
                     } => {
                         colon_compulsory!(self, eq_token);
                         // TODO: implement field layout to distinguish between union and struct
-                        self.visit_compound(scope, object, decls)?
+                        self.visit_compound(scope, object, decls)
                     }
                     ast::Object::Fun {
                         line_info: _,
@@ -289,24 +271,49 @@ impl<'a> Analyzer<'a> {
                     }
                     ast::Object::Typedef(node) => {
                         colon_compulsory!(self, eq_token);
-                        let taipe = self.visit_type(node)?;
-                        if let context::Type::Typedef = taipe {
+                        // Visit type
+                        let lhs = if let Some(taipe) = taipe {
+                            Some((self.visit_type(taipe)?, taipe.get_line_info()))
+                        } else {
+                            None
+                        };
+                        let rhs = self.visit_type(node)?;
+                        if let context::Type::Typedef = rhs {
                             // context: type -> typedef, value -> typedef
                             // this cannot happen, there is no type of a type
                             // parser prevents this
                             return Err(self.make_err("invalid type alias", node));
                         }
-                        let ctx = Context::from_type(taipe);
+                        // Resolve assignment
+                        let ctx = self.resolve_assign(
+                            lhs,
+                            eq_token.as_ref(),
+                            Some((Context::from_type(rhs), node.get_line_info())),
+                        )?;
+                        // Complete the visit
                         scope.borrow_mut().state = scope::State::Visited(ctx.clone());
-                        ctx
+                        Ok(ctx)
                     }
                     ast::Object::Expr(expr) => {
-                        let ctx = self.visit_var(name, expr)?;
+                        // Visit type
+                        let lhs = if let Some(taipe) = taipe {
+                            Some((self.visit_type(taipe)?, taipe.get_line_info()))
+                        } else {
+                            None
+                        };
+                        // Visit expr
+                        let rhs = self.visit_var(name, expr)?;
+                        // Resolve assignment
+                        let ctx = self.resolve_assign(
+                            lhs,
+                            eq_token.as_ref(),
+                            Some((rhs, expr.get_line_info())),
+                        )?;
+                        // Complete the visit
                         scope.borrow_mut().state = scope::State::Visited(ctx.clone());
-                        ctx
+                        Ok(ctx)
                     }
-                };
-                self.resolve_assign(taipe.as_ref(), eq_token.as_ref(), object, ctx)
+                }
             }
             ast::Decl::Using {
                 line_info: _,
@@ -927,79 +934,182 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    /// In case of declaration, 'eq_token' is the token that separates lhs and rhs.
+    /// In case of assignment, 'eq_token' should always be None
     fn resolve_assign(
         &mut self,
-        taipe: Option<&'a ast::Type>,
+        lhs: Option<(context::Type<'a>, LineInfo)>,
         eq_token: Option<&Token>,
-        object: &ast::Object,
-        mut ctx: Context<'a>,
+        rhs: Option<(Context<'a>, LineInfo)>,
     ) -> CompileResult<Context<'a>> {
-        // Type checking
-        // TODO: Type checking done here is strict
-        // And assignment should not be this strict.
-        // For example:
-        //      val : i32 = 0i64;
-        // Does not work.
-        if let Some(type_node) = taipe {
+        match (lhs, rhs) {
+            (None, None) => panic!("either type or value information should be present"),
             // Situation
             // ---------------------------------
-            // name : type : object;
-            // name : type = object;
+            // name :: value;
+            // name := value;
             // ---------------------------------
-            let mut errs = Vec::new();
-            let mut type_ctx = self.visit_type(type_node)?;
-            // Extract the const
-            if let context::Type::Const(taipe) = type_ctx {
-                type_ctx = *taipe;
-            }
-            // Extract the const
-            if let context::Type::Const(taipe) = ctx.taipe {
-                ctx.taipe = *taipe;
-            }
-            if type_ctx != ctx.taipe {
-                errs.push(
-                    self.make_err(
-                        format!("types do not match: '{}'", type_ctx.to_string()),
-                        type_node,
-                    )
-                    .chain(self.make_note(
-                        format!("type of value is '{}'", ctx.taipe.to_string()),
-                        object,
-                    )),
-                );
-            }
-            let eq_token = eq_token.unwrap();
-            if eq_token.kind == TokenKind::Colon {
-                // Situation
-                // ---------------------------------
-                // name : type : object;
-                // ---------------------------------
-                if !ctx.taipe.is_const() {
-                    // Make it const
-                    ctx.taipe = context::Type::Const(Box::new(ctx.taipe));
+            (None, Some((rhs, rhs_line_info))) => {
+                let Some(eq_token) = eq_token else {
+                    unreachable!("probably some analyzer bug");
+                };
+                match eq_token.kind {
+                    // Situation
+                    // ---------------------------------
+                    // name :: value;
+                    // ---------------------------------
+                    TokenKind::Colon => {
+                        if rhs.value.is_none() {
+                            return Err(self.make_err(
+                                "value cannot be evaluated at compile time",
+                                &rhs_line_info,
+                            ));
+                        }
+                        Ok(Context {
+                            taipe: rhs.taipe.add_const(),
+                            value: rhs.value,
+                        })
+                    }
+                    // Situation
+                    // ---------------------------------
+                    // name := value;
+                    // ---------------------------------
+                    TokenKind::Equal => {
+                        let lhs = rhs.taipe.remove_const();
+                        if lhs.is_const() {
+                            return Err(self.make_err("expected ':'", eq_token));
+                        }
+                        Ok(Context {
+                            taipe: lhs,
+                            value: rhs.value,
+                        })
+                    }
+                    _ => {
+                        unreachable!("probably some parser bug");
+                    }
                 }
-            } else if eq_token.kind == TokenKind::Equal {
-                // Situation
-                // ---------------------------------
-                // name : type = object;
-                // ---------------------------------
-                if ctx.taipe.is_const() {
-                    // Module, function and typedef should defined with ':', is_const handles that
-                    // TODO: Maybe put a help message about that
-                    errs.push(
-                        self.make_err("expected ':'", eq_token)
-                            .chain(self.make_note("type is a constant", type_node)),
-                    );
-                }
-            } else {
-                unreachable!("probably some parser bug");
             }
-            // Return the accumulated errors
-            if !errs.is_empty() {
-                return Err(CompileError::Errors(errs));
+            // Situation
+            // ---------------------------------
+            // name: type;
+            // ---------------------------------
+            (Some((lhs, _)), None) => {
+                assert!(eq_token.is_none());
+                Ok(Context {
+                    taipe: lhs,
+                    value: None,
+                })
+            }
+            // Situation
+            // ---------------------------------
+            // name : type : value;
+            // name : type = value;
+            // expr = expr;
+            // ---------------------------------
+            (Some((mut lhs, lhs_line_info)), Some((mut rhs, rhs_line_info))) => {
+                let mut allow_assign_to_const = false;
+                if let Some(eq_token) = eq_token {
+                    match eq_token.kind {
+                        // Situation
+                        // ---------------------------------
+                        // name : type : value;
+                        // ---------------------------------
+                        TokenKind::Colon => {
+                            allow_assign_to_const = true;
+                            if rhs.value.is_none() {
+                                return Err(self.make_err(
+                                    "value cannot be evaluated at compile time",
+                                    &rhs_line_info,
+                                ));
+                            }
+                        }
+                        // Situation
+                        // ---------------------------------
+                        // name : type = value;
+                        // ---------------------------------
+                        TokenKind::Equal => {
+                            if lhs.is_const() {
+                                return Err(self.make_err("expected ':'", eq_token));
+                            }
+                        }
+                        _ => {
+                            unreachable!("probably some parser bug");
+                        }
+                    }
+                }
+                // const qualifier in rhs does not matter at all during assignment
+                // as values are always copied
+                rhs.taipe = rhs.taipe.remove_const();
+                if allow_assign_to_const {
+                    // If this is a first assignment to a constant
+                    // Behave as if the constant has no const qualifier to its type
+                    lhs = lhs.remove_const();
+                }
+                // Type checking
+                match (&lhs, &rhs.taipe) {
+                    (context::Type::Bool, context::Type::Char) => {
+                        // true  => __char != 0
+                        // false => __char != 0
+                        // TODO: record info for generating IR
+                    }
+                    (context::Type::Bool, context::Type::Int) => {
+                        // true  => int != 0
+                        // false => int != 0
+                        // TODO: record info for generating IR
+                    }
+                    (context::Type::Bool, context::Type::Float32) => {
+                        // true  => __f32 != 0
+                        // false => __f32 != 0
+                        // TODO: record info for generating IR
+                    }
+                    (context::Type::Bool, context::Type::Float64) => {
+                        // true  => __f64 != 0
+                        // false => __f64 != 0
+                        // TODO: record info for generating IR
+                    }
+                    (context::Type::Const(_), _) => {
+                        return Err(self.make_err(
+                            format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
+                            &lhs_line_info,
+                        ));
+                    }
+                    (context::Type::Fat(_), context::Type::Array { count, taipe }) => {
+                        // array type can be coerced to a fat pointer
+                        // TODO: record length information (for generating IR)
+                    }
+                    (context::Type::Noreturn, _) => {
+                        return Err(self.make_err(
+                            format!("cannot assign to: '{}'", lhs.to_string()),
+                            &lhs_line_info,
+                        ));
+                    }
+                    (_, context::Type::Noreturn) => {
+                        // noreturn type can be coerced to any type
+                    }
+                    (lhs, rhs) => {
+                        if lhs != rhs {
+                            return Err(self
+                                .make_err(
+                                    format!("cannot assign to: '{}'", lhs.to_string()),
+                                    &lhs_line_info,
+                                )
+                                .chain(self.make_note(
+                                    format!("type of value is '{}'", rhs.to_string()),
+                                    &rhs_line_info,
+                                )));
+                        }
+                    }
+                }
+                if allow_assign_to_const {
+                    // Now add the constant qualifier to the type
+                    lhs = lhs.add_const();
+                }
+                Ok(Context {
+                    taipe: lhs,
+                    value: rhs.value,
+                })
             }
         }
-        Ok(ctx)
     }
 
     fn get_member(

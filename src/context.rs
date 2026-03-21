@@ -97,6 +97,14 @@ pub enum Type<'a> {
 }
 
 impl<'a> Type<'a> {
+    pub fn add_const(self) -> Self {
+        if self.is_const() {
+            self
+        } else {
+            Type::Const(Box::new(self))
+        }
+    }
+
     pub fn remove_const(&self) -> Self {
         match self.clone() {
             Type::Const(taipe) => *taipe,

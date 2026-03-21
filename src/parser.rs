@@ -154,10 +154,10 @@ impl Parser {
                         items,
                     })
                 }
-                _ => Err(self.expect_err(&[Ident, Underscore])),
+                _ => Err(self.expect_err(&[Ident, Underscore, Using])),
             }
         } else {
-            Err(self.expect_err(&[Ident, Underscore]))
+            Err(self.expect_err(&[Ident, Underscore, Using]))
         }
     }
 
