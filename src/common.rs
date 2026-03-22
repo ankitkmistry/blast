@@ -138,6 +138,19 @@ impl Error for CompileError {}
 
 pub type CompileResult<T> = Result<T, CompileError>;
 
+#[derive(Clone, Copy, Debug)]
+pub struct Layout {
+    pub size: usize,
+    pub alignment: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum LayoutResult {
+    // EvalInProg,
+    NoLayout,
+    Evaled(Layout),
+}
+
 #[derive(Clone, Debug)]
 pub struct Int {
     pub num: BigInt,

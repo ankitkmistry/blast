@@ -27,39 +27,62 @@ tup_mem :: tup.1;
 floats_count :: 10;
 floats : [floats_count]__f32;
 
-a :: "aboba";
-// b :: a[-1];
-// b :: a[6];
-b :: sizeof a[1];
-c: const __bool : false;
-// d :: ~0;
+// Node :: struct {
+//     data: __f32;
+//     next: Node;
+// }
 
+// Solving module and typedef bug
 Bax :: FooM.Bar;
-
-stdin : std.io.File;
-stdout: std.io.File;
-stderr: std.io.File;
-
 FooM :: module {
     Foo :: Bax;
     Bar :: struct {}
 }
 
+// Concatenating modules
 std :: module {
+    stdin : std.io.File;
+    stdout: std.io.File;
+    stderr: std.io.File;
+
     io :: module {
         // File operations here
         File :: struct {}
     }
 }
-
 std :: module {
     fs :: module {
         // Write here something
     }
 }
 
-Numbers :: struct {
-    items: *__bool;
-    size: __bool = false;
-    capacity: __bool = true;
+vec2 :: struct {
+    x: __f64;
+    y: __f64;
+}
+
+vec3 :: union {
+    struct {
+        union {
+            x: __f64;
+            r: __f64;
+        }
+        union {
+            y: __f64;
+            g: __f64;
+        }
+        union {
+            z: __f64;
+            b: __f64;
+        }
+    }
+    struct {
+        xy: vec2;
+        _: __f64;
+    }
+    struct {
+        _: __f64;
+        yz: vec2;
+    }
+    v: [3]__f64;
 }

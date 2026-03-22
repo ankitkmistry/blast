@@ -1,11 +1,11 @@
 use core::fmt;
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    rc::{Rc, Weak},
-};
+use std::{cell::RefCell, rc::Weak};
 
-use crate::{ast, common::Int, scope};
+use crate::{
+    ast,
+    common::{Int, Layout, LayoutResult},
+    scope,
+};
 
 #[derive(Clone)]
 pub struct Param<'a> {
@@ -120,43 +120,88 @@ impl<'a> Type<'a> {
     }
 
     pub fn get_size(&self) -> Option<usize> {
-        Some(self.get_layout()?.0)
+        match self.get_layout() {
+            LayoutResult::NoLayout => None,
+            LayoutResult::Evaled(Layout { size, alignment: _ }) => Some(size),
+        }
     }
 
-    pub fn get_align(&self) -> Option<usize> {
-        Some(self.get_layout()?.1)
+    pub fn get_alignment(&self) -> Option<usize> {
+        match self.get_layout() {
+            LayoutResult::NoLayout => None,
+            LayoutResult::Evaled(Layout { size: _, alignment }) => Some(alignment),
+        }
     }
 
-    pub fn get_layout(&self) -> Option<(usize, usize)> {
+    pub fn get_layout(&self) -> LayoutResult {
         // (usize, usize) -> (size, alignment)
         // size (in bytes) -> always a multiple of alignment
         // alignment (in bytes) -> always a power of 2
         match self {
-            Type::Bool => Some((1, 1)),
-            Type::Char => Some((1, 1)),
-            Type::Int => None,
-            Type::Float32 => Some((4, 4)),
-            Type::Float64 => Some((4, 4)),
+            Type::Bool => LayoutResult::Evaled(Layout {
+                size: 1,
+                alignment: 1,
+            }),
+            Type::Char => LayoutResult::Evaled(Layout {
+                size: 1,
+                alignment: 1,
+            }),
+            // FIXME: variable integers do not have layout
+            Type::Int => LayoutResult::NoLayout,
+            Type::Float32 => LayoutResult::Evaled(Layout {
+                size: 4,
+                alignment: 4,
+            }),
+            Type::Float64 => LayoutResult::Evaled(Layout {
+                size: 8,
+                alignment: 8,
+            }),
             Type::Const(taipe) => taipe.get_layout(),
-            Type::Basic(weak) => todo!("layout of user defined types is not implemented"),
-            Type::Function { ret, params } => None,
-            Type::Pointer(_) => {
+            Type::Basic(weak) => {
+                let ref_cell = weak
+                    .upgrade()
+                    .expect("i dont really know what to do here");
+                let scope = ref_cell
+                    .try_borrow_mut()
+                    .ok();
+                if let Some(mut scope) = scope {
+                    scope.get_layout()
+                } else {
+                    LayoutResult::NoLayout
+                }
+            }
+            Type::Function { ret: _, params: _ } | Type::Pointer(_) => {
+                // On a low level, a function is nothing but a pointer
+                // to the starting of the code section in memory.
+                // Calling a function is nothing but bumping the instruction pointer.
+                // Functions are first class and they are nothing
+                // but special kind of pointers.
                 // TODO: make this compatible with multiple targets
-                Some((8, 8))
+                LayoutResult::Evaled(Layout {
+                    size: 8,
+                    alignment: 8,
+                })
             }
-            Type::Array { count, taipe } => {
-                let (size, align) = taipe.get_layout()?;
-                Some((count * size, align))
-            }
+            Type::Array { count, taipe } => match taipe.get_layout() {
+                LayoutResult::Evaled(Layout { size, alignment }) => LayoutResult::Evaled(Layout {
+                    size: count * size,
+                    alignment,
+                }),
+                layout => layout,
+            },
             Type::Fat(_) => {
                 // pointer_size + pointer_size
-                Some((2 * 8, 2 * 8))
+                // FIXME: fix this after generalizing fat pointers
+                LayoutResult::Evaled(Layout {
+                    size: 16,
+                    alignment: 16,
+                })
             }
             // TODO: layout of tuples is the same as the layout of values in a struct
             Type::Tuple(items) => todo!("layout of tuples is not implemented"),
-            Type::Module => None,
-            Type::Typedef => None,
-            Type::Noreturn => None,
+            Type::Module => LayoutResult::NoLayout,
+            Type::Typedef => LayoutResult::NoLayout,
+            Type::Noreturn => LayoutResult::NoLayout,
         }
     }
 
@@ -176,7 +221,7 @@ impl<'a> Type<'a> {
     pub fn is_const(&self) -> bool {
         match self {
             Type::Const(_) => true,
-            Type::Function { ret, params } => true,
+            Type::Function { ret: _, params: _ } => true,
             Type::Module => true,
             Type::Typedef => true,
             _ => false,
@@ -283,7 +328,7 @@ pub enum Value<'a> {
 }
 
 impl<'a> Value<'a> {
-    pub fn negate(mut self) -> Option<Self> {
+    pub fn negate(self) -> Option<Self> {
         match self {
             Value::Int(int) => Some(Value::Int(int.negate())),
             Value::Float32(val) => Some(Value::Float32(-val)),

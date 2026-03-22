@@ -199,7 +199,8 @@ impl Parser {
                             // Object begin tokens
                             Module, Struct, Union, Fun, Typedef, //
                             // Expr begin tokens
-                            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
+                            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof,
+                            Typeof, //
                             // Primary expr begin tokens
                             True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace,
                             LBrack, //
@@ -212,7 +213,7 @@ impl Parser {
                 // Object begin tokens
                 Module, Struct, Union, Fun, Typedef, //
                 // Expr begin tokens
-                Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
+                Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof, Typeof, //
                 // Primary expr begin tokens
                 True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
             ]))
@@ -311,6 +312,13 @@ impl Parser {
                             expr: None,
                         })
                     }
+                }
+                Struct | Union => {
+                    let token = self.get_token()?;
+                    self.expect(LBrace)?;
+                    let fields = self.parse_fields()?;
+                    self.expect(RBrace)?;
+                    Ok(ast::Field::Compound { token, fields })
                 }
                 _ => Err(self.expect_err(&[Ident, Underscore, Struct, Union])),
             }
@@ -469,7 +477,8 @@ impl Parser {
                             // Stmt begin tokens
                             If, Label, While, Loop, LBrace, Yield, Continue, Break, Return, //
                             // Expr begin tokens
-                            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
+                            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof,
+                            Typeof, //
                             // Primary expr begin tokens
                             True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace,
                             LBrack, //
@@ -482,7 +491,7 @@ impl Parser {
                 // Stmt begin tokens
                 If, Label, While, Loop, LBrace, Yield, Continue, Break, Return, //
                 // Expr begin tokens
-                Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
+                Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof, Typeof, //
                 // Primary expr begin tokens
                 True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
             ]))
@@ -728,7 +737,7 @@ impl Parser {
     fn is_expr_start(&mut self) -> bool {
         [
             // Expr begin tokens
-            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Typeof, //
+            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof, Typeof, //
             // Primary expr begin tokens
             True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
         ]

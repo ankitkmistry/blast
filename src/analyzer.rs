@@ -2,18 +2,20 @@ use std::{
     cell::{Ref, RefCell},
     collections::HashMap,
     rc::Rc,
+    sync::atomic::AtomicU64,
 };
 
 use num_bigint::{BigInt, ToBigInt};
-use num_traits::ConstZero;
 
 use crate::{
     ast,
-    common::{CompileError, CompileResult, HasLineInfo, Int, LineInfo},
+    common::{CompileError, CompileResult, HasLineInfo, Int, Layout, LayoutResult, LineInfo},
     context::{self, Context},
     lexer::{Token, TokenKind, TokenValue},
     scope::{self, HasSrcInfo, Payload, State},
 };
+
+static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub struct Analyzer<'a> {
     roots: HashMap<String, Rc<RefCell<scope::Scope<'a>>>>,
@@ -48,8 +50,8 @@ impl<'a> Analyzer<'a> {
     fn sem_analysis(&mut self) -> CompileResult<()> {
         let mut final_decls = Vec::new();
         // Accumulate top level decls from all roots
-        for root in self.roots.values() {
-            let root = root.borrow();
+        for root_rc in self.roots.values() {
+            let mut root = root_rc.borrow_mut();
             match &root.state {
                 State::NotVisited(scope_node) => match scope_node {
                     scope::ScopeNode::Object(object) => match object {
@@ -60,6 +62,8 @@ impl<'a> Analyzer<'a> {
                             for decl in decls {
                                 final_decls.push(decl);
                             }
+                            root.state =
+                                State::Visited(Context::from_module(Rc::downgrade(root_rc)));
                         }
                         _ => unreachable!("not supposed to happen"),
                     },
@@ -142,12 +146,20 @@ impl<'a> Analyzer<'a> {
                 .chain(self.make_note("already declared here", &prev_scope_ref.borrow())));
         }
 
+        let sym_name = if name.kind == TokenKind::Underscore {
+            format!(
+                "unnamed.{}",
+                UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            )
+        } else {
+            name.text.clone()
+        };
+
         Ok(scope::Scope::add_child(
             &self.cur_scope,
-            &name.text,
-            Some(name.clone()),
+            &sym_name,
             scope::State::NotVisited(scope::ScopeNode::Decl(node)),
-            node,
+            name,
         ))
     }
 
@@ -190,12 +202,20 @@ impl<'a> Analyzer<'a> {
                 .chain(self.make_note("already declared here", &prev_scope)));
         }
 
+        let sym_name = if name.kind == TokenKind::Underscore {
+            format!(
+                "unnamed.{}",
+                UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            )
+        } else {
+            name.text.clone()
+        };
+
         Ok(scope::Scope::add_child(
             &self.cur_scope,
-            &name.text,
-            Some(name.clone()),
+            &sym_name,
             scope::State::NotVisited(scope::ScopeNode::Decl(node)),
-            object,
+            name,
         ))
     }
 
@@ -215,10 +235,18 @@ impl<'a> Analyzer<'a> {
                 .chain(self.make_note("already declared here", &prev_scope_ref.borrow())));
         }
 
+        let sym_name = if name.kind == TokenKind::Underscore {
+            format!(
+                "unnamed.{}",
+                UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            )
+        } else {
+            name.text.clone()
+        };
+
         Ok(scope::Scope::add_child(
             &self.cur_scope,
-            &name.text,
-            Some(name.clone()),
+            &sym_name,
             scope::State::NotVisited(scope::ScopeNode::Field(field)),
             field,
         ))
@@ -420,11 +448,24 @@ impl<'a> Analyzer<'a> {
     }
 
     fn get_fields(&mut self, field: &'a ast::Field) -> CompileResult<scope::Field<'a>> {
+        self.get_fields_ex(field, false)
+    }
+
+    fn get_fields_ex(
+        &mut self,
+        field: &'a ast::Field,
+        is_alone: bool,
+    ) -> CompileResult<scope::Field<'a>> {
         match field {
             ast::Field::Compound { token, fields } => {
+                if is_alone {
+                    return Err(self.make_err("inner scope shadows outer scope", token));
+                }
+
                 let mut vec = Vec::new();
+                let is_child_alone = fields.len() == 1;
                 for field in fields {
-                    vec.push(self.get_fields(field)?);
+                    vec.push(self.get_fields_ex(field, is_child_alone)?);
                 }
                 match token.kind {
                     TokenKind::Struct => Ok(scope::Field::Struct(vec)),
@@ -489,7 +530,7 @@ impl<'a> Analyzer<'a> {
                 // Complete the visit
                 scope.borrow_mut().state = scope::State::Visited(ctx.clone());
                 Ok(scope::Field::Field {
-                    name: name.text.clone(),
+                    name: scope.borrow().name.clone(),
                     ctx,
                 })
             }
@@ -514,8 +555,32 @@ impl<'a> Analyzer<'a> {
         scope.borrow_mut().state = State::Visited(ctx.clone());
         // Visit every field
         let mut field = self.get_fields(field)?;
+        // TODO: calculate size
         // Set the payload
         scope.borrow_mut().payload = Payload::Compound(scope::Compound::new(field));
+        // Eval the layout
+        let layout = scope.borrow_mut().get_layout();
+        if let LayoutResult::NoLayout = layout {
+            return Err(self.make_err("memory layout cannot be evaluated", &scope.borrow()));
+        }
+        // Print the layout
+        {
+            println!("-------------------------------------------------");
+            println!(
+                "Layout of {}: {:?}",
+                ctx.clone().value.unwrap().to_string(),
+                layout
+            );
+            let scope::Payload::Compound(ref compound) = scope.borrow().payload else {
+                unreachable!("not supposed to happen")
+            };
+            let mut fields = compound.offsets.iter().collect::<Vec<_>>();
+            fields.sort_by_key(|&(_, &data)| data.offset);
+            for (name, field_data) in fields {
+                println!("offset of {} = {:?}", name, field_data);
+            }
+            println!("-------------------------------------------------");
+        }
         // Restore old scope
         self.cur_scope = old_cur_scope;
         Ok(ctx)
@@ -883,7 +948,7 @@ impl<'a> Analyzer<'a> {
                             }
                             taipe => taipe,
                         };
-                        let Some(size) = taipe.get_align() else {
+                        let Some(size) = taipe.get_alignment() else {
                             return Err(self.make_err(
                                 format!("type has no alignment: '{}'", taipe.to_string()),
                                 expr,
@@ -1147,6 +1212,119 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn get_sizeof(
+        &mut self,
+        taipe: context::Type<'a>,
+        line_info: &impl HasLineInfo,
+    ) -> CompileResult<Context<'a>> {
+        let size = self.resolve_layout(taipe, line_info)?.size;
+        todo!()
+    }
+
+    fn get_alignof(
+        &mut self,
+        taipe: context::Type<'a>,
+        line_info: &impl HasLineInfo,
+    ) -> CompileResult<Context<'a>> {
+        let size = self.resolve_layout(taipe, line_info)?.size;
+        todo!()
+    }
+
+    fn resolve_layout(
+        &mut self,
+        taipe: context::Type<'a>,
+        line_info: &impl HasLineInfo,
+    ) -> CompileResult<Layout> {
+        self.resolve_layout_ex(taipe, line_info.get_line_info())
+    }
+
+    fn resolve_layout_ex(
+        &mut self,
+        taipe: context::Type<'a>,
+        line_info: LineInfo,
+    ) -> CompileResult<Layout> {
+        let layout = match taipe {
+            context::Type::Bool => Layout {
+                size: 1,
+                alignment: 1,
+            },
+            context::Type::Char => Layout {
+                size: 1,
+                alignment: 1,
+            },
+            // FIXME: variable integers do not have layout
+            context::Type::Float32 => Layout {
+                size: 4,
+                alignment: 4,
+            },
+            context::Type::Float64 => Layout {
+                size: 8,
+                alignment: 8,
+            },
+            context::Type::Const(taipe) => self.resolve_layout_ex(*taipe, line_info)?,
+            context::Type::Basic(weak) => {
+                let ref_cell = weak.upgrade().expect("i dont really know what to do here");
+                let scope = ref_cell.try_borrow_mut().ok();
+                if let Some(mut scope) = scope {
+                    // scope.get_layout()
+                    todo!()
+                } else {
+                    todo!()
+                }
+            }
+            context::Type::Function { ret: _, params: _ } | context::Type::Pointer(_) => {
+                // On a low level, a function is nothing but a pointer
+                // to the starting of the code section in memory.
+                // Calling a function is nothing but bumping the instruction pointer.
+                // Functions are first class and they are nothing
+                // but special kind of pointers.
+                // TODO: make this compatible with multiple targets
+                Layout {
+                    size: 8,
+                    alignment: 8,
+                }
+            }
+            context::Type::Array { count, taipe } => {
+                let Layout { size, alignment } = self.resolve_layout_ex(*taipe, line_info)?;
+                Layout {
+                    size: count * size,
+                    alignment,
+                }
+            }
+            context::Type::Fat(_) => {
+                // pointer_size + pointer_size
+                // FIXME: fix this after generalizing fat pointers
+                Layout {
+                    size: 16,
+                    alignment: 16,
+                }
+            }
+            // TODO: layout of tuples is the same as the layout of values in a struct
+            context::Type::Tuple(items) => todo!("layout of tuples is not implemented"),
+            // Lone losers
+            context::Type::Int
+            | context::Type::Module
+            | context::Type::Typedef
+            | context::Type::Noreturn => {
+                return Err(self.make_err(
+                    format!(
+                        "type has no memory layout, problem type is '{}'",
+                        taipe.to_string()
+                    ),
+                    &line_info,
+                ));
+            }
+        };
+        Ok(layout)
+    }
+
+    fn resolve_layout_scope(
+        &mut self,
+        scope: Rc<RefCell<scope::Scope<'a>>>,
+    ) -> CompileResult<Layout> {
+        todo!()
+    }
+
     /// In case of declaration, 'eq_token' is the token that separates lhs and rhs.
     /// In case of assignment, 'eq_token' should always be None
     fn resolve_assign(
@@ -1219,7 +1397,7 @@ impl<'a> Analyzer<'a> {
             // name : type = value;
             // expr = expr;
             // ---------------------------------
-            (Some((mut lhs, lhs_line_info)), Some((mut rhs, rhs_line_info))) => {
+            (Some((lhs, lhs_line_info)), Some((rhs, rhs_line_info))) => {
                 let mut allow_assign_to_const = false;
                 if let Some(eq_token) = eq_token {
                     match eq_token.kind {
@@ -1250,134 +1428,152 @@ impl<'a> Analyzer<'a> {
                         }
                     }
                 }
-                // const qualifier in rhs does not matter at all during assignment
-                // as values are always copied
-                rhs.taipe = rhs.taipe.remove_const();
-                if allow_assign_to_const {
-                    // If this is a first assignment to a constant
-                    // Behave as if the constant has no const qualifier to its type
-                    lhs = lhs.remove_const();
-                }
-                // Type checking and Implicit conversions
-                match (&lhs, &rhs.taipe) {
-                    // (context::Type::Int, context::Type::Float32) => {
-                    //     if let Some(value) = &rhs.value {
-                    //         let context::Value::Float32(value) = value else {
-                    //             unreachable!("probably some analyzer bug");
-                    //         };
-                    //         rhs.value = Some(context::Value::Int(Int::from_f32(*value)));
-                    //     }
-                    //     // TODO: record info for generating IR
-                    // }
-                    // (context::Type::Int, context::Type::Float64) => {
-                    //     if let Some(value) = &rhs.value {
-                    //         let context::Value::Float64(value) = value else {
-                    //             unreachable!("probably some analyzer bug");
-                    //         };
-                    //         rhs.value = Some(context::Value::Int(Int::from_f64(*value)));
-                    //     }
-                    //     // TODO: record info for generating IR
-                    // }
-                    (context::Type::Float32, context::Type::Int) => {
-                        if let Some(value) = &rhs.value {
-                            let context::Value::Int(value) = value else {
-                                unreachable!("probably some analyzer bug");
-                            };
-                            let Some(value) = value.to_f32() else {
-                                return Err(self.make_err(
-                                    format!("'f32' cannot hold this value: '{}'", value),
-                                    &rhs_line_info,
-                                ));
-                            };
-                            rhs.value = Some(context::Value::Float32(value));
-                        }
-                        // TODO: record info for generating IR
-                    }
-                    (context::Type::Float64, context::Type::Int) => {
-                        if let Some(value) = &rhs.value {
-                            let context::Value::Int(value) = value else {
-                                unreachable!("probably some analyzer bug");
-                            };
-                            let Some(value) = value.to_f64() else {
-                                return Err(self.make_err(
-                                    format!("'f64' cannot hold this value: '{}'", value),
-                                    &rhs_line_info,
-                                ));
-                            };
-                            rhs.value = Some(context::Value::Float64(value));
-                        }
-                        // TODO: record info for generating IR
-                    }
-                    (context::Type::Float32, context::Type::Float64) => {
-                        if let Some(value) = &rhs.value {
-                            let context::Value::Float64(value) = value else {
-                                unreachable!("probably some analyzer bug");
-                            };
-                            rhs.value = Some(context::Value::Float32(*value as f32));
-                        }
-                        // TODO: record info for generating IR
-                    }
-                    (context::Type::Const(_), _) => {
-                        return Err(self.make_err(
-                            format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
-                            &lhs_line_info,
-                        ));
-                    }
-                    (
-                        context::Type::Fat(lhs_type),
-                        context::Type::Array {
-                            count: _,
-                            taipe: rhs_type,
-                        },
-                    ) => {
-                        // array type can be coerced to a fat pointer
-                        // TODO: record length information (for generating IR)
-                        if lhs_type != rhs_type {
-                            return Err(self
-                                .make_err(
-                                    format!("cannot assign to: '{}'", lhs.to_string()),
-                                    &lhs_line_info,
-                                )
-                                .chain(self.make_note(
-                                    format!("type of value is '{}'", rhs.to_string()),
-                                    &rhs_line_info,
-                                )));
-                        }
-                    }
-                    (context::Type::Noreturn, _) => {
-                        return Err(self.make_err(
-                            format!("cannot assign to: '{}'", lhs.to_string()),
-                            &lhs_line_info,
-                        ));
-                    }
-                    (_, context::Type::Noreturn) => {
-                        // noreturn type can be coerced to any type
-                        rhs.value = None;
-                    }
-                    (lhs, rhs) => {
-                        if lhs != rhs {
-                            return Err(self
-                                .make_err(
-                                    format!("cannot assign to: '{}'", lhs.to_string()),
-                                    &lhs_line_info,
-                                )
-                                .chain(self.make_note(
-                                    format!("type of value is '{}'", rhs.to_string()),
-                                    &rhs_line_info,
-                                )));
-                        }
-                    }
-                }
-                if allow_assign_to_const {
-                    // Now add the constant qualifier to the type
-                    lhs = lhs.add_const();
-                }
-                Ok(Context {
-                    taipe: lhs,
-                    value: rhs.value,
-                })
+                // Type checking and implicit casting
+                self.resolve_implicit_cast(
+                    lhs,
+                    lhs_line_info,
+                    rhs,
+                    rhs_line_info,
+                    allow_assign_to_const,
+                )
             }
         }
+    }
+
+    fn resolve_implicit_cast(
+        &mut self,
+        mut lhs: context::Type<'a>,
+        lhs_line_info: LineInfo,
+        mut rhs: Context<'a>,
+        rhs_line_info: LineInfo,
+        allow_assign_to_const: bool,
+    ) -> CompileResult<Context<'a>> {
+        // const qualifier in rhs does not matter at all during assignment
+        // as values are always copied
+        rhs.taipe = rhs.taipe.remove_const();
+        if allow_assign_to_const {
+            // If this is a first assignment to a constant
+            // Behave as if the constant has no const qualifier to its type
+            lhs = lhs.remove_const();
+        }
+        // Type checking and Implicit conversions
+        match (&lhs, &rhs.taipe) {
+            // (context::Type::Int, context::Type::Float32) => {
+            //     if let Some(value) = &rhs.value {
+            //         let context::Value::Float32(value) = value else {
+            //             unreachable!("probably some analyzer bug");
+            //         };
+            //         rhs.value = Some(context::Value::Int(Int::from_f32(*value)));
+            //     }
+            //     // TODO: record info for generating IR
+            // }
+            // (context::Type::Int, context::Type::Float64) => {
+            //     if let Some(value) = &rhs.value {
+            //         let context::Value::Float64(value) = value else {
+            //             unreachable!("probably some analyzer bug");
+            //         };
+            //         rhs.value = Some(context::Value::Int(Int::from_f64(*value)));
+            //     }
+            //     // TODO: record info for generating IR
+            // }
+            (context::Type::Float32, context::Type::Int) => {
+                if let Some(value) = &rhs.value {
+                    let context::Value::Int(value) = value else {
+                        unreachable!("probably some analyzer bug");
+                    };
+                    let Some(value) = value.to_f32() else {
+                        return Err(self.make_err(
+                            format!("'f32' cannot hold this value: '{}'", value),
+                            &rhs_line_info,
+                        ));
+                    };
+                    rhs.value = Some(context::Value::Float32(value));
+                }
+                // TODO: record info for generating IR
+            }
+            (context::Type::Float64, context::Type::Int) => {
+                if let Some(value) = &rhs.value {
+                    let context::Value::Int(value) = value else {
+                        unreachable!("probably some analyzer bug");
+                    };
+                    let Some(value) = value.to_f64() else {
+                        return Err(self.make_err(
+                            format!("'f64' cannot hold this value: '{}'", value),
+                            &rhs_line_info,
+                        ));
+                    };
+                    rhs.value = Some(context::Value::Float64(value));
+                }
+                // TODO: record info for generating IR
+            }
+            (context::Type::Float32, context::Type::Float64) => {
+                if let Some(value) = &rhs.value {
+                    let context::Value::Float64(value) = value else {
+                        unreachable!("probably some analyzer bug");
+                    };
+                    rhs.value = Some(context::Value::Float32(*value as f32));
+                }
+                // TODO: record info for generating IR
+            }
+            (context::Type::Const(_), _) => {
+                return Err(self.make_err(
+                    format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
+                    &lhs_line_info,
+                ));
+            }
+            (
+                context::Type::Fat(lhs_type),
+                context::Type::Array {
+                    count: _,
+                    taipe: rhs_type,
+                },
+            ) => {
+                // array type can be coerced to a fat pointer
+                // TODO: record length information (for generating IR)
+                if lhs_type != rhs_type {
+                    return Err(self
+                        .make_err(
+                            format!("cannot assign to: '{}'", lhs.to_string()),
+                            &lhs_line_info,
+                        )
+                        .chain(self.make_note(
+                            format!("type of value is '{}'", rhs.to_string()),
+                            &rhs_line_info,
+                        )));
+                }
+            }
+            (context::Type::Noreturn, _) => {
+                return Err(self.make_err(
+                    format!("cannot assign to: '{}'", lhs.to_string()),
+                    &lhs_line_info,
+                ));
+            }
+            (_, context::Type::Noreturn) => {
+                // noreturn type can be coerced to any type
+                rhs.value = None;
+            }
+            (lhs, rhs) => {
+                if lhs != rhs {
+                    return Err(self
+                        .make_err(
+                            format!("cannot assign to: '{}'", lhs.to_string()),
+                            &lhs_line_info,
+                        )
+                        .chain(self.make_note(
+                            format!("type of value is '{}'", rhs.to_string()),
+                            &rhs_line_info,
+                        )));
+                }
+            }
+        }
+        if allow_assign_to_const {
+            // Now add the constant qualifier to the type
+            lhs = lhs.add_const();
+        }
+        Ok(Context {
+            taipe: lhs,
+            value: rhs.value,
+        })
     }
 
     fn get_member(

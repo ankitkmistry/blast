@@ -1,12 +1,12 @@
 use crate::{
     ast,
-    common::{HasLineInfo, LineInfo},
+    common::{HasLineInfo, Layout, LayoutResult, LineInfo},
     context::Context,
     lexer::Token,
 };
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     rc::{Rc, Weak},
 };
 
@@ -42,13 +42,13 @@ impl SymbolPath {
         self.elms.push(name.to_owned());
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.elms.is_empty()
-    }
-
-    pub fn get_elements(&self) -> &[String] {
-        &self.elms
-    }
+    // pub fn is_empty(&self) -> bool {
+    //     self.elms.is_empty()
+    // }
+    //
+    // pub fn get_elements(&self) -> &[String] {
+    //     &self.elms
+    // }
 }
 
 #[derive(Clone)]
@@ -74,7 +74,7 @@ pub enum State<'a> {
     NotVisited(ScopeNode<'a>),
     /// Visitation is in progress
     VisitInProg,
-    /// Scope has been visited including the children
+    /// Scope has been visited
     Visited(Context<'a>),
 }
 
@@ -91,14 +91,149 @@ pub enum Field<'a> {
     Field { name: String, ctx: Context<'a> },
 }
 
+impl<'a> Field<'a> {
+    fn get_layout(
+        &self,
+        offset_start: usize,
+        offset_map: &mut HashMap<String, FieldData>,
+    ) -> (Option<String>, LayoutResult) {
+        match self {
+            Field::Struct(fields) => {
+                // Alignment of a struct is the alignment of the most aligned field
+                let mut alignment = 1usize;
+                // Calculate
+                let mut offset = 0usize;
+                for field in fields.iter() {
+                    match field.get_layout(offset, offset_map) {
+                        (name, LayoutResult::NoLayout) => return (name, LayoutResult::NoLayout),
+                        (
+                            field_name,
+                            LayoutResult::Evaled(Layout {
+                                size: field_size,
+                                alignment: field_alignment,
+                            }),
+                        ) => {
+                            if let Some(field_name) = field_name {
+                                // Set the offset of field
+                                offset_map.insert(
+                                    field_name.clone(),
+                                    FieldData {
+                                        offset,
+                                        size: field_size,
+                                        alignment: field_alignment,
+                                    },
+                                );
+                            }
+                            // Advance the offset
+                            offset += field_size;
+                            // Add the padding
+                            offset += Self::eval_padding(offset, field_alignment);
+                            alignment = alignment.max(field_alignment);
+                        }
+                    }
+                }
+                // Extra padding at the end of the struct
+                offset += Self::eval_padding(offset, alignment);
+                let size = offset - offset_start;
+                (
+                    None,
+                    LayoutResult::Evaled(Layout {
+                        // TODO: think about empty structs
+                        // Reference: https://doc.rust-lang.org/nightly/nomicon/exotic-sizes.html#zero-sized-types-zsts
+                        size: if size == 0 { 1 } else { size },
+                        alignment,
+                    }),
+                )
+            }
+            Field::Union(fields) => {
+                // Alignment of a union is the alignment of the most aligned field
+                let mut alignment = 0usize;
+                // Size of a union is the size of the most aligned field
+                let mut size = 0usize;
+                // Calculate
+                for field in fields.iter() {
+                    match field.get_layout(offset_start, offset_map) {
+                        (name, LayoutResult::NoLayout) => return (name, LayoutResult::NoLayout),
+                        (
+                            name,
+                            LayoutResult::Evaled(Layout {
+                                size: field_size,
+                                alignment: field_alignment,
+                            }),
+                        ) => {
+                            if let Some(name) = name {
+                                // Set the offset of field
+                                offset_map.insert(
+                                    name.clone(),
+                                    FieldData {
+                                        offset: offset_start,
+                                        size: field_size,
+                                        alignment: field_alignment,
+                                    },
+                                );
+                            }
+                            alignment = alignment.max(field_alignment);
+                            size = size.max(field_size);
+                        }
+                    }
+                }
+                (None, LayoutResult::Evaled(Layout { size, alignment }))
+            }
+            Field::Field { name, ctx } => (Some(name.clone()), ctx.taipe.get_layout()),
+        }
+    }
+
+    fn eval_padding(cur_offset: usize, alignment: usize) -> usize {
+        // Calculate the misalignment
+        let misalignment = cur_offset % alignment;
+        // Add the padding
+        let padding = if misalignment > 0 {
+            alignment - misalignment
+        } else {
+            0
+        };
+        padding
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FieldData {
+    pub offset: usize,
+    pub size: usize,
+    pub alignment: usize,
+}
+
 #[derive(Clone)]
 pub struct Compound<'a> {
     field: Field<'a>,
+    layout: Option<LayoutResult>,
+    pub offsets: HashMap<String, FieldData>,
 }
 
 impl<'a> Compound<'a> {
     pub fn new(field: Field<'a>) -> Self {
-        Compound { field }
+        Compound {
+            field,
+            layout: None,
+            offsets: HashMap::new(),
+        }
+    }
+
+    fn get_layout(&mut self) -> LayoutResult {
+        if let Some(layout) = self.layout {
+            match layout {
+                LayoutResult::NoLayout => LayoutResult::NoLayout,
+                LayoutResult::Evaled(Layout {
+                    size,
+                    alignment: align,
+                }) => LayoutResult::Evaled(Layout {
+                    size,
+                    alignment: align,
+                }),
+            }
+        } else {
+            self.field.get_layout(0, &mut self.offsets).1
+        }
     }
 }
 
@@ -115,7 +250,7 @@ pub struct Scope<'a> {
     /// The symbol path of the scope
     pub sym_path: SymbolPath,
     /// The name of the scope in the form of a token. (to improve error output)
-    pub name: Option<Token>,
+    pub name: String,
     /// The line info of the scope.
     pub line_info: LineInfo,
     /// The state for the context evaluation of this scope
@@ -133,7 +268,7 @@ impl<'a> Scope<'a> {
             parent: Weak::new(),
             file_path: Some(file_path.to_owned()),
             sym_path: SymbolPath::new(),
-            name: None,
+            name: "".to_string(),
             line_info: node.get_line_info(),
             state: State::NotVisited(ScopeNode::Object(node)),
             payload: Payload::None,
@@ -144,7 +279,6 @@ impl<'a> Scope<'a> {
     pub fn add_child(
         parent: &Rc<RefCell<Scope<'a>>>,
         name: &str,
-        name_tok: Option<Token>,
         state: State<'a>,
         line_info: &impl HasLineInfo,
     ) -> Rc<RefCell<Scope<'a>>> {
@@ -156,7 +290,7 @@ impl<'a> Scope<'a> {
             parent: Rc::downgrade(parent),
             file_path: None,
             sym_path,
-            name: name_tok,
+            name: name.to_string(),
             line_info: line_info.get_line_info(),
             state,
             payload: Payload::None,
@@ -174,6 +308,13 @@ impl<'a> Scope<'a> {
         }
         result
     }
+
+    pub fn get_layout(&mut self) -> LayoutResult {
+        match &mut self.payload {
+            Payload::Compound(compound) => compound.get_layout(),
+            Payload::None => unreachable!("probably some analyzer bug"),
+        }
+    }
 }
 
 pub trait HasSrcInfo: HasLineInfo {
@@ -182,9 +323,6 @@ pub trait HasSrcInfo: HasLineInfo {
 
 impl<'a> HasLineInfo for Scope<'a> {
     fn get_line_info(&self) -> LineInfo {
-        if let Some(tok) = &self.name {
-            return tok.get_line_info();
-        }
         self.line_info
     }
 }
