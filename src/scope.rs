@@ -1,15 +1,13 @@
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    fmt,
-    rc::{Rc, Weak},
-};
-
 use crate::{
     ast,
     common::{HasLineInfo, LineInfo},
     context::Context,
     lexer::Token,
+};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    rc::{Rc, Weak},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -54,45 +52,59 @@ impl SymbolPath {
 }
 
 #[derive(Clone)]
+pub enum ScopeNode<'a> {
+    Decl(&'a ast::Decl),
+    Field(&'a ast::Field),
+    Object(&'a ast::Object),
+}
+
+impl<'a> HasLineInfo for ScopeNode<'a> {
+    fn get_line_info(&self) -> LineInfo {
+        match self {
+            ScopeNode::Decl(decl) => decl.get_line_info(),
+            ScopeNode::Field(field) => field.get_line_info(),
+            ScopeNode::Object(object) => object.get_line_info(),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub enum State<'a> {
     /// Scope is not visited yet
-    NotVisited(&'a ast::Decl),
+    NotVisited(ScopeNode<'a>),
     /// Visitation is in progress
     VisitInProg,
     /// Scope has been visited including the children
     Visited(Context<'a>),
 }
 
+#[derive(Clone)]
 pub enum Payload<'a> {
     Compound(Compound<'a>),
     None,
 }
 
 #[derive(Clone)]
+pub enum Field<'a> {
+    Struct(Vec<Field<'a>>),
+    Union(Vec<Field<'a>>),
+    Field { name: String, ctx: Context<'a> },
+}
+
+#[derive(Clone)]
 pub struct Compound<'a> {
-    fields: Vec<(String, Context<'a>)>,
-    pub node: &'a ast::Object,
+    field: Field<'a>,
 }
 
 impl<'a> Compound<'a> {
-    pub fn new(fields: &[(String, Context<'a>)], node: &'a ast::Object) -> Self {
-        Compound {
-            fields: fields.to_vec(),
-            node,
-        }
-    }
-}
-
-impl<'a> fmt::Debug for Compound<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Compound")
-            .field("fields", &self.fields)
-            .finish()
+    pub fn new(field: Field<'a>) -> Self {
+        Compound { field }
     }
 }
 
 pub type Map<K, V> = BTreeMap<K, V>;
 
+#[derive(Clone)]
 pub struct Scope<'a> {
     /// Weak reference to the parent scope
     pub parent: Weak<RefCell<Scope<'a>>>,
@@ -104,33 +116,29 @@ pub struct Scope<'a> {
     pub sym_path: SymbolPath,
     /// The name of the scope in the form of a token. (to improve error output)
     pub name: Option<Token>,
-    /// The ast node of the scope. This is None only in the case of folder modules
-    pub node: Option<&'a ast::Object>,
+    /// The line info of the scope.
+    pub line_info: LineInfo,
     /// The state for the context evaluation of this scope
     pub state: State<'a>,
     /// The payload data for this scope.
     /// For example, a struct scope can have a payload related to field layout, padding, etc.
     pub payload: Payload<'a>,
     /// The children of this scope
-    // pub children: HashMap<String, Rc<RefCell<Scope<'a>>>>,
     pub children: Map<String, Rc<RefCell<Scope<'a>>>>,
 }
 
 impl<'a> Scope<'a> {
     pub fn new_root(file_path: &str, node: &'a ast::Object) -> Rc<RefCell<Self>> {
-        Rc::new_cyclic(|module| {
-            RefCell::new(Self {
-                parent: Weak::new(),
-                file_path: Some(file_path.to_owned()),
-                sym_path: SymbolPath::new(),
-                name: None,
-                node: Some(node),
-                state: State::Visited(Context::from_module(module.clone())),
-                payload: Payload::None,
-                // children: HashMap::new(),
-                children: Map::new(),
-            })
-        })
+        Rc::new(RefCell::new(Self {
+            parent: Weak::new(),
+            file_path: Some(file_path.to_owned()),
+            sym_path: SymbolPath::new(),
+            name: None,
+            line_info: node.get_line_info(),
+            state: State::NotVisited(ScopeNode::Object(node)),
+            payload: Payload::None,
+            children: Map::new(),
+        }))
     }
 
     pub fn add_child(
@@ -138,7 +146,7 @@ impl<'a> Scope<'a> {
         name: &str,
         name_tok: Option<Token>,
         state: State<'a>,
-        node: Option<&'a ast::Object>,
+        line_info: &impl HasLineInfo,
     ) -> Rc<RefCell<Scope<'a>>> {
         // Create the symbol path
         let mut sym_path = parent.borrow().sym_path.clone();
@@ -149,10 +157,9 @@ impl<'a> Scope<'a> {
             file_path: None,
             sym_path,
             name: name_tok,
-            node,
+            line_info: line_info.get_line_info(),
             state,
             payload: Payload::None,
-            // children: HashMap::new(),
             children: Map::new(),
         }));
         // Clone it so we can return later
@@ -178,10 +185,7 @@ impl<'a> HasLineInfo for Scope<'a> {
         if let Some(tok) = &self.name {
             return tok.get_line_info();
         }
-        if let Some(node) = &self.node {
-            return node.get_line_info();
-        }
-        panic!("oops! no line info...");
+        self.line_info
     }
 }
 

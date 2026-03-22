@@ -490,20 +490,6 @@ impl AstPrinter {
                 write!(self, "::Module")?;
                 self.print_list("decls", decls, Self::print_decl)?;
             }
-            ast::Object::Struct {
-                line_info: _,
-                decls,
-            } => {
-                write!(self, "::Struct")?;
-                self.print_list("decls", decls, Self::print_decl)?;
-            }
-            ast::Object::Union {
-                line_info: _,
-                decls,
-            } => {
-                write!(self, "::Union")?;
-                self.print_list("decls", decls, Self::print_decl)?;
-            }
             ast::Object::Fun {
                 line_info: _,
                 params,
@@ -519,6 +505,13 @@ impl AstPrinter {
                     self.print_stmt("body", body)?;
                 }
             }
+            ast::Object::Compound {
+                line_info: _,
+                field,
+            } => {
+                write!(self, "::Compound")?;
+                self.print_field("field", field)?;
+            }
             ast::Object::Typedef(taipe) => {
                 write!(self, "::Typedef")?;
                 self.print_type("type", taipe)?;
@@ -526,6 +519,33 @@ impl AstPrinter {
             ast::Object::Expr(expr) => {
                 write!(self, "::Expr")?;
                 self.print_expr("expr", expr)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_field(&mut self, field: &ast::Field) -> fmt::Result {
+        match field {
+            ast::Field::Compound { token, fields } => {
+                write!(self, "::Compound")?;
+                self.print_tok("token", token);
+                self.print_list("fields", fields, Self::print_field)?;
+            }
+            ast::Field::Decl {
+                name,
+                taipe,
+                eq_token,
+                expr,
+            } => {
+                write!(self, "::Decl")?;
+                self.print_tok("name", name);
+                self.print_type("type", taipe);
+                if let Some(eq_token) = eq_token {
+                    self.print_tok("eq_token", eq_token);
+                }
+                if let Some(expr) = expr {
+                    self.print_expr("expr", expr);
+                }
             }
         }
         Ok(())
@@ -802,6 +822,7 @@ impl AstPrinter {
 
     define_printer!(print_decl, visit_decl, Decl);
     define_printer!(print_object, visit_object, Object);
+    define_printer!(print_field, visit_field, Field);
     define_printer!(print_param, visit_param, Param);
     define_printer!(print_stmt, visit_stmt, Stmt);
     define_printer!(print_type, visit_type, Type);

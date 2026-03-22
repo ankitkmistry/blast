@@ -5,6 +5,7 @@ use std::{
 };
 
 use num_bigint::{BigInt, ToBigInt};
+use num_traits::ConstZero;
 
 use crate::{
     ast,
@@ -45,14 +46,65 @@ impl<'a> Analyzer<'a> {
     }
 
     fn sem_analysis(&mut self) -> CompileResult<()> {
-        let Some(decls) = self.cur_scope.borrow().node.unwrap().get_decls().take() else {
-            // TODO: handle the else situation here
-            return Ok(());
-        };
-        self.pre_declare_decls(decls)?;
-        for decl in decls {
-            self.visit_decl(decl, true)?;
+        let mut final_decls = Vec::new();
+        // Accumulate top level decls from all roots
+        for root in self.roots.values() {
+            let root = root.borrow();
+            match &root.state {
+                State::NotVisited(scope_node) => match scope_node {
+                    scope::ScopeNode::Object(object) => match object {
+                        ast::Object::Module {
+                            line_info: _,
+                            decls,
+                        } => {
+                            for decl in decls {
+                                final_decls.push(decl);
+                            }
+                        }
+                        _ => unreachable!("not supposed to happen"),
+                    },
+                    _ => unreachable!("not supposed to happen"),
+                },
+                _ => unreachable!("not supposed to happen"),
+            }
         }
+        // Accumulate errors from predeclaring decls
+        let mut errs = Vec::new();
+        for decl in &final_decls {
+            if let Err(err) = self.pre_declare_decl(decl) {
+                errs.push(err);
+            }
+        }
+        // Return errors if any
+        if !errs.is_empty() {
+            return Err(CompileError::Errors(errs));
+        }
+        // Finally visit them
+        for decl in final_decls {
+            self.visit_decl(&decl, true)?;
+        }
+        Ok(())
+    }
+
+    fn pre_declare_decl(&mut self, decl: &'a ast::Decl) -> CompileResult<()> {
+        match decl {
+            ast::Decl::Decl {
+                name,
+                taipe: _,
+                eq_token: _,
+                object,
+            } => {
+                if let Some(object) = object {
+                    self.declare_sym_with_value(decl, &name, object)?
+                } else {
+                    self.declare_sym(decl, &name)?
+                }
+            }
+            ast::Decl::Using {
+                line_info: _,
+                items: _,
+            } => todo!("import statements are not yet supported"),
+        };
         Ok(())
     }
 
@@ -64,19 +116,7 @@ impl<'a> Analyzer<'a> {
         // We also accumalate the errors.
         let mut errs = Vec::new();
         for decl in decls {
-            let result = match decl {
-                ast::Decl::Decl {
-                    name,
-                    taipe: _,
-                    eq_token: _,
-                    object,
-                } => self.declare_sym(decl, &name, object.as_ref()),
-                ast::Decl::Using {
-                    line_info: _,
-                    items: _,
-                } => todo!("import statements are not yet supported"),
-            };
-            if let Err(err) = result {
+            if let Err(err) = self.pre_declare_decl(decl) {
                 errs.push(err);
             }
         }
@@ -90,7 +130,32 @@ impl<'a> Analyzer<'a> {
         &mut self,
         node: &'a ast::Decl,
         name: &Token,
-        object: Option<&'a ast::Object>,
+    ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
+        // Check for redeclaration
+        // Except for '_' declarations
+        if name.kind != TokenKind::Underscore
+            && let Some(prev_scope_ref) = self.get_cur_scope().children.get(&name.text)
+        {
+            // No module then error
+            return Err(self
+                .make_err("redeclaration of symbol", name)
+                .chain(self.make_note("already declared here", &prev_scope_ref.borrow())));
+        }
+
+        Ok(scope::Scope::add_child(
+            &self.cur_scope,
+            &name.text,
+            Some(name.clone()),
+            scope::State::NotVisited(scope::ScopeNode::Decl(node)),
+            node,
+        ))
+    }
+
+    fn declare_sym_with_value(
+        &mut self,
+        node: &'a ast::Decl,
+        name: &Token,
+        object: &'a ast::Object,
     ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
         // Check for redeclaration
         // Except for '_' declarations
@@ -98,16 +163,15 @@ impl<'a> Analyzer<'a> {
             && let Some(prev_scope_ref) = self.get_cur_scope().children.get(&name.text)
         {
             let prev_scope = prev_scope_ref.borrow();
-            if let Some(object) = object
-                && object.is_module()
-            {
+            if object.is_module() {
                 // Allow merging module declarations
                 if let scope::State::Visited(prev_ctx) = &prev_scope.state {
                     if prev_ctx.taipe.is_module() {
                         return Ok(Rc::clone(prev_scope_ref));
                     }
                 }
-                if let scope::State::NotVisited(prev_decl) = prev_scope.state
+                if let scope::State::NotVisited(prev_decl) = &prev_scope.state
+                    && let scope::ScopeNode::Decl(prev_decl) = prev_decl
                     && let ast::Decl::Decl {
                         name: _,
                         taipe: _,
@@ -130,8 +194,33 @@ impl<'a> Analyzer<'a> {
             &self.cur_scope,
             &name.text,
             Some(name.clone()),
-            scope::State::NotVisited(node),
+            scope::State::NotVisited(scope::ScopeNode::Decl(node)),
             object,
+        ))
+    }
+
+    fn declare_field(
+        &mut self,
+        field: &'a ast::Field,
+        name: &Token,
+    ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
+        // Check for redeclaration
+        // Except for '_' declarations
+        if name.kind != TokenKind::Underscore
+            && let Some(prev_scope_ref) = self.get_cur_scope().children.get(&name.text)
+        {
+            // No module then error
+            return Err(self
+                .make_err("redeclaration of symbol", name)
+                .chain(self.make_note("already declared here", &prev_scope_ref.borrow())));
+        }
+
+        Ok(scope::Scope::add_child(
+            &self.cur_scope,
+            &name.text,
+            Some(name.clone()),
+            scope::State::NotVisited(scope::ScopeNode::Field(field)),
+            field,
         ))
     }
 
@@ -164,7 +253,11 @@ impl<'a> Analyzer<'a> {
                 let scope = if let Some(child) = self.get_cur_scope().children.get(&name.text) {
                     Rc::clone(child)
                 } else {
-                    self.declare_sym(node, name, object.as_ref())?
+                    if let Some(object) = object {
+                        self.declare_sym_with_value(node, &name, object)?
+                    } else {
+                        self.declare_sym(node, &name)?
+                    }
                 };
                 // Set in progress
                 {
@@ -236,7 +329,7 @@ impl<'a> Analyzer<'a> {
                         self.cur_scope = old_cur_scope;
                         Ok(ctx)
                     }
-                    ast::Object::Struct { line_info, decls } => {
+                    ast::Object::Compound { line_info, field } => {
                         // TODO: type punning syntax
                         // A :: struct {
                         //     foo: i32;
@@ -253,25 +346,7 @@ impl<'a> Analyzer<'a> {
                             None
                         };
                         // TODO: implement field layout to distinguish between union and struct
-                        let rhs = self.visit_compound(scope, object, decls)?;
-                        // Resolve assignment
-                        self.resolve_assign(
-                            lhs,
-                            eq_token.as_ref(),
-                            Some((rhs.clone(), *line_info)),
-                        )?;
-                        Ok(rhs)
-                    }
-                    ast::Object::Union { line_info, decls } => {
-                        colon_compulsory!(self, eq_token);
-                        // Visit type
-                        let lhs = if let Some(taipe) = taipe {
-                            Some((self.visit_type(taipe)?, taipe.get_line_info()))
-                        } else {
-                            None
-                        };
-                        // TODO: implement field layout to distinguish between union and struct
-                        let rhs = self.visit_compound(scope, object, decls)?;
+                        let rhs = self.visit_compound(scope, field)?;
                         // Resolve assignment
                         self.resolve_assign(
                             lhs,
@@ -344,11 +419,87 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn get_fields(&mut self, field: &'a ast::Field) -> CompileResult<scope::Field<'a>> {
+        match field {
+            ast::Field::Compound { token, fields } => {
+                let mut vec = Vec::new();
+                for field in fields {
+                    vec.push(self.get_fields(field)?);
+                }
+                match token.kind {
+                    TokenKind::Struct => Ok(scope::Field::Struct(vec)),
+                    TokenKind::Union => Ok(scope::Field::Union(vec)),
+                    _ => unreachable!("probably some parser bug"),
+                }
+            }
+            ast::Field::Decl {
+                name,
+                taipe,
+                eq_token,
+                expr,
+            } => {
+                let scope = self.declare_field(field, name)?;
+                // Set in progress
+                scope.borrow_mut().state = scope::State::VisitInProg;
+                // Visit type
+                let lhs = (self.visit_type(taipe)?, taipe.get_line_info());
+                let ctx = if let Some(expr) = expr {
+                    // Situation
+                    // ---------------------------------
+                    // name : type = value;
+                    // ---------------------------------
+                    // Visit expr
+                    let rhs = self.visit_expr(expr)?;
+                    // Resolve assignment
+                    self.resolve_assign(
+                        Some(lhs),
+                        eq_token.as_ref(),
+                        Some((rhs, expr.get_line_info())),
+                    )?
+                } else {
+                    // Situation
+                    // ---------------------------------
+                    // name : type;
+                    // ---------------------------------
+                    assert!(eq_token.is_none());
+                    self.resolve_assign(Some(lhs), None, None)?
+                };
+                // Check the type of the fields
+                match ctx.taipe {
+                    context::Type::Const(_)
+                    | context::Type::Module
+                    | context::Type::Typedef
+                    | context::Type::Noreturn => {
+                        return Err(self.make_err(
+                            format!(
+                                "'{}' cannot be used as a type of a field",
+                                ctx.taipe.to_string()
+                            ),
+                            taipe,
+                        ));
+                    }
+                    _ => {}
+                }
+                // TODO: The value of the field should be evaluated at compile time
+                // If no value is provided then default value should be evaluated
+                //
+                // if ctx.value.is_none() {
+                //     return Err(self.make_err("value cannot be evaluated at compile time", decl));
+                // }
+                // Complete the visit
+                scope.borrow_mut().state = scope::State::Visited(ctx.clone());
+                Ok(scope::Field::Field {
+                    name: name.text.clone(),
+                    ctx,
+                })
+            }
+        }
+    }
+
     fn visit_compound(
         &mut self,
         scope: Rc<RefCell<scope::Scope<'a>>>,
-        object: &'a ast::Object,
-        decls: &'a Vec<ast::Decl>,
+        field: &'a ast::Field,
     ) -> CompileResult<Context<'a>> {
         // Begin new scope
         let old_cur_scope = Rc::clone(&self.cur_scope);
@@ -362,43 +513,9 @@ impl<'a> Analyzer<'a> {
         };
         scope.borrow_mut().state = State::Visited(ctx.clone());
         // Visit every field
-        let mut fields = Vec::new();
-        for decl in decls {
-            let ctx = self.visit_decl(decl, true)?;
-            // Check the type of the fields
-            match ctx.taipe {
-                context::Type::Const(_)
-                | context::Type::Module
-                | context::Type::Typedef
-                | context::Type::Noreturn => {
-                    return Err(self.make_err(
-                        format!(
-                            "'{}' cannot be used as a type of a field",
-                            ctx.taipe.to_string()
-                        ),
-                        decl,
-                    ));
-                }
-                _ => {}
-            }
-            // Retrieve the name
-            let name = match decl {
-                ast::Decl::Decl {
-                    name,
-                    taipe: _,
-                    eq_token: _,
-                    object: _,
-                } => name.text.clone(),
-                ast::Decl::Using {
-                    line_info: _,
-                    items: _,
-                } => unreachable!(),
-            };
-            fields.push((name, ctx));
-        }
-        // TODO: improve payload
-        // provide advanced field layout information
-        scope.borrow_mut().payload = Payload::Compound(scope::Compound::new(&fields, object));
+        let mut field = self.get_fields(field)?;
+        // Set the payload
+        scope.borrow_mut().payload = Payload::Compound(scope::Compound::new(field));
         // Restore old scope
         self.cur_scope = old_cur_scope;
         Ok(ctx)
@@ -425,7 +542,7 @@ impl<'a> Analyzer<'a> {
                 {
                     Err(self
                         .make_err(
-                            "type inference is ambiguous, encountered cyclic references",
+                            "inference is ambiguous, encountered cyclic references",
                             name,
                         )
                         .chain(self.make_note_with_path(
@@ -745,7 +862,7 @@ impl<'a> Analyzer<'a> {
                         if ctx.taipe.is_typedef() {
                             return Err(self.make_err(
                                 format!(
-                                    "cannot use typedef operator on type '{}'",
+                                    "cannot use typeof operator on type '{}'",
                                     ctx.taipe.to_string()
                                 ),
                                 expr,
@@ -825,8 +942,7 @@ impl<'a> Analyzer<'a> {
                             ));
                         }
                         // comptime: array indexing
-                        // TODO: check usize for target system and retrieve the index
-                        // Also check the value is in hardware allowed range
+                        // TODO: check usize for target system
                         let index = self.bigint2usize(index, name.get_line_info())?;
                         // Get the type and value respectively
                         let taipe = items[index].clone();
@@ -905,8 +1021,7 @@ impl<'a> Analyzer<'a> {
                                 ));
                             }
                             // comptime: array indexing
-                            // TODO: check usize for target system and retrieve the index
-                            // Also check the value is in hardware allowed range
+                            // TODO: check usize for target system
                             let index = self.bigint2usize(index, index_node.get_line_info())?;
                             if let Some(array) = ctx.value {
                                 let context::Value::Array(array) = array else {
@@ -945,8 +1060,7 @@ impl<'a> Analyzer<'a> {
                                 ));
                             }
                             // comptime: array indexing
-                            // TODO: check usize for target system and retrieve the index
-                            // Also check the value is in hardware allowed range
+                            // TODO: check usize for target system
                             let index = self.bigint2usize(index, index_node.get_line_info())?;
                             value = Some(array[index].clone());
                         }
@@ -1146,26 +1260,6 @@ impl<'a> Analyzer<'a> {
                 }
                 // Type checking and Implicit conversions
                 match (&lhs, &rhs.taipe) {
-                    (context::Type::Bool, context::Type::Char) => {
-                        // true  => __char != 0
-                        // false => __char != 0
-                        // TODO: record info for generating IR
-                    }
-                    (context::Type::Bool, context::Type::Int) => {
-                        // true  => int != 0
-                        // false => int != 0
-                        // TODO: record info for generating IR
-                    }
-                    (context::Type::Bool, context::Type::Float32) => {
-                        // true  => __f32 != 0
-                        // false => __f32 != 0
-                        // TODO: record info for generating IR
-                    }
-                    (context::Type::Bool, context::Type::Float64) => {
-                        // true  => __f64 != 0
-                        // false => __f64 != 0
-                        // TODO: record info for generating IR
-                    }
                     // (context::Type::Int, context::Type::Float32) => {
                     //     if let Some(value) = &rhs.value {
                     //         let context::Value::Float32(value) = value else {
@@ -1258,6 +1352,7 @@ impl<'a> Analyzer<'a> {
                     }
                     (_, context::Type::Noreturn) => {
                         // noreturn type can be coerced to any type
+                        rhs.value = None;
                     }
                     (lhs, rhs) => {
                         if lhs != rhs {
@@ -1311,7 +1406,7 @@ impl<'a> Analyzer<'a> {
     ) -> CompileResult<Option<Context<'a>>> {
         if let Some(child) = scope.borrow().children.get(name) {
             let node = match &child.borrow().state {
-                scope::State::NotVisited(node) => *node,
+                scope::State::NotVisited(node) => node.clone(),
                 scope::State::VisitInProg => {
                     return Err(CompileError::SemCyclic {
                         file_path: child.borrow().get_src_path(),
@@ -1324,7 +1419,16 @@ impl<'a> Analyzer<'a> {
             let old_cur_scope = Rc::clone(&self.cur_scope);
             self.cur_scope = Rc::clone(&scope);
             // Visit the decl (and not the subsequent children)
-            let ctx = self.visit_decl(node, false)?;
+            let ctx = match node {
+                scope::ScopeNode::Decl(decl) => self.visit_decl(decl, false)?,
+                scope::ScopeNode::Field(_) => {
+                    // unreachable!("probably some analyzer bug")
+                    return Ok(None);
+                }
+                scope::ScopeNode::Object(_) => {
+                    unreachable!("probably some analyzer bug")
+                }
+            };
             // Restore old scope
             self.cur_scope = old_cur_scope;
             return Ok(Some(ctx));

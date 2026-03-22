@@ -252,11 +252,14 @@ impl Parser {
     fn parse_struct(&mut self) -> CompileResult<ast::Object> {
         let start = self.expect(Struct)?;
         self.expect(LBrace)?;
-        let decls = self.parse_fields()?;
+        let fields = self.parse_fields()?;
         let end = self.expect(RBrace)?;
-        Ok(ast::Object::Struct {
+        Ok(ast::Object::Compound {
             line_info: LineInfo::from_range(&start, &end),
-            decls,
+            field: ast::Field::Compound {
+                token: start,
+                fields,
+            },
         })
     }
 
@@ -264,53 +267,66 @@ impl Parser {
     fn parse_union(&mut self) -> CompileResult<ast::Object> {
         let start = self.expect(Union)?;
         self.expect(LBrace)?;
-        let decls = self.parse_fields()?;
+        let fields = self.parse_fields()?;
         let end = self.expect(RBrace)?;
-        Ok(ast::Object::Union {
+        // TODO: distinguish pls
+        Ok(ast::Object::Compound {
             line_info: LineInfo::from_range(&start, &end),
-            decls,
+            field: ast::Field::Compound {
+                token: start,
+                fields,
+            },
         })
     }
 
-    // field ::= (identifier | '_') ':' type ((':'|'=') expr)? ';';
-    fn parse_field(&mut self) -> CompileResult<ast::Decl> {
-        if let Some(tok) = self.peek()
-            && (tok.kind == Ident || tok.kind == Underscore)
-        {
-            let name = self.get_token()?;
-            self.expect(Colon)?;
-            let taipe = self.parse_type()?;
-            if let Some(tok) = self.peek()
-                && (tok.kind == Equal || tok.kind == Colon)
-            {
-                let eq_tok = self.get_token()?;
-                let expr = self.parse_expr()?;
-                self.expect_term()?;
-                Ok(ast::Decl::Decl {
-                    name,
-                    taipe: Some(taipe),
-                    eq_token: Some(eq_tok),
-                    object: Some(ast::Object::Expr(expr)),
-                })
-            } else {
-                self.expect_term()?;
-                Ok(ast::Decl::Decl {
-                    name,
-                    taipe: Some(taipe),
-                    eq_token: None,
-                    object: None,
-                })
+    // field ::= (identifier | '_') ':' type ((':'|'=') expr)? ';'
+    //         | 'struct' '{' fields '}'
+    //         | 'union' '{' fields '}'
+    //         ;
+    fn parse_field(&mut self) -> CompileResult<ast::Field> {
+        if let Some(tok) = self.peek() {
+            match tok.kind {
+                Ident | Underscore => {
+                    let name = self.get_token()?;
+                    self.expect(Colon)?;
+                    let taipe = self.parse_type()?;
+                    if let Some(tok) = self.peek()
+                        && (tok.kind == Equal || tok.kind == Colon)
+                    {
+                        let eq_tok = self.get_token()?;
+                        let expr = self.parse_expr()?;
+                        self.expect_term()?;
+                        Ok(ast::Field::Decl {
+                            name,
+                            taipe,
+                            eq_token: Some(eq_tok),
+                            expr: Some(expr),
+                        })
+                    } else {
+                        self.expect_term()?;
+                        Ok(ast::Field::Decl {
+                            name,
+                            taipe,
+                            eq_token: None,
+                            expr: None,
+                        })
+                    }
+                }
+                _ => Err(self.expect_err(&[Ident, Underscore, Struct, Union])),
             }
         } else {
-            Err(self.expect_err(&[Ident, Underscore]))
+            Err(self.expect_err(&[Ident, Underscore, Struct, Union]))
         }
     }
 
     // fields ::= field*
-    fn parse_fields(&mut self) -> CompileResult<Vec<ast::Decl>> {
+    fn parse_fields(&mut self) -> CompileResult<Vec<ast::Field>> {
         let mut fields = Vec::new();
         while let Some(tok) = self.peek()
-            && (tok.kind == Ident || tok.kind == Underscore)
+            && (tok.kind == Ident
+                || tok.kind == Underscore
+                || tok.kind == Struct
+                || tok.kind == Union)
         {
             fields.push(self.parse_field()?);
         }

@@ -25,22 +25,31 @@ pub enum Object {
         line_info: LineInfo,
         decls: Vec<Decl>,
     },
-    Struct {
-        line_info: LineInfo,
-        decls: Vec<Decl>,
-    },
-    Union {
-        line_info: LineInfo,
-        decls: Vec<Decl>,
-    },
     Fun {
         line_info: LineInfo,
         params: Vec<Param>,
         ret: Option<Type>,
         body: Option<Stmt>,
     },
+    Compound {
+        line_info: LineInfo,
+        field: Field,
+    },
     Typedef(Type),
     Expr(Expr),
+}
+
+pub enum Field {
+    Compound {
+        token: Token,
+        fields: Vec<Field>,
+    },
+    Decl {
+        name: Token,
+        taipe: Type,
+        eq_token: Option<Token>,
+        expr: Option<Expr>,
+    },
 }
 
 pub struct Param {
@@ -204,8 +213,14 @@ pub enum Expr {
 impl Object {
     pub fn is_module(&self) -> bool {
         match self {
-            Object::ExternModule { line_info, value } => true,
-            Object::Module { line_info, decls } => true,
+            Object::ExternModule {
+                line_info: _,
+                value: _,
+            } => true,
+            Object::Module {
+                line_info: _,
+                decls: _,
+            } => true,
             _ => false,
         }
     }
@@ -220,19 +235,15 @@ impl Object {
                 line_info: _,
                 decls,
             } => Some(&decls),
-            Object::Struct {
-                line_info: _,
-                decls,
-            } => Some(&decls),
-            Object::Union {
-                line_info: _,
-                decls,
-            } => Some(&decls),
             Object::Fun {
                 line_info: _,
                 params: _,
                 ret: _,
                 body: _,
+            } => None,
+            Object::Compound {
+                line_info: _,
+                field: _,
             } => None,
             Object::Typedef(_) => None,
             Object::Expr(_) => None,
@@ -276,22 +287,38 @@ impl HasLineInfo for Object {
                 line_info,
                 decls: _,
             } => *line_info,
-            Object::Struct {
-                line_info,
-                decls: _,
-            } => *line_info,
-            Object::Union {
-                line_info,
-                decls: _,
-            } => *line_info,
             Object::Fun {
                 line_info,
                 params: _,
                 ret: _,
                 body: _,
             } => *line_info,
+            Object::Compound {
+                line_info,
+                field: _,
+            } => *line_info,
             Object::Typedef(taipe) => taipe.get_line_info(),
             Object::Expr(expr) => expr.get_line_info(),
+        }
+    }
+}
+
+impl HasLineInfo for Field {
+    fn get_line_info(&self) -> LineInfo {
+        match self {
+            Field::Compound { token, fields } => LineInfo::from_range(token, fields),
+            Field::Decl {
+                name,
+                taipe,
+                eq_token: _,
+                expr,
+            } => {
+                if let Some(expr) = expr {
+                    LineInfo::from_range(name, expr)
+                } else {
+                    LineInfo::from_range(name, taipe)
+                }
+            }
         }
     }
 }
