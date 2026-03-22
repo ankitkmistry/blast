@@ -144,11 +144,13 @@ pub struct Layout {
     pub alignment: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum LayoutResult {
-    // EvalInProg,
-    NoLayout,
-    Evaled(Layout),
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            size: 1,
+            alignment: 1,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

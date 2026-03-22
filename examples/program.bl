@@ -27,10 +27,13 @@ tup_mem :: tup.1;
 floats_count :: 10;
 floats : [floats_count]__f32;
 
-// Node :: struct {
-//     data: __f32;
-//     next: Node;
-// }
+A :: struct {
+    b: B;
+}
+
+B :: struct {
+    a: A;
+}
 
 // Solving module and typedef bug
 Bax :: FooM.Bar;
@@ -56,9 +59,12 @@ std :: module {
     }
 }
 
-vec2 :: struct {
-    x: __f64;
-    y: __f64;
+vec2 :: union {
+    struct {
+        x: __f64;
+        y: __f64;
+    }
+    v: [2]__f64;
 }
 
 vec3 :: union {

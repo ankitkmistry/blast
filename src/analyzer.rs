@@ -9,7 +9,7 @@ use num_bigint::{BigInt, ToBigInt};
 
 use crate::{
     ast,
-    common::{CompileError, CompileResult, HasLineInfo, Int, Layout, LayoutResult, LineInfo},
+    common::{CompileError, CompileResult, HasLineInfo, Int, Layout, LineInfo},
     context::{self, Context},
     lexer::{Token, TokenKind, TokenValue},
     scope::{self, HasSrcInfo, Payload, State},
@@ -530,6 +530,7 @@ impl<'a> Analyzer<'a> {
                 // Complete the visit
                 scope.borrow_mut().state = scope::State::Visited(ctx.clone());
                 Ok(scope::Field::Field {
+                    line_info: name.get_line_info(),
                     name: scope.borrow().name.clone(),
                     ctx,
                 })
@@ -559,10 +560,7 @@ impl<'a> Analyzer<'a> {
         // Set the payload
         scope.borrow_mut().payload = Payload::Compound(scope::Compound::new(field));
         // Eval the layout
-        let layout = scope.borrow_mut().get_layout();
-        if let LayoutResult::NoLayout = layout {
-            return Err(self.make_err("memory layout cannot be evaluated", &scope.borrow()));
-        }
+        let layout = self.resolve_layout_scope(Rc::clone(&scope))?;
         // Print the layout
         {
             println!("-------------------------------------------------");
@@ -914,26 +912,9 @@ impl<'a> Analyzer<'a> {
                             }
                             taipe => taipe,
                         };
-                        let Some(size) = taipe.get_size() else {
-                            return Err(self.make_err(
-                                format!("type has no size: '{}'", taipe.to_string()),
-                                expr,
-                            ));
-                        };
+                        let size = self.get_sizeof(&taipe, expr)?;
                         // TODO: make this usize not variable int
                         Ok(Context::from_int(Int::from_arbitrary(size as u64)))
-                    }
-                    TokenKind::Typeof => {
-                        if ctx.taipe.is_typedef() {
-                            return Err(self.make_err(
-                                format!(
-                                    "cannot use typeof operator on type '{}'",
-                                    ctx.taipe.to_string()
-                                ),
-                                expr,
-                            ));
-                        }
-                        Ok(Context::from_type(ctx.taipe))
                     }
                     TokenKind::Alignof => {
                         let taipe = match ctx.taipe {
@@ -948,14 +929,21 @@ impl<'a> Analyzer<'a> {
                             }
                             taipe => taipe,
                         };
-                        let Some(size) = taipe.get_alignment() else {
+                        let alignment = self.get_alignof(&taipe, expr)?;
+                        // TODO: make this usize not variable int
+                        Ok(Context::from_int(Int::from_arbitrary(alignment as u64)))
+                    }
+                    TokenKind::Typeof => {
+                        if ctx.taipe.is_typedef() {
                             return Err(self.make_err(
-                                format!("type has no alignment: '{}'", taipe.to_string()),
+                                format!(
+                                    "cannot use typeof operator on type '{}'",
+                                    ctx.taipe.to_string()
+                                ),
                                 expr,
                             ));
-                        };
-                        // TODO: make this usize not variable int
-                        Ok(Context::from_int(Int::from_arbitrary(size as u64)))
+                        }
+                        Ok(Context::from_type(ctx.taipe))
                     }
                     TokenKind::Not => todo!(),
                     _ => unreachable!("probably some parser bug"),
@@ -1214,33 +1202,34 @@ impl<'a> Analyzer<'a> {
 
     fn get_sizeof(
         &mut self,
-        taipe: context::Type<'a>,
+        taipe: &context::Type<'a>,
         line_info: &impl HasLineInfo,
-    ) -> CompileResult<Context<'a>> {
-        let size = self.resolve_layout(taipe, line_info)?.size;
-        todo!()
+    ) -> CompileResult<usize> {
+        Ok(self.resolve_layout(taipe, line_info)?.size)
     }
 
     fn get_alignof(
         &mut self,
-        taipe: context::Type<'a>,
+        taipe: &context::Type<'a>,
         line_info: &impl HasLineInfo,
-    ) -> CompileResult<Context<'a>> {
-        let size = self.resolve_layout(taipe, line_info)?.size;
-        todo!()
+    ) -> CompileResult<usize> {
+        Ok(self.resolve_layout(taipe, line_info)?.alignment)
     }
 
     fn resolve_layout(
         &mut self,
-        taipe: context::Type<'a>,
+        taipe: &context::Type<'a>,
         line_info: &impl HasLineInfo,
     ) -> CompileResult<Layout> {
+        // (usize, usize) -> (size, alignment)
+        // size (in bytes) -> always a multiple of alignment
+        // alignment (in bytes) -> always a power of 2
         self.resolve_layout_ex(taipe, line_info.get_line_info())
     }
 
     fn resolve_layout_ex(
         &mut self,
-        taipe: context::Type<'a>,
+        taipe: &context::Type<'a>,
         line_info: LineInfo,
     ) -> CompileResult<Layout> {
         let layout = match taipe {
@@ -1252,7 +1241,6 @@ impl<'a> Analyzer<'a> {
                 size: 1,
                 alignment: 1,
             },
-            // FIXME: variable integers do not have layout
             context::Type::Float32 => Layout {
                 size: 4,
                 alignment: 4,
@@ -1261,17 +1249,10 @@ impl<'a> Analyzer<'a> {
                 size: 8,
                 alignment: 8,
             },
-            context::Type::Const(taipe) => self.resolve_layout_ex(*taipe, line_info)?,
-            context::Type::Basic(weak) => {
-                let ref_cell = weak.upgrade().expect("i dont really know what to do here");
-                let scope = ref_cell.try_borrow_mut().ok();
-                if let Some(mut scope) = scope {
-                    // scope.get_layout()
-                    todo!()
-                } else {
-                    todo!()
-                }
-            }
+            context::Type::Const(taipe) => self.resolve_layout_ex(taipe, line_info)?,
+            context::Type::Basic(weak) => self.resolve_layout_scope(
+                weak.upgrade().expect("i dont really know what to do here"),
+            )?,
             context::Type::Function { ret: _, params: _ } | context::Type::Pointer(_) => {
                 // On a low level, a function is nothing but a pointer
                 // to the starting of the code section in memory.
@@ -1285,7 +1266,7 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Type::Array { count, taipe } => {
-                let Layout { size, alignment } = self.resolve_layout_ex(*taipe, line_info)?;
+                let Layout { size, alignment } = self.resolve_layout_ex(taipe, line_info)?;
                 Layout {
                     size: count * size,
                     alignment,
@@ -1322,7 +1303,179 @@ impl<'a> Analyzer<'a> {
         &mut self,
         scope: Rc<RefCell<scope::Scope<'a>>>,
     ) -> CompileResult<Layout> {
-        todo!()
+        let payload = scope.borrow().payload.clone();
+        scope.borrow_mut().payload = scope::Payload::LayoutResolutionInProg;
+        match payload {
+            Payload::Compound(compound) => {
+                let mut offsets = HashMap::<String, scope::FieldData>::new();
+                // Resolve layout info for the struct or union or field
+                let layout = self.resolve_layout_field(&compound.field, 0, &mut offsets, &|name| {
+                    // Give child line info when requested
+                    scope.borrow().children[&name.to_string()]
+                        .borrow()
+                        .get_line_info()
+                });
+                let layout = match layout {
+                    Ok(layout) => layout,
+                    Err(err) => {
+                        return if let CompileError::SemCyclic {
+                            file_path,
+                            line_info,
+                        } = err
+                        {
+                            Err(self
+                                .make_err(
+                                    "memory layout is ambiguous, encountered cyclic references",
+                                    &scope.borrow(),
+                                )
+                                .chain(self.make_note_with_path(
+                                    "cycle occurs here",
+                                    file_path,
+                                    &line_info,
+                                )))
+                        } else {
+                            Err(err)
+                        };
+                    }
+                };
+                // Reset the payload
+                scope.borrow_mut().payload = scope::Payload::Compound(scope::Compound {
+                    field: compound.field,
+                    layout,
+                    offsets,
+                });
+                Ok(layout)
+            }
+            Payload::LayoutResolutionInProg => {
+                return Err(CompileError::SemCyclic {
+                    file_path: scope.borrow().get_src_path(),
+                    line_info: scope.borrow().get_line_info(),
+                });
+            }
+            // FIXME: fix the bug here
+            Payload::None => unreachable!("probably some analyzer bug"),
+        }
+    }
+
+    fn resolve_layout_field<F>(
+        &mut self,
+        field: &scope::Field<'a>,
+        mut cur_offset: usize,
+        offset_table: &mut HashMap<String, scope::FieldData>,
+        get_line_info_of_field: &F,
+    ) -> CompileResult<Layout>
+    where
+        F: Fn(&str) -> LineInfo,
+    {
+        fn eval_padding(offset: usize, alignment: usize) -> usize {
+            // Calculate the misalignment
+            let misalignment = offset % alignment;
+            // Add the padding
+            let padding = if misalignment > 0 {
+                alignment - misalignment
+            } else {
+                0
+            };
+            padding
+        }
+
+        match field {
+            scope::Field::Struct(fields) => {
+                let mut struct_alignment = 1usize;
+                let offset_start = cur_offset;
+                for field in fields {
+                    // Set the offset of field
+                    let layout = self.resolve_layout_field(
+                        field,
+                        cur_offset,
+                        offset_table,
+                        get_line_info_of_field,
+                    )?;
+                    // Advance the offset
+                    cur_offset += layout.size;
+                    // Add the padding
+                    cur_offset += eval_padding(cur_offset, layout.alignment);
+                    // Alignment of a struct is the alignment of the most aligned field
+                    struct_alignment = struct_alignment.max(layout.alignment);
+                }
+                // Add the final padding
+                cur_offset += eval_padding(cur_offset, struct_alignment);
+                // Calculate the size
+                let mut struct_size = cur_offset - offset_start;
+                // TODO: think about empty structs
+                // Reference: https://doc.rust-lang.org/nomicon/exotic-sizes.html#zero-sized-types-zsts
+                // Reference: https://doc.rust-lang.org/nomicon/vec/vec-zsts.html
+                if struct_size == 0 {
+                    struct_size = struct_alignment;
+                }
+                Ok(Layout {
+                    size: struct_size,
+                    alignment: struct_alignment,
+                })
+            }
+            scope::Field::Union(fields) => {
+                let mut union_alignment = 1usize;
+                let mut union_size = 0usize;
+                // Calculate
+                for field in fields.iter() {
+                    // Set the offset of field
+                    let layout = self.resolve_layout_field(
+                        field,
+                        cur_offset,
+                        offset_table,
+                        get_line_info_of_field,
+                    )?;
+                    // Size of a union is the size of the largest field
+                    union_size = union_size.max(layout.size);
+                    // Alignment of a union is the alignment of the most aligned field
+                    union_alignment = union_alignment.max(layout.alignment);
+                }
+                // TODO: think about empty unions
+                // Reference: https://doc.rust-lang.org/nomicon/exotic-sizes.html#zero-sized-types-zsts
+                // Reference: https://doc.rust-lang.org/nomicon/vec/vec-zsts.html
+                if union_size == 0 {
+                    union_size = union_alignment;
+                }
+                Ok(Layout {
+                    size: union_size,
+                    alignment: union_alignment,
+                })
+            }
+            scope::Field::Field {
+                line_info,
+                name,
+                ctx,
+            } => {
+                let layout = self.resolve_layout_ex(&ctx.taipe, get_line_info_of_field(name));
+                let layout = match layout {
+                    Ok(layout) => layout,
+                    Err(err) => {
+                        return if let CompileError::SemCyclic {
+                            file_path,
+                            line_info: _,
+                        } = err
+                        {
+                            Err(CompileError::SemCyclic {
+                                file_path,
+                                line_info: *line_info,
+                            })
+                        } else {
+                            Err(err)
+                        };
+                    }
+                };
+                // Place this field at the specified offset
+                offset_table.insert(
+                    name.clone(),
+                    scope::FieldData {
+                        offset: cur_offset,
+                        size: layout.size,
+                        alignment: layout.alignment,
+                    },
+                );
+                Ok(layout)
+            }
+        }
     }
 
     /// In case of declaration, 'eq_token' is the token that separates lhs and rhs.
