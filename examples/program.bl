@@ -20,9 +20,10 @@
 // public
 // public(current)
 // mutable
+// static
 
 tup :: (11, 22, 33);
-tup_mem :: tup.1;
+tup_mem :: tup.6;
 
 floats_count :: 10;
 floats : [floats_count]__f32;
@@ -42,7 +43,7 @@ C :: struct {
 // Solving module and typedef bug
 Bax :: FooM.Bar;
 FooM :: module {
-    Foo : const typedef : Bax;
+    Foo : typedef : Bax;
     Bar :: struct {}
 }
 

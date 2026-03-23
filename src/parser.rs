@@ -16,8 +16,8 @@ pub struct Parser {
 }
 
 macro_rules! define_rule_list {
-    ($type: ident, $rule_result: ident, $rule_from: ident) => {
-        fn $rule_result(&mut self) -> Vec<crate::ast::$type> {
+    ($type: path, $rule_result: ident, $rule_from: ident) => {
+        fn $rule_result(&mut self) -> Vec<$type> {
             let mut items = Vec::new();
             loop {
                 if let Some(item) = self.rule_optional(Self::$rule_from) {
@@ -1042,16 +1042,16 @@ impl Parser {
         })
     }
 
-    define_rule_list!(Param, parse_param_list, parse_param);
+    define_rule_list!(crate::ast::Param, parse_param_list, parse_param);
     define_rule_list!(
-        TypeFunctionParam,
+        crate::ast::TypeFunctionParam,
         parse_type_fun_param_list,
         parse_type_fun_param
     );
-    define_rule_list!(Type, parse_type_list, parse_type);
-    define_rule_list!(Expr, parse_logic_or_list, parse_logic_or);
-    define_rule_list!(Arg, parse_arg_list, parse_arg);
-    define_rule_list!(Expr, parse_expr_list, parse_expr);
+    define_rule_list!(crate::ast::Type, parse_type_list, parse_type);
+    define_rule_list!(crate::ast::Expr, parse_logic_or_list, parse_logic_or);
+    define_rule_list!(crate::ast::Arg, parse_arg_list, parse_arg);
+    define_rule_list!(crate::ast::Expr, parse_expr_list, parse_expr);
 
     // fn parse_expr_list(&mut self) -> Vec<ast::Expr> {
     //     let mut items = Vec::new();

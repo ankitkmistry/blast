@@ -224,31 +224,6 @@ impl Object {
             _ => false,
         }
     }
-
-    pub fn get_decls(&self) -> Option<&[Decl]> {
-        match self {
-            Object::ExternModule {
-                line_info: _,
-                value: _,
-            } => None,
-            Object::Module {
-                line_info: _,
-                decls,
-            } => Some(&decls),
-            Object::Fun {
-                line_info: _,
-                params: _,
-                ret: _,
-                body: _,
-            } => None,
-            Object::Compound {
-                line_info: _,
-                field: _,
-            } => None,
-            Object::Typedef(_) => None,
-            Object::Expr(_) => None,
-        }
-    }
 }
 
 impl HasLineInfo for Decl {

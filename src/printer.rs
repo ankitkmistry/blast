@@ -540,7 +540,7 @@ impl AstPrinter {
         match field {
             ast::Field::Compound { token, fields } => {
                 write!(self, "::Compound")?;
-                self.print_tok("token", token);
+                self.print_tok("token", token)?;
                 self.print_list("fields", fields, Self::print_field)?;
             }
             ast::Field::Decl {
@@ -550,13 +550,13 @@ impl AstPrinter {
                 expr,
             } => {
                 write!(self, "::Decl")?;
-                self.print_tok("name", name);
-                self.print_type("type", taipe);
+                self.print_tok("name", name)?;
+                self.print_type("type", taipe)?;
                 if let Some(eq_token) = eq_token {
-                    self.print_tok("eq_token", eq_token);
+                    self.print_tok("eq_token", eq_token)?;
                 }
                 if let Some(expr) = expr {
-                    self.print_expr("expr", expr);
+                    self.print_expr("expr", expr)?;
                 }
             }
         }

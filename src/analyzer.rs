@@ -569,7 +569,7 @@ impl<'a> Analyzer<'a> {
         };
         scope.borrow_mut().state = State::Visited(ctx.clone());
         // Visit every field
-        let mut field = self.get_fields(field)?;
+        let field = self.get_fields(field)?;
         // TODO: calculate size
         // Set the payload
         scope.borrow_mut().payload = Payload::Compound(scope::Compound::new(field));
@@ -1004,7 +1004,7 @@ impl<'a> Analyzer<'a> {
                                     items.len(),
                                     index
                                 ),
-                                node,
+                                name,
                             ));
                         }
                         // comptime: array indexing
@@ -1951,7 +1951,7 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn get_cur_scope(&self) -> Ref<scope::Scope<'a>> {
+    fn get_cur_scope(&self) -> Ref<'_, scope::Scope<'a>> {
         self.cur_scope.borrow()
     }
 }
