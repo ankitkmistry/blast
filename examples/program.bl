@@ -42,7 +42,7 @@ C :: struct {
 // Solving module and typedef bug
 Bax :: FooM.Bar;
 FooM :: module {
-    Foo :: Bax;
+    Foo : const typedef : Bax;
     Bar :: struct {}
 }
 

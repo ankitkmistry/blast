@@ -1,4 +1,5 @@
 use std::cell::Ref;
+use std::collections::{BTreeSet, HashSet};
 use std::ops::Deref;
 use std::{error::Error, fmt};
 
@@ -106,6 +107,9 @@ pub enum CompileError {
     SemNote {
         file_path: String,
         line_info: LineInfo,
+        msg: String,
+    },
+    SemHelp {
         msg: String,
     },
     SemCyclic {
@@ -335,4 +339,70 @@ impl Default for Int {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Optimized Levenshtein distance function (O(min(m, n)) space)
+pub fn levenshtein(s1_str: &str, s2_str: &str) -> usize {
+    let s1 = s1_str.chars().collect::<Vec<_>>();
+    let s2 = s2_str.chars().collect::<Vec<_>>();
+    let m = s1.len();
+    let n = s2.len();
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+    // Always use the smaller string for the row
+    if m < n {
+        return levenshtein(s2_str, s1_str);
+    }
+    // Procedure
+    let mut prev = vec![0; n + 1];
+    let mut curr = vec![0; n + 1];
+    for j in 0..=n {
+        prev[j] = j;
+    }
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            if s1[i - 1] == s2[j - 1] {
+                curr[j] = prev[j - 1];
+            } else {
+                curr[j] = 1 + prev[j].min(curr[j - 1]).min(prev[j - 1]);
+            }
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
+pub fn fuzzy_search_best(
+    query: &str,
+    candidates: &HashSet<String>,
+    max_results: Option<usize>,
+) -> BTreeSet<String> {
+    let max_results = max_results.unwrap_or(6);
+    let mut min_distance = usize::MAX;
+    let mut results = BTreeSet::new();
+    for candidate in candidates {
+        // Ignore internal names
+        if candidate.ends_with("$") {
+            continue;
+        }
+        // Calaculate the levenshtein distance
+        let distance = levenshtein(query, candidate);
+        if distance < min_distance {
+            min_distance = distance;
+            results.clear();
+            results.insert(candidate.clone());
+        } else if distance == min_distance {
+            results.insert(candidate.clone());
+        }
+        // Check whether we reach max results or not
+        if results.len() >= max_results && distance == min_distance {
+            break;
+        }
+    }
+    results
 }

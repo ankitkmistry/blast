@@ -1,6 +1,6 @@
 use std::{
     cell::{Ref, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     rc::Rc,
     sync::atomic::AtomicU64,
 };
@@ -9,7 +9,7 @@ use num_bigint::{BigInt, ToBigInt};
 
 use crate::{
     ast,
-    common::{CompileError, CompileResult, HasLineInfo, Int, Layout, LineInfo},
+    common::{CompileError, CompileResult, HasLineInfo, Int, Layout, LineInfo, fuzzy_search_best},
     context::{self, Context},
     lexer::{Token, TokenKind, TokenValue},
     scope::{self, HasSrcInfo, Payload, State},
@@ -18,6 +18,11 @@ use crate::{
 // TODO: Unique counter should not be global
 // It should be a member of scope
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub struct SemResult<'a> {
+    pub roots: HashMap<String, Rc<RefCell<scope::Scope<'a>>>>,
+    pub warnings: Vec<CompileError>,
+}
 
 pub struct Analyzer<'a> {
     roots: HashMap<String, Rc<RefCell<scope::Scope<'a>>>>,
@@ -39,13 +44,19 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    pub fn analyze(mut self) -> CompileResult<HashMap<String, Rc<RefCell<scope::Scope<'a>>>>> {
+    pub fn analyze(mut self) -> CompileResult<SemResult<'a>> {
         let result = self.sem_analysis();
         if let Err(err) = result {
             // If there are any accumulated errors return them
-            Err(err.chain(CompileError::Errors(self.saved_errs.clone())))
+            Err(CompileError::Errors(self.saved_errs)
+                .chain(err)
+                .chain(CompileError::Errors(self.warnings)))
         } else {
-            Ok(self.roots)
+            let sem_result = SemResult {
+                roots: self.roots,
+                warnings: self.warnings,
+            };
+            Ok(sem_result)
         }
     }
 
@@ -150,7 +161,7 @@ impl<'a> Analyzer<'a> {
 
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
-                "unnamed.{}",
+                "unnamed.{}$",
                 UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
@@ -206,7 +217,7 @@ impl<'a> Analyzer<'a> {
 
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
-                "unnamed.{}",
+                "unnamed.{}$",
                 UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
@@ -239,7 +250,7 @@ impl<'a> Analyzer<'a> {
 
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
-                "unnamed.{}",
+                "unnamed.{}$",
                 UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
@@ -623,7 +634,7 @@ impl<'a> Analyzer<'a> {
     }
 
     pub fn visit_type(&mut self, node: &'a ast::Type) -> CompileResult<context::Type<'a>> {
-        let ctx = match node {
+        match node {
             ast::Type::Path { items } => {
                 let mut index = 0;
                 let mut ctx = self.get_name(&items[index])?;
@@ -654,7 +665,20 @@ impl<'a> Analyzer<'a> {
                     };
                     index += 1;
                 }
-                ctx
+                if !ctx.taipe.is_typedef() {
+                    return Err(self.make_err(
+                        format!("expression is not a type: '{}'", ctx.to_string()),
+                        node,
+                    ));
+                }
+                // Post checks
+                let Some(taipe) = ctx.value else {
+                    unreachable!("not supposed to happen");
+                };
+                let context::Value::Type(taipe) = taipe else {
+                    unreachable!("not supposed to happen");
+                };
+                Ok(taipe)
             }
             ast::Type::Function {
                 line_info: _,
@@ -694,7 +718,7 @@ impl<'a> Analyzer<'a> {
                     }
                     _ => {}
                 }
-                Context::from_type(context::Type::Function {
+                Ok(context::Type::Function {
                     ret: Box::new(ctx_ret),
                     params: ctx_params,
                 })
@@ -707,16 +731,19 @@ impl<'a> Analyzer<'a> {
                     }
                     _ => {
                         if taipe.is_const() {
-                            self.warnings.push(self.make_err(
-                                format!(
-                                    "'const' is redundant here, '{}' is always a constant",
-                                    taipe.to_string()
-                                ),
-                                token,
-                            ));
-                            Context::from_type(taipe)
+                            self.warnings.push(
+                                self.make_warning(
+                                    format!(
+                                        "'const' is redundant here, '{}' is always a constant",
+                                        taipe.to_string()
+                                    ),
+                                    token,
+                                )
+                                .chain(self.make_help("remove const qualifier")),
+                            );
+                            Ok(taipe)
                         } else {
-                            Context::from_type(context::Type::Const(Box::new(taipe)))
+                            Ok(context::Type::Const(Box::new(taipe)))
                         }
                     }
                 }
@@ -733,7 +760,7 @@ impl<'a> Analyzer<'a> {
                     context::Type::Typedef => {
                         return Err(self.make_err("pointer to 'typedef' is invalid", node));
                     }
-                    _ => Context::from_type(context::Type::Pointer(Box::new(taipe))),
+                    _ => Ok(context::Type::Pointer(Box::new(taipe))),
                 }
             }
             ast::Type::Array {
@@ -759,7 +786,7 @@ impl<'a> Analyzer<'a> {
                 let context::Value::Int(length) = length else {
                     unreachable!("probably some analyzer bug");
                 };
-                Context::from_type(context::Type::Array {
+                Ok(context::Type::Array {
                     count: self.bigint2usize(length, expr.get_line_info())?,
                     taipe: Box::new(taipe),
                 })
@@ -776,13 +803,13 @@ impl<'a> Analyzer<'a> {
                     context::Type::Typedef => {
                         return Err(self.make_err("fat pointer to 'typedef' is invalid", node));
                     }
-                    _ => Context::from_type(context::Type::Fat(Box::new(taipe))),
+                    _ => Ok(context::Type::Fat(Box::new(taipe))),
                 }
             }
             ast::Type::Paren {
                 line_info: _,
                 taipe: node,
-            } => Context::from_type(self.visit_type(node)?),
+            } => self.visit_type(node),
             ast::Type::Tuple {
                 line_info: _,
                 types: nodes,
@@ -800,32 +827,16 @@ impl<'a> Analyzer<'a> {
                         _ => vec.push(taipe),
                     }
                 }
-                Context::from_type(context::Type::Tuple(vec))
+                Ok(context::Type::Tuple(vec))
             }
             ast::Type::Literal(token) => match token.kind {
-                TokenKind::Void => Context::from_type(context::Type::Tuple(Vec::new())),
-                TokenKind::Noreturn => Context::from_noreturn(),
-                TokenKind::Typedef => Context::from_type_literal(),
+                // TODO: change this
+                TokenKind::Void => Ok(context::Type::Tuple(Vec::new())),
+                TokenKind::Noreturn => Ok(context::Type::Noreturn),
+                TokenKind::Typedef => Ok(context::Type::Typedef),
                 _ => unreachable!("probably some parser bug"),
             },
-        };
-        // Post checks
-        match &ctx.taipe {
-            context::Type::Typedef => {}
-            _ => {
-                return Err(self.make_err(
-                    format!("expression is not a type: '{}'", ctx.to_string()),
-                    node,
-                ));
-            }
         }
-        let Some(taipe) = ctx.value else {
-            unreachable!("not supposed to happen");
-        };
-        let context::Value::Type(taipe) = taipe else {
-            unreachable!("not supposed to happen");
-        };
-        Ok(taipe)
     }
 
     pub fn visit_expr(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
@@ -1736,17 +1747,35 @@ impl<'a> Analyzer<'a> {
         scope: &Rc<RefCell<scope::Scope<'a>>>,
         name: &Token,
     ) -> CompileResult<Context<'a>> {
-        if let Some(ctx) = self.resolve_member(&scope, &name.text)? {
+        let mut searched_names = HashSet::new();
+        if let Some(ctx) = self.resolve_member(&scope, &name.text, &mut searched_names)? {
             Ok(ctx)
         } else {
-            Err(self.make_err(
+            let maybe = fuzzy_search_best(&name.text, &searched_names, None);
+            let mut err = self.make_err(
                 format!(
                     "'{}' has no member named '{}'",
                     scope.borrow().sym_path.to_string(),
                     &name.text
                 ),
                 name,
-            ))
+            );
+            if maybe.len() == 1 {
+                err = err.chain(
+                    self.make_help(format!("did you mean '{}'?", maybe.iter().next().unwrap())),
+                );
+            } else if maybe.len() != 0 {
+                let mut maybe_str = String::new();
+                for name in maybe {
+                    maybe_str.push('\'');
+                    maybe_str.push_str(&name);
+                    maybe_str.push_str("', ");
+                }
+                maybe_str.pop();
+                maybe_str.pop();
+                err = err.chain(self.make_help(format!("did you mean one of {}?", maybe_str)));
+            }
+            Err(err)
         }
     }
 
@@ -1754,6 +1783,7 @@ impl<'a> Analyzer<'a> {
         &mut self,
         scope: &Rc<RefCell<scope::Scope<'a>>>,
         name: &str,
+        searched_names: &mut HashSet<String>,
     ) -> CompileResult<Option<Context<'a>>> {
         if let Some(child) = scope.borrow().children.get(name) {
             let node = match &child.borrow().state {
@@ -1783,27 +1813,55 @@ impl<'a> Analyzer<'a> {
             // Restore old scope
             self.cur_scope = old_cur_scope;
             return Ok(Some(ctx));
+        } else {
+            // For better errors
+            for name in scope.borrow().children.keys() {
+                searched_names.insert(name.clone());
+            }
         }
+
         Ok(None)
     }
 
     fn get_name(&mut self, name: &Token) -> CompileResult<Context<'a>> {
-        if let Some(mut ctx) = self.resolve_name(&name.text)? {
+        let mut searched_names = HashSet::new();
+        if let Some(mut ctx) = self.resolve_name(&name.text, &mut searched_names)? {
             if !ctx.taipe.is_const() {
                 ctx.value = None;
             }
             Ok(ctx)
         } else {
-            Err(self.make_err("undefined reference", name))
+            let maybe = fuzzy_search_best(&name.text, &searched_names, None);
+            let mut err = self.make_err("undefined reference", name);
+            if maybe.len() == 1 {
+                err = err.chain(
+                    self.make_help(format!("did you mean '{}'?", maybe.iter().next().unwrap())),
+                );
+            } else if maybe.len() != 0 {
+                let mut maybe_str = String::new();
+                for name in maybe {
+                    maybe_str.push('\'');
+                    maybe_str.push_str(&name);
+                    maybe_str.push_str("', ");
+                }
+                maybe_str.pop();
+                maybe_str.pop();
+                err = err.chain(self.make_help(format!("did you mean one of {}?", maybe_str)));
+            }
+            Err(err)
         }
     }
 
-    fn resolve_name(&mut self, name: &str) -> CompileResult<Option<Context<'a>>> {
+    fn resolve_name(
+        &mut self,
+        name: &str,
+        searched_names: &mut HashSet<String>,
+    ) -> CompileResult<Option<Context<'a>>> {
         {
             // Check in the current scope and go upwards
             let mut scope = Rc::clone(&self.cur_scope);
             loop {
-                if let Some(ctx) = self.resolve_member(&scope, name)? {
+                if let Some(ctx) = self.resolve_member(&scope, name, searched_names)? {
                     return Ok(Some(ctx));
                 }
                 let parent_opt = scope.borrow().parent.upgrade();
@@ -1875,6 +1933,20 @@ impl<'a> Analyzer<'a> {
         CompileError::SemError {
             file_path: self.get_cur_scope().get_src_path(),
             line_info: obj.get_line_info(),
+            msg: msg.to_string(),
+        }
+    }
+
+    fn make_warning(&self, msg: impl ToString, obj: &impl HasLineInfo) -> CompileError {
+        CompileError::SemWarning {
+            file_path: self.get_cur_scope().get_src_path(),
+            line_info: obj.get_line_info(),
+            msg: msg.to_string(),
+        }
+    }
+
+    fn make_help(&self, msg: impl ToString) -> CompileError {
+        CompileError::SemHelp {
             msg: msg.to_string(),
         }
     }

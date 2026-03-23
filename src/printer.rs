@@ -53,6 +53,7 @@ pub fn print_error(err: CompileError) {
             line_info,
             msg,
         } => print_diagnostic(DiagKind::Note, &file_path, line_info, &msg),
+        CompileError::SemHelp { msg } => print_help(&msg),
         CompileError::SemCyclic {
             file_path: _,
             line_info: _,
@@ -96,7 +97,7 @@ fn num_digits(x: usize) -> usize {
     }
 }
 
-fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &str) {
+fn process_err_msg(msg: &str) -> String {
     let mut result = String::new();
     let mut flag = None;
     let mut flag_color_r = 0xFF;
@@ -137,13 +138,24 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
             }
         }
     }
+    result
+}
+
+fn print_help(msg: &str) {
+    // cprint!("<g,s>help</>: ");
+    cprint!("<rgb(0,230,0),s>help</>: ");
+    cprintln!("<s>{}</>", process_err_msg(msg));
+}
+
+fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &str) {
     let underline_char = match kind {
         DiagKind::Error => {
             cprint!("<r,s>error</>: ");
             '^'
         }
         DiagKind::Note => {
-            cprint!("<b,s>note</>: ");
+            // cprint!("<b,s>note</>: ");
+            cprint!("<rgb(7,172,242),s>note</>: ");
             '-'
         }
         DiagKind::Warning => {
@@ -151,9 +163,9 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
             '~'
         }
     };
-    cprintln!("<s>{}</>", result);
+    cprintln!("<s>{}</>", process_err_msg(msg));
     cprintln!(
-        "in file: {}:<m!>{}</>:<m!>{}</>",
+        "in file: <rgb(78,142,211)>{}</>:<m!>{}</>:<m!>{}</>",
         file_path,
         line_info.line_start,
         line_info.col_start
