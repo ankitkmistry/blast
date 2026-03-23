@@ -235,6 +235,8 @@ pub enum Value<'a> {
     Type(Type<'a>),
     // Module
     Module(Weak<RefCell<scope::Scope<'a>>>),
+    // Function
+    Function(Weak<RefCell<scope::Scope<'a>>>),
 }
 
 impl<'a> Value<'a> {
@@ -289,6 +291,12 @@ impl<'a> ToString for Value<'a> {
             ),
             Value::Type(t) => t.to_string(),
             Value::Module(weak) => weak
+                .upgrade()
+                .expect("what da hell just happened")
+                .borrow()
+                .sym_path
+                .to_string(),
+            Value::Function(weak) => weak
                 .upgrade()
                 .expect("what da hell just happened")
                 .borrow()

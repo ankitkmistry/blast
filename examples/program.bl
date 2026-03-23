@@ -32,7 +32,11 @@ A :: struct {
 }
 
 B :: struct {
-    a: A;
+    c: C;
+}
+
+C :: struct {
+    a: *A;
 }
 
 // Solving module and typedef bug

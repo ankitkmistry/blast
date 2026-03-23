@@ -89,6 +89,7 @@ pub enum Field<'a> {
     Struct(Vec<Field<'a>>),
     Union(Vec<Field<'a>>),
     Field {
+        file_path: String,
         line_info: LineInfo,
         name: String,
         ctx: Context<'a>,

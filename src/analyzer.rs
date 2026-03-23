@@ -15,6 +15,8 @@ use crate::{
     scope::{self, HasSrcInfo, Payload, State},
 };
 
+// TODO: Unique counter should not be global
+// It should be a member of scope
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub struct Analyzer<'a> {
@@ -530,6 +532,7 @@ impl<'a> Analyzer<'a> {
                 // Complete the visit
                 scope.borrow_mut().state = scope::State::Visited(ctx.clone());
                 Ok(scope::Field::Field {
+                    file_path: scope.borrow().get_src_path(),
                     line_info: name.get_line_info(),
                     name: scope.borrow().name.clone(),
                     ctx,
@@ -563,9 +566,8 @@ impl<'a> Analyzer<'a> {
         let layout = self.resolve_layout_scope(Rc::clone(&scope))?;
         // Print the layout
         {
-            println!("-------------------------------------------------");
             println!(
-                "Layout of {}: {:?}",
+                "Memory layout of {}: {:?}",
                 ctx.clone().value.unwrap().to_string(),
                 layout
             );
@@ -575,9 +577,9 @@ impl<'a> Analyzer<'a> {
             let mut fields = compound.offsets.iter().collect::<Vec<_>>();
             fields.sort_by_key(|&(_, &data)| data.offset);
             for (name, field_data) in fields {
-                println!("offset of {} = {:?}", name, field_data);
+                println!("  offset of {} = {:?}", name, field_data);
             }
-            println!("-------------------------------------------------");
+            println!();
         }
         // Restore old scope
         self.cur_scope = old_cur_scope;
@@ -1346,14 +1348,13 @@ impl<'a> Analyzer<'a> {
                 });
                 Ok(layout)
             }
-            Payload::LayoutResolutionInProg => {
+            // INFO: bug prone area (maybe)
+            Payload::LayoutResolutionInProg | Payload::None => {
                 return Err(CompileError::SemCyclic {
                     file_path: scope.borrow().get_src_path(),
                     line_info: scope.borrow().get_line_info(),
                 });
             }
-            // FIXME: fix the bug here
-            Payload::None => unreachable!("probably some analyzer bug"),
         }
     }
 
@@ -1442,6 +1443,7 @@ impl<'a> Analyzer<'a> {
                 })
             }
             scope::Field::Field {
+                file_path,
                 line_info,
                 name,
                 ctx,
@@ -1451,12 +1453,12 @@ impl<'a> Analyzer<'a> {
                     Ok(layout) => layout,
                     Err(err) => {
                         return if let CompileError::SemCyclic {
-                            file_path,
+                            file_path: _,
                             line_info: _,
                         } = err
                         {
                             Err(CompileError::SemCyclic {
-                                file_path,
+                                file_path: file_path.clone(),
                                 line_info: *line_info,
                             })
                         } else {
