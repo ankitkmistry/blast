@@ -23,21 +23,21 @@
 // static
 
 tup :: (11, 22, 33);
-tup_mem :: tup.6;
+tup_mem :: tup.2;
 
 floats_count :: 10;
 floats : [floats_count]__f32;
 
 A :: struct {
-    b: B;
+    b: B
 }
 
 B :: struct {
-    c: C;
+    c: C
 }
 
 C :: struct {
-    a: *A;
+    a: *A
 }
 
 // Solving module and typedef bug
@@ -66,34 +66,34 @@ std :: module {
 
 vec2 :: union {
     struct {
-        x: __f64;
-        y: __f64;
-    }
-    v: [2]__f64;
+        x: __f64,
+        y: __f64,
+    },
+    v: [2]__f64,
 }
 
 vec3 :: union {
     struct {
         union {
-            x: __f64;
-            r: __f64;
-        }
+            x: __f64,
+            r: __f64,
+        },
         union {
-            y: __f64;
-            g: __f64;
-        }
+            y: __f64,
+            g: __f64,
+        },
         union {
-            z: __f64;
-            b: __f64;
-        }
-    }
+            z: __f64,
+            b: __f64,
+        },
+    },
     struct {
-        xy: vec2;
-        _: __f64;
-    }
+        xy: vec2,
+        _: __f64,
+    },
     struct {
-        _: __f64;
-        yz: vec2;
-    }
-    v: [3]__f64;
+        _: __f64,
+        yz: vec2,
+    },
+    v: [3]__f64,
 }

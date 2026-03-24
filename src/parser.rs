@@ -249,11 +249,11 @@ impl Parser {
         }
     }
 
-    // struct ::= 'struct' '{' fields '}';
+    // struct ::= 'struct' '{' field_list '}';
     fn parse_struct(&mut self) -> CompileResult<ast::Object> {
         let start = self.expect(Struct)?;
         self.expect(LBrace)?;
-        let fields = self.parse_fields()?;
+        let fields = self.parse_field_list();
         let end = self.expect(RBrace)?;
         Ok(ast::Object::Compound {
             line_info: LineInfo::from_range(&start, &end),
@@ -264,11 +264,11 @@ impl Parser {
         })
     }
 
-    // union ::= 'union' '{' fields '}';
+    // union ::= 'union' '{' field_list '}';
     fn parse_union(&mut self) -> CompileResult<ast::Object> {
         let start = self.expect(Union)?;
         self.expect(LBrace)?;
-        let fields = self.parse_fields()?;
+        let fields = self.parse_field_list();
         let end = self.expect(RBrace)?;
         // TODO: distinguish pls
         Ok(ast::Object::Compound {
@@ -280,9 +280,9 @@ impl Parser {
         })
     }
 
-    // field ::= (identifier | '_') ':' type ((':'|'=') expr)? ';'
-    //         | 'struct' '{' fields '}'
-    //         | 'union' '{' fields '}'
+    // field ::= (identifier | '_') ':' type ((':'|'=') expr)?
+    //         | 'struct' '{' field_list '}'
+    //         | 'union' '{' field_list '}'
     //         ;
     fn parse_field(&mut self) -> CompileResult<ast::Field> {
         if let Some(tok) = self.peek() {
@@ -296,7 +296,6 @@ impl Parser {
                     {
                         let eq_tok = self.get_token()?;
                         let expr = self.parse_expr()?;
-                        self.expect_term()?;
                         Ok(ast::Field::Decl {
                             name,
                             taipe,
@@ -304,7 +303,6 @@ impl Parser {
                             expr: Some(expr),
                         })
                     } else {
-                        self.expect_term()?;
                         Ok(ast::Field::Decl {
                             name,
                             taipe,
@@ -316,7 +314,7 @@ impl Parser {
                 Struct | Union => {
                     let token = self.get_token()?;
                     self.expect(LBrace)?;
-                    let fields = self.parse_fields()?;
+                    let fields = self.parse_field_list();
                     self.expect(RBrace)?;
                     Ok(ast::Field::Compound { token, fields })
                 }
@@ -325,20 +323,6 @@ impl Parser {
         } else {
             Err(self.expect_err(&[Ident, Underscore, Struct, Union]))
         }
-    }
-
-    // fields ::= field*
-    fn parse_fields(&mut self) -> CompileResult<Vec<ast::Field>> {
-        let mut fields = Vec::new();
-        while let Some(tok) = self.peek()
-            && (tok.kind == Ident
-                || tok.kind == Underscore
-                || tok.kind == Struct
-                || tok.kind == Union)
-        {
-            fields.push(self.parse_field()?);
-        }
-        Ok(fields)
     }
 
     // fun ::= 'fun' '(' param_list ')' ('->' type)? (';' | block);
@@ -1042,6 +1026,7 @@ impl Parser {
         })
     }
 
+    define_rule_list!(crate::ast::Field, parse_field_list, parse_field);
     define_rule_list!(crate::ast::Param, parse_param_list, parse_param);
     define_rule_list!(
         crate::ast::TypeFunctionParam,
