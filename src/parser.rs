@@ -378,7 +378,7 @@ impl Parser {
         Ok(ast::Param { name, taipe })
     }
 
-    // stmt := if_stmt | while_stmt | loop_stmt
+    // stmt := if_stmt | while_stmt
     //       | block
     //       | 'yield' label? expr? ';'
     //       | 'continue' label? ';'
@@ -395,16 +395,14 @@ impl Parser {
                     if let Some(tok) = self.peek_at(1) {
                         match tok.kind {
                             While => self.parse_while_stmt(),
-                            Loop => self.parse_loop_stmt(),
                             LBrace => self.parse_block(true),
-                            _ => Err(self.expect_err(&[While, Loop, LBrace])),
+                            _ => Err(self.expect_err(&[While, LBrace])),
                         }
                     } else {
-                        Err(self.expect_err(&[While, Loop, LBrace]))
+                        Err(self.expect_err(&[While, LBrace]))
                     }
                 }
                 While => self.parse_while_stmt(),
-                Loop => self.parse_loop_stmt(),
                 LBrace => self.parse_block(false),
                 Yield => {
                     let token = self.get_token()?;
@@ -459,7 +457,7 @@ impl Parser {
                     } else {
                         Err(self.expect_err(&[
                             // Stmt begin tokens
-                            If, Label, While, Loop, LBrace, Yield, Continue, Break, Return, //
+                            If, Label, While, LBrace, Yield, Continue, Break, Return, //
                             // Expr begin tokens
                             Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof,
                             Typeof, //
@@ -473,7 +471,7 @@ impl Parser {
         } else {
             Err(self.expect_err(&[
                 // Stmt begin tokens
-                If, Label, While, Loop, LBrace, Yield, Continue, Break, Return, //
+                If, Label, While, LBrace, Yield, Continue, Break, Return, //
                 // Expr begin tokens
                 Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof, Typeof, //
                 // Primary expr begin tokens
@@ -560,43 +558,8 @@ impl Parser {
         })
     }
 
-    // loop_stmt ::= label? 'loop' block;
-    fn parse_loop_stmt(&mut self) -> CompileResult<ast::Stmt> {
-        let label = if let Some(tok) = self.peek()
-            && tok.kind == Label
-        {
-            Some(self.get_token()?)
-        } else {
-            None
-        };
-        let start = self.expect(Loop)?;
-        let body = Box::new(self.parse_block(false)?);
-        let end = self.cur().unwrap();
-        Ok(ast::Stmt::Loop {
-            line_info: LineInfo::from_range(label.as_ref().unwrap_or(&start), &end),
-            body,
-        })
-    }
-
-    // type_fun_param ::= (identifier ':') type;
-    fn parse_type_fun_param(&mut self) -> CompileResult<ast::TypeFunctionParam> {
-        let name = if let Some(tok) = self.peek()
-            && tok.kind == Ident
-            && let Some(tok) = self.peek_at(1)
-            && tok.kind == Colon
-        {
-            let tok = self.get_token()?;
-            self.get_token()?;
-            Some(tok)
-        } else {
-            None
-        };
-        let taipe = self.parse_type()?;
-        Ok(ast::TypeFunctionParam { name, taipe })
-    }
-
     // type ::= identifier ('.' identifier)*
-    //        | 'fun' '(' type_fun_param_list ')' '->' type
+    //        | 'fun' '(' type_list ')' '->' type
     //        | 'const' type                 # duplicate const is handled in the parser
     //        | '*' type
     //        | '[' ('_' | expr) ']' type
@@ -622,7 +585,7 @@ impl Parser {
                 Fun => {
                     let start = self.get_token()?;
                     self.expect(LParen)?;
-                    let params = self.parse_type_fun_param_list();
+                    let params = self.parse_type_list();
                     self.expect(RParen)?;
                     self.expect(Arrow)?;
                     let ret = self.parse_type()?;
@@ -992,13 +955,13 @@ impl Parser {
                     })
                 }
                 _ => Err(self.expect_err(&[
-                    True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While, Loop,
+                    True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While,
                     Break, Continue, Return,
                 ])),
             }
         } else {
             Err(self.expect_err(&[
-                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While, Loop,
+                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While,
                 Break, Continue, Return,
             ]))
         }
@@ -1028,11 +991,6 @@ impl Parser {
 
     define_rule_list!(crate::ast::Field, parse_field_list, parse_field);
     define_rule_list!(crate::ast::Param, parse_param_list, parse_param);
-    define_rule_list!(
-        crate::ast::TypeFunctionParam,
-        parse_type_fun_param_list,
-        parse_type_fun_param
-    );
     define_rule_list!(crate::ast::Type, parse_type_list, parse_type);
     define_rule_list!(crate::ast::Expr, parse_logic_or_list, parse_logic_or);
     define_rule_list!(crate::ast::Arg, parse_arg_list, parse_arg);

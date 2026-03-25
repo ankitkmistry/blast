@@ -67,7 +67,7 @@ Params      <- (Param (',' Param)* ','?)?;
 Param       <- Identifier ':' Type;
 
 # Statements
-Stmt            <- StmtIf / StmtWhile / StmtLoop # / StmtFor
+Stmt            <- StmtIf / StmtWhile # / StmtFor
                  / Block
                  / 'yield' Label? Expr ';'
                  / 'continue' Label? ';'
@@ -81,7 +81,6 @@ Block           <- Label? '{' (Decl / Stmt)* '}';
 # The blocks used have no label
 StmtIf      <- 'if' Expr Block ('else' Block)?
 StmtWhile   <- Label? 'while' Expr Block ('else' Block)?;
-StmtLoop    <- Label? 'loop' Block;
 # ExprFor     <- 'for' Block ('else' Block)?;
 
 # Type

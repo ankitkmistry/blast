@@ -1,18 +1,16 @@
 use core::fmt;
 use std::{cell::RefCell, rc::Weak};
 
-use crate::{ast, common::Int, scope};
+use crate::{common::Int, scope};
 
 #[derive(Clone)]
 pub struct Param<'a> {
-    pub name: Option<String>,
     pub taipe: Type<'a>,
-    pub node: &'a ast::TypeFunctionParam,
 }
 
 impl<'a> PartialEq for Param<'a> {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.taipe == other.taipe
+        self.taipe == other.taipe
     }
 }
 
@@ -20,75 +18,69 @@ impl<'a> Eq for Param<'a> {}
 
 impl<'a> ToString for Param<'a> {
     fn to_string(&self) -> String {
-        match &self.name {
-            Some(name) => format!("{}: {}", name, self.taipe.to_string()),
-            None => self.taipe.to_string(),
-        }
+        self.taipe.to_string()
     }
 }
 
 impl<'a> fmt::Debug for Param<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Param")
-            .field("name", &self.name)
-            .field("taipe", &self.taipe)
-            .finish()
+        f.debug_struct("Param").field("taipe", &self.taipe).finish()
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum Type<'a> {
-    // Value can be:
-    // - Value::Bool => boolean value
+    /// Value can be:
+    /// - Value::Bool => boolean value
     Bool,
-    // Value can be:
-    // - Value::Char => char value
+    /// Value can be:
+    /// - Value::Char => char value
     Char,
-    // Value can be:
-    // - Value::Int => integer value
+    /// Value can be:
+    /// - Value::Int => integer value
     Int,
-    // Value can be:
-    // - Value::Float32 => float32 value
+    /// Value can be:
+    /// - Value::Float32 => float32 value
     Float32,
-    // Value can be:
-    // - Value::Float64 => float64 value
+    /// Value can be:
+    /// - Value::Float64 => float64 value
     Float64,
-    // Value can be:
-    // - depending on Type::Const.0
+    /// Value can be:
+    /// - depending on Type::Const.0
     Const(Box<Type<'a>>),
-    // Value can be:
-    // - TODO: object
+    /// Value can be:
+    /// - TODO: object
     Basic(Weak<RefCell<scope::Scope<'a>>>),
-    // Value can be:
-    // - TODO: function
+    /// Value can be:
+    /// - Value::Function => Function value
     Function {
         ret: Box<Type<'a>>,
         params: Vec<Param<'a>>,
     },
-    // Value can be:
-    // - TODO: pointer
+    /// Value can be:
+    /// - TODO: pointer
     Pointer(Box<Type<'a>>),
-    // Value can be:
-    // - Value::Array => array value
-    Array {
-        count: usize,
-        taipe: Box<Type<'a>>,
-    },
-    // Value can be:
-    // - Value::Array => array value
+    /// Value can be:
+    /// - Value::Array => array value
+    Array { count: usize, taipe: Box<Type<'a>> },
+    /// Value can be:
+    /// - Value::Array => array value
     Fat(Box<Type<'a>>),
-    // Value can be:
-    // - Value::Tuple => tuple value
+    /// Value can be:
+    /// - Value::Tuple => tuple value
     Tuple(Vec<Type<'a>>),
-    // Value can be:
-    // - Value::Module => module reference
+    /// Value can be:
+    /// - Value::Module => module reference
     Module,
-    // Value can be:
-    // - None => type literal itself: 'typedef'
-    // - Value::Type => type reference
+    /// Value can be:
+    /// - None => type literal itself: 'typedef'
+    /// - Value::Type => type reference
     Typedef,
-    // Value can be:
-    // - None
+    /// Value can be:
+    /// - None
+    Void,
+    /// Value can be:
+    /// - None
     Noreturn,
 }
 
@@ -140,6 +132,24 @@ impl<'a> Type<'a> {
     pub fn is_module(&self) -> bool {
         match self {
             Type::Module => true,
+            _ => false,
+        }
+    }
+    pub fn is_function(&self) -> bool {
+        match self {
+            Type::Function { ret: _, params: _ } => true,
+            _ => false,
+        }
+    }
+    pub fn is_void(&self) -> bool {
+        match self {
+            Type::Void => true,
+            _ => false,
+        }
+    }
+    pub fn is_noreturn(&self) -> bool {
+        match self {
+            Type::Noreturn => true,
             _ => false,
         }
     }
@@ -196,7 +206,7 @@ impl<'a> ToString for Type<'a> {
                 .sym_path
                 .to_string(),
             Type::Function { ret, params } => format!(
-                "fun ({}) -> ({})",
+                "fun ({}) -> {}",
                 params
                     .iter()
                     .map(|param| param.to_string())
@@ -217,6 +227,7 @@ impl<'a> ToString for Type<'a> {
             ),
             Type::Module => "module".to_string(),
             Type::Typedef => "typedef".to_string(),
+            Type::Void => "void".to_string(),
             Type::Noreturn => "noreturn".to_string(),
         }
     }
@@ -349,6 +360,12 @@ impl<'a> Context<'a> {
         Self {
             taipe: Type::Typedef,
             value: Some(Value::Type(taipe)),
+        }
+    }
+    pub fn from_void() -> Self {
+        Self {
+            taipe: Type::Void,
+            value: None,
         }
     }
     pub fn from_type_literal() -> Self {

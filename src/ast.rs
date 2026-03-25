@@ -71,10 +71,6 @@ pub enum Stmt {
         then_body: Box<Stmt>,
         else_body: Option<Box<Stmt>>,
     },
-    Loop {
-        line_info: LineInfo,
-        body: Box<Stmt>,
-    },
     Block {
         line_info: LineInfo,
         label: Option<Token>,
@@ -104,19 +100,13 @@ pub enum Stmt {
 }
 
 #[derive(Clone)]
-pub struct TypeFunctionParam {
-    pub name: Option<Token>,
-    pub taipe: Type,
-}
-
-#[derive(Clone)]
 pub enum Type {
     Path {
         items: Vec<Token>,
     },
     Function {
         line_info: LineInfo,
-        params: Vec<TypeFunctionParam>,
+        params: Vec<Type>,
         ret: Box<Type>,
     },
     Const {
@@ -320,7 +310,6 @@ impl HasLineInfo for Stmt {
                 then_body: _,
                 else_body: _,
             } => *line_info,
-            Stmt::Loop { line_info, body: _ } => *line_info,
             Stmt::Block {
                 line_info,
                 label: _,
@@ -394,16 +383,6 @@ impl HasLineInfo for Type {
                 types: _,
             } => *line_info,
             Type::Literal(token) => token.get_line_info(),
-        }
-    }
-}
-
-impl HasLineInfo for TypeFunctionParam {
-    fn get_line_info(&self) -> LineInfo {
-        if let Some(name) = &self.name {
-            LineInfo::from_range(name, &self.taipe)
-        } else {
-            self.taipe.get_line_info()
         }
     }
 }

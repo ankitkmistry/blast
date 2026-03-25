@@ -18,6 +18,7 @@ use crate::{
 // TODO: Unique counter should not be global
 // It should be a member of scope
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static BLOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub struct SemResult<'a> {
     pub roots: HashMap<String, Rc<RefCell<scope::Scope<'a>>>>,
@@ -172,6 +173,39 @@ impl<'a> Analyzer<'a> {
             &self.cur_scope,
             &sym_name,
             scope::State::NotVisited(scope::ScopeNode::Decl(node)),
+            name,
+        ))
+    }
+
+    fn declare_sym_ex(
+        &mut self,
+        state: scope::State<'a>,
+        name: &Token,
+    ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
+        // Check for redeclaration
+        // Except for '_' declarations
+        if name.kind != TokenKind::Underscore
+            && let Some(prev_scope_ref) = self.get_cur_scope().children.get(&name.text)
+        {
+            // No module then error
+            return Err(self
+                .make_err("redeclaration of symbol", name)
+                .chain(self.make_note("already declared here", &prev_scope_ref.borrow())));
+        }
+
+        let sym_name = if name.kind == TokenKind::Underscore {
+            format!(
+                "unnamed.{}$",
+                UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            )
+        } else {
+            name.text.clone()
+        };
+
+        Ok(scope::Scope::add_child(
+            &self.cur_scope,
+            &sym_name,
+            state,
             name,
         ))
     }
@@ -347,6 +381,13 @@ impl<'a> Analyzer<'a> {
                         decls,
                     } => {
                         colon_compulsory!(self, eq_token);
+                        // Visit type
+                        if let Some(taipe) = taipe {
+                            let taipe = self.visit_type(taipe)?;
+                            let context::Type::Module = taipe else {
+                                return Err(self.make_err("expected 'module'", node));
+                            };
+                        }
                         // Begin new scope
                         let old_cur_scope = Rc::clone(&self.cur_scope);
                         self.cur_scope = Rc::clone(&scope);
@@ -370,63 +411,119 @@ impl<'a> Analyzer<'a> {
                         self.cur_scope = old_cur_scope;
                         Ok(ctx)
                     }
+                    // TODO: type punning syntax
+                    // A :: struct {
+                    //     foo: i32;
+                    // }
+                    // B :: struct {
+                    //     using A;
+                    //     bar: i32;
+                    // }
                     ast::Object::Compound { line_info, field } => {
-                        // TODO: type punning syntax
-                        // A :: struct {
-                        //     foo: i32;
-                        // }
-                        // B :: struct {
-                        //     using A;
-                        //     bar: i32;
-                        // }
                         colon_compulsory!(self, eq_token);
                         // Visit type
-                        let lhs = if let Some(taipe) = taipe {
-                            Some((self.visit_type(taipe)?, taipe.get_line_info()))
-                        } else {
-                            None
-                        };
+                        if let Some(taipe) = taipe {
+                            let taipe = self.visit_type(taipe)?;
+                            let context::Type::Typedef = taipe else {
+                                return Err(self.make_err("expected 'typedef'", node));
+                            };
+                        }
                         // TODO: implement field layout to distinguish between union and struct
-                        let rhs = self.visit_compound(scope, field)?;
-                        // Resolve assignment
-                        self.resolve_assign(
-                            lhs,
-                            eq_token.as_ref(),
-                            Some((rhs.clone(), *line_info)),
-                        )?;
-                        Ok(rhs)
+                        let ctx = self.visit_compound(scope, field)?;
+                        Ok(ctx)
                     }
                     ast::Object::Fun {
-                        line_info: _,
+                        line_info,
                         params,
                         ret,
                         body,
                     } => {
                         colon_compulsory!(self, eq_token);
-                        todo!("functions are not supported yet")
-                    }
-                    ast::Object::Typedef(node) => {
-                        colon_compulsory!(self, eq_token);
                         // Visit type
                         let lhs = if let Some(taipe) = taipe {
                             Some((self.visit_type(taipe)?, taipe.get_line_info()))
                         } else {
                             None
                         };
-                        let rhs = self.visit_type(node)?;
-                        if let context::Type::Typedef = rhs {
+                        // --- FUNCTION CODE START
+                        // Begin new scope
+                        let old_cur_scope = Rc::clone(&self.cur_scope);
+                        self.cur_scope = Rc::clone(&scope);
+                        // Parameter visitation
+                        // INFO: Parameters are iterated twice. In the first iteration we visit
+                        // the ast nodes and take the useful information (name and Context).
+                        // This prevents default value of a param to refer to its previous
+                        // param. The second time we declare the parameter inside the function
+                        // scope, once and for all.
+                        let mut param_infos = Vec::new();
+                        for param in params {
+                            let taipe = self.visit_type(&param.taipe)?;
+                            param_infos.push((&param.name, taipe));
+                        }
+                        let mut param_types = Vec::new();
+                        for (name, taipe) in param_infos {
+                            param_types.push(context::Param {
+                                taipe: taipe.clone(),
+                            });
+                            let _ = self.declare_sym_ex(
+                                scope::State::Visited(Context { taipe, value: None }),
+                                name,
+                            )?;
+                        }
+                        // Visit the return type
+                        let ret_type = if let Some(ret) = ret {
+                            let taipe = self.visit_type(ret)?;
+                            self.validate_fun_ret_type(&taipe, ret)?;
+                            taipe
+                        } else {
+                            context::Type::Void
+                        };
+                        // Create the context
+                        let rhs = Context {
+                            taipe: context::Type::Function {
+                                ret: Box::new(ret_type),
+                                params: param_types,
+                            },
+                            value: Some(context::Value::Function(Rc::downgrade(&scope))),
+                        };
+                        // Resolve assignment
+                        let ctx =
+                            self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, *line_info)))?;
+                        // Mark it visited
+                        scope.borrow_mut().state = scope::State::Visited(ctx.clone());
+                        scope.borrow_mut().payload = scope::Payload::Function(scope::Function {
+                            ret_line_info: ret.as_ref().map(|ret| ret.get_line_info()),
+                        });
+                        // TODO: visit stmts
+                        if let Some(body) = body {
+                            let ctx = self.visit_stmt(body)?;
+                            dbg!(ctx.to_string());
+                        }
+                        //
+                        // Restore old scope
+                        self.cur_scope = old_cur_scope;
+                        // --- FUNCTION CODE END
+                        Ok(ctx)
+                    }
+                    ast::Object::Typedef(node) => {
+                        colon_compulsory!(self, eq_token);
+                        // Visit lhs type
+                        if let Some(taipe) = taipe {
+                            let taipe = self.visit_type(taipe)?;
+                            let context::Type::Typedef = taipe else {
+                                return Err(self.make_err("expected 'typedef'", node));
+                            };
+                        }
+                        // Visit rhs type
+                        let taipe = self.visit_type(node)?;
+                        if let context::Type::Typedef = taipe {
                             // context: type -> typedef, value -> typedef
                             // this cannot happen, there is no type of a type
                             // parser prevents this
                             return Err(self.make_err("invalid type alias", node));
                         }
-                        // Resolve assignment
-                        let ctx = self.resolve_assign(
-                            lhs,
-                            eq_token.as_ref(),
-                            Some((Context::from_type(rhs), node.get_line_info())),
-                        )?;
                         // Complete the visit
+                        let ctx = Context::from_type(taipe);
                         scope.borrow_mut().state = scope::State::Visited(ctx.clone());
                         Ok(ctx)
                     }
@@ -458,6 +555,157 @@ impl<'a> Analyzer<'a> {
                 todo!("import statements are not supported yet")
             }
         }
+    }
+
+    fn visit_stmt(&mut self, node: &'a ast::Stmt) -> CompileResult<Context<'a>> {
+        match node {
+            ast::Stmt::If {
+                line_info,
+                expr,
+                then_body,
+                else_body,
+            } => todo!(),
+            ast::Stmt::While {
+                line_info,
+                label,
+                expr,
+                then_body,
+                else_body,
+            } => todo!(),
+            ast::Stmt::Block {
+                line_info,
+                label,
+                stmts,
+            } => self.visit_block(*line_info, label.as_ref(), stmts),
+            ast::Stmt::Yield { token, label, expr } => todo!(),
+            ast::Stmt::Continue { token, label } => todo!(),
+            ast::Stmt::Break { token, label, expr } => todo!(),
+            ast::Stmt::Return { token, expr } => self.visit_return(token, expr.as_ref()),
+            ast::Stmt::Decl(decl) => todo!(),
+            ast::Stmt::Expr(expr) => {
+                let _ = self.visit_expr(expr)?;
+                Ok(Context::from_void())
+            }
+            ast::Stmt::Nop(_) => Ok(Context::from_void()),
+        }
+    }
+
+    fn visit_return(
+        &mut self,
+        token: &Token,
+        expr: Option<&'a ast::Expr>,
+    ) -> CompileResult<Context<'a>> {
+        let Some(function) = self.get_current_function() else {
+            return Err(self.make_err("'return' is allowed in functions only", token));
+        };
+        let scope::State::Visited(ctx) = function.borrow().state.clone() else {
+            unreachable!("probably some analyzer bug");
+        };
+        let scope::Payload::Function(scope::Function { ret_line_info }) = function.borrow().payload
+        else {
+            unreachable!("probably some analyzer bug");
+        };
+        let ret_line_info = ret_line_info.unwrap_or_else(|| function.borrow().get_line_info());
+        let context::Type::Function { ret, params: _ } = ctx.taipe else {
+            unreachable!("probably some analyzer bug");
+        };
+        let ret = *ret;
+        if let Some(expr) = expr {
+            if ret.is_void() {
+                return Err(self
+                    .make_err("invalid expression", expr)
+                    .chain(self.make_note(
+                        format!("function expects return type '{}'", ret.to_string()),
+                        &ret_line_info,
+                    )));
+            }
+            let rhs = self.visit_expr(expr)?;
+            let _ = self.resolve_assign(
+                Some((ret, ret_line_info)),
+                None,
+                Some((rhs, expr.get_line_info())),
+            )?;
+        } else {
+            if !ret.is_void() {
+                return Err(self
+                    .make_err("expected <expression> for 'return'", token)
+                    .chain(self.make_note(
+                        format!("function expects return type '{}'", ret.to_string()),
+                        &ret_line_info,
+                    )));
+            }
+        }
+        Ok(Context::from_noreturn())
+    }
+
+    fn visit_block(
+        &mut self,
+        line_info: LineInfo,
+        label: Option<&Token>,
+        stmts: &'a [ast::Stmt],
+    ) -> CompileResult<Context<'a>> {
+        let scope = self.create_block_scope(line_info);
+        // Begin new scope
+        let old_cur_scope = Rc::clone(&self.cur_scope);
+        self.cur_scope = Rc::clone(&scope);
+        // Block yield information
+        struct BlockYieldInfo<'a> {
+            line_info: LineInfo,
+            ctx: Context<'a>,
+        }
+        let mut block_yield: Option<BlockYieldInfo> = None;
+        // Visit individual statements
+        for stmt in stmts {
+            let ctx = self.visit_stmt(stmt)?;
+            if ctx.taipe.is_noreturn() {
+                continue;
+            }
+            // Now check if the block yield is consistent
+            if let Some(ref mut block_yield) = block_yield {
+                let lhs = block_yield.ctx.taipe.clone();
+                let lhs_line_info = block_yield.line_info;
+                let rhs = ctx;
+                let rhs_line_info = stmt.get_line_info();
+                // TODO: this needs to be improved
+                let ctx = self.resolve_assign(
+                    Some((lhs, lhs_line_info)),
+                    None,
+                    Some((rhs, rhs_line_info)),
+                )?;
+                block_yield.ctx = Context {
+                    taipe: ctx.taipe,
+                    value: None,
+                };
+            }
+        }
+        let ctx = if let Some(block_yield) = block_yield {
+            block_yield.ctx
+        } else {
+            if stmts.is_empty() {
+                Context::from_void()
+            } else {
+                Context::from_noreturn()
+            }
+        };
+        scope.borrow_mut().state = scope::State::Visited(ctx.clone());
+        // Restore old scope
+        self.cur_scope = old_cur_scope;
+        Ok(ctx)
+    }
+
+    fn create_block_scope(&mut self, line_info: LineInfo) -> Rc<RefCell<scope::Scope<'a>>> {
+        let block_name = format!(
+            "block.{}$",
+            BLOCK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        let scope = scope::Scope::add_child(
+            &self.cur_scope,
+            &block_name,
+            scope::State::VisitInProg,
+            &line_info,
+        );
+        scope.borrow_mut().payload = Payload::Block;
+        scope
     }
 
     fn get_fields(&mut self, field: &'a ast::Field) -> CompileResult<scope::Field<'a>> {
@@ -687,37 +935,27 @@ impl<'a> Analyzer<'a> {
             } => {
                 let mut ctx_params = Vec::new();
                 for param in params {
-                    let taipe = self.visit_type(&param.taipe)?;
+                    let taipe = self.visit_type(&param)?;
                     match &taipe {
-                        context::Type::Module => {
-                            return Err(
-                                self.make_err("'module' cannot be a parameter type", &param.taipe)
-                            );
+                        context::Type::Module | context::Type::Void => {
+                            return Err(self.make_err(
+                                format!("'{}' cannot be a parameter type", taipe.to_string()),
+                                param,
+                            ));
                         }
                         context::Type::Typedef => {
                             // TODO: Think about this
+                            // FIXME: This parameter has to be comptime
                             return Err(
-                                self.make_err("'typedef' cannot be a parameter type", &param.taipe)
+                                self.make_err("'typedef' cannot be a parameter type", param)
                             );
                         }
                         _ => {}
                     }
-                    ctx_params.push(context::Param {
-                        name: param.name.clone().map(|tok| tok.text),
-                        taipe,
-                        node: param,
-                    });
+                    ctx_params.push(context::Param { taipe });
                 }
                 let ctx_ret = self.visit_type(ret)?;
-                match &ctx_ret {
-                    context::Type::Module => {
-                        return Err(self.make_err("'module' cannot be a return type", ret));
-                    }
-                    context::Type::Typedef => {
-                        return Err(self.make_err("'typedef' cannot be a return type", ret));
-                    }
-                    _ => {}
-                }
+                self.validate_fun_ret_type(&ctx_ret, ret)?;
                 Ok(context::Type::Function {
                     ret: Box::new(ctx_ret),
                     params: ctx_params,
@@ -797,11 +1035,11 @@ impl<'a> Analyzer<'a> {
             } => {
                 let taipe = self.visit_type(node)?;
                 match &taipe {
-                    context::Type::Module => {
-                        return Err(self.make_err("fat pointer to 'module' is invalid", node));
-                    }
-                    context::Type::Typedef => {
-                        return Err(self.make_err("fat pointer to 'typedef' is invalid", node));
+                    context::Type::Module | context::Type::Typedef => {
+                        return Err(self.make_err(
+                            format!("fat pointer to '{}' is invalid", taipe.to_string()),
+                            node,
+                        ));
                     }
                     _ => Ok(context::Type::Fat(Box::new(taipe))),
                 }
@@ -818,11 +1056,11 @@ impl<'a> Analyzer<'a> {
                 for node in nodes {
                     let taipe = self.visit_type(node)?;
                     match &taipe {
-                        context::Type::Module => {
-                            return Err(self.make_err("'module' cannot be a tuple item", node));
-                        }
-                        context::Type::Typedef => {
-                            return Err(self.make_err("'typedef' cannot be a tuple item", node));
+                        context::Type::Module | context::Type::Typedef | context::Type::Void => {
+                            return Err(self.make_err(
+                                format!("'{}' cannot be a tuple item", taipe.to_string()),
+                                node,
+                            ));
                         }
                         _ => vec.push(taipe),
                     }
@@ -830,13 +1068,29 @@ impl<'a> Analyzer<'a> {
                 Ok(context::Type::Tuple(vec))
             }
             ast::Type::Literal(token) => match token.kind {
-                // TODO: change this
-                TokenKind::Void => Ok(context::Type::Tuple(Vec::new())),
+                TokenKind::Void => Ok(context::Type::Void),
                 TokenKind::Noreturn => Ok(context::Type::Noreturn),
                 TokenKind::Typedef => Ok(context::Type::Typedef),
                 _ => unreachable!("probably some parser bug"),
             },
         }
+    }
+
+    fn validate_fun_ret_type(
+        &mut self,
+        taipe: &context::Type<'a>,
+        line_info: &impl HasLineInfo,
+    ) -> CompileResult<()> {
+        match taipe {
+            context::Type::Module => {
+                return Err(self.make_err("'module' cannot be a return type", line_info));
+            }
+            context::Type::Typedef => {
+                return Err(self.make_err("'typedef' cannot be a return type", line_info));
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     pub fn visit_expr(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
@@ -1055,7 +1309,7 @@ impl<'a> Analyzer<'a> {
                 if items.len() != 1 {
                     // TODO: to be changed
                     return Err(
-                        self.make_err("number of arguments to index operator should be 1", items)
+                        self.make_err("only 1 argument is allowed in index operator", items)
                     );
                 }
                 let ctx = self.visit_expr(expr)?;
@@ -1151,19 +1405,19 @@ impl<'a> Analyzer<'a> {
                 TokenKind::False => Ok(Context::from_bool(false)),
                 TokenKind::StringLit => {
                     let Some(tok_val) = &token.value else {
-                        unreachable!("probably some parser bug")
+                        unreachable!("probably some lexer bug")
                     };
                     let TokenValue::String(str) = tok_val else {
-                        unreachable!("probably some parser bug")
+                        unreachable!("probably some lexer bug")
                     };
                     Ok(Context::from_str(str))
                 }
                 TokenKind::IntLit => {
                     let Some(tok_val) = token.value.as_ref() else {
-                        unreachable!("probably some parser bug");
+                        unreachable!("probably some lexer bug");
                     };
                     let TokenValue::Int(tok_val) = tok_val else {
-                        unreachable!("probably some parser bug");
+                        unreachable!("probably some lexer bug");
                     };
                     // TODO: check suffix
                     Ok(Context {
@@ -1293,12 +1547,11 @@ impl<'a> Analyzer<'a> {
                     alignment: 16,
                 }
             }
-            // TODO: layout of tuples is the same as the layout of values in a struct
             context::Type::Tuple(items) => todo!("layout of tuples is not implemented"),
-            // Lone losers
             context::Type::Int
             | context::Type::Module
             | context::Type::Typedef
+            | context::Type::Void
             | context::Type::Noreturn => {
                 return Err(self.make_err(
                     format!(
@@ -1359,13 +1612,13 @@ impl<'a> Analyzer<'a> {
                 });
                 Ok(layout)
             }
-            // INFO: bug prone area (maybe)
             Payload::LayoutResolutionInProg | Payload::None => {
                 return Err(CompileError::SemCyclic {
                     file_path: scope.borrow().get_src_path(),
                     line_info: scope.borrow().get_line_info(),
                 });
             }
+            Payload::Function(_) | Payload::Block => unreachable!("probably some analyzer bug"),
         }
     }
 
@@ -1595,11 +1848,12 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 // Type checking and implicit casting
-                self.resolve_implicit_cast(
+                self.resolve_implicit_cast_ex(
                     lhs,
                     lhs_line_info,
                     rhs,
                     rhs_line_info,
+                    true,
                     allow_assign_to_const,
                 )
             }
@@ -1608,20 +1862,46 @@ impl<'a> Analyzer<'a> {
 
     fn resolve_implicit_cast(
         &mut self,
+        lhs: context::Type<'a>,
+        lhs_line_info: LineInfo,
+        rhs: Context<'a>,
+        rhs_line_info: LineInfo,
+    ) -> CompileResult<Context<'a>> {
+        self.resolve_implicit_cast_ex(lhs, lhs_line_info, rhs, rhs_line_info, true, false)
+    }
+
+    fn resolve_implicit_cast_ex(
+        &mut self,
         mut lhs: context::Type<'a>,
         lhs_line_info: LineInfo,
         mut rhs: Context<'a>,
         rhs_line_info: LineInfo,
+        allow_assign_from_const: bool,
         allow_assign_to_const: bool,
     ) -> CompileResult<Context<'a>> {
-        // const qualifier in rhs does not matter at all during assignment
-        // as values are always copied
-        rhs.taipe = rhs.taipe.remove_const();
-        if allow_assign_to_const {
-            // If this is a first assignment to a constant
-            // Behave as if the constant has no const qualifier to its type
-            lhs = lhs.remove_const();
+        macro_rules! return_err {
+            () => {
+                return Err(self
+                    .make_err(
+                        format!("cannot assign to: '{}'", lhs.to_string()),
+                        &lhs_line_info,
+                    )
+                    .chain(self.make_note(
+                        format!("type of value is '{}'", rhs.to_string()),
+                        &rhs_line_info,
+                    )));
+            };
         }
+        // if allow_assign_from_const {
+        //     // const qualifier in rhs does not matter at all during assignment
+        //     // as values are always copied (except for pointers of course)
+        //     rhs.taipe = rhs.taipe.remove_const();
+        // }
+        // if allow_assign_to_const {
+        //     // If this is a first assignment to a constant
+        //     // Behave as if the constant has no const qualifier to its type
+        //     lhs = lhs.remove_const();
+        // }
         // Type checking and Implicit conversions
         match (&lhs, &rhs.taipe) {
             // (context::Type::Int, context::Type::Float32) => {
@@ -1681,11 +1961,87 @@ impl<'a> Analyzer<'a> {
                 }
                 // TODO: record info for generating IR
             }
-            (context::Type::Const(_), _) => {
-                return Err(self.make_err(
-                    format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
-                    &lhs_line_info,
-                ));
+            (context::Type::Const(lhs_const), context::Type::Const(rhs_const)) => {
+                if !allow_assign_to_const {
+                    return Err(self.make_err(
+                        format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
+                        &lhs_line_info,
+                    ));
+                }
+                let lhs = (**lhs_const).clone();
+                let rhs = Context {
+                    taipe: (**rhs_const).clone(),
+                    value: rhs.value.clone(),
+                };
+                if let Err(_) = self.resolve_implicit_cast_ex(
+                    lhs,
+                    lhs_line_info,
+                    rhs,
+                    rhs_line_info,
+                    false,
+                    true,
+                ) {
+                    return_err!();
+                };
+            }
+            (context::Type::Const(lhs_const), _) => {
+                if !allow_assign_to_const {
+                    return Err(self.make_err(
+                        format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
+                        &lhs_line_info,
+                    ));
+                }
+                if let Err(_) = self.resolve_implicit_cast_ex(
+                    (**lhs_const).clone(),
+                    lhs_line_info,
+                    rhs.clone(),
+                    rhs_line_info,
+                    false,
+                    false,
+                ) {
+                    return_err!();
+                };
+            }
+            (lhs, context::Type::Const(rhs_const)) => {
+                if !allow_assign_from_const {
+                    return_err!();
+                }
+                let rhs = Context {
+                    taipe: (**rhs_const).clone(),
+                    value: rhs.value.clone(),
+                };
+                if let Err(_) = self.resolve_implicit_cast_ex(
+                    lhs.clone(),
+                    lhs_line_info,
+                    rhs,
+                    rhs_line_info,
+                    false,
+                    allow_assign_to_const,
+                ) {
+                    return_err!();
+                };
+            }
+            (context::Type::Pointer(lhs_ptr), context::Type::Pointer(rhs_ptr)) => {
+                //       *T = *T       (Valid)
+                // *const T = *T       (Valid)
+                //       *T = *const T (Invalid)
+                // *const T = *const T (Valid)
+                assert!(rhs.value.is_none());
+                let lhs = (**lhs_ptr).clone();
+                let rhs = Context {
+                    taipe: (**rhs_ptr).clone(),
+                    value: rhs.value.clone(),
+                };
+                if let Err(_) = self.resolve_implicit_cast_ex(
+                    lhs,
+                    lhs_line_info,
+                    rhs,
+                    rhs_line_info,
+                    false,
+                    true,
+                ) {
+                    return_err!();
+                };
             }
             (
                 context::Type::Fat(lhs_type),
@@ -1697,15 +2053,7 @@ impl<'a> Analyzer<'a> {
                 // array type can be coerced to a fat pointer
                 // TODO: record length information (for generating IR)
                 if lhs_type != rhs_type {
-                    return Err(self
-                        .make_err(
-                            format!("cannot assign to: '{}'", lhs.to_string()),
-                            &lhs_line_info,
-                        )
-                        .chain(self.make_note(
-                            format!("type of value is '{}'", rhs.to_string()),
-                            &rhs_line_info,
-                        )));
+                    return_err!();
                 }
             }
             (context::Type::Noreturn, _) => {
@@ -1720,15 +2068,7 @@ impl<'a> Analyzer<'a> {
             }
             (lhs, rhs) => {
                 if lhs != rhs {
-                    return Err(self
-                        .make_err(
-                            format!("cannot assign to: '{}'", lhs.to_string()),
-                            &lhs_line_info,
-                        )
-                        .chain(self.make_note(
-                            format!("type of value is '{}'", rhs.to_string()),
-                            &rhs_line_info,
-                        )));
+                    return_err!();
                 }
             }
         }
@@ -1953,5 +2293,21 @@ impl<'a> Analyzer<'a> {
 
     fn get_cur_scope(&self) -> Ref<'_, scope::Scope<'a>> {
         self.cur_scope.borrow()
+    }
+
+    fn get_current_function(&self) -> Option<Rc<RefCell<scope::Scope<'a>>>> {
+        if self.cur_scope.borrow().is_function() {
+            Some(Rc::clone(&self.cur_scope))
+        } else {
+            self.cur_scope.borrow().get_enclosing_function()
+        }
+    }
+
+    fn get_current_block(&self) -> Option<Rc<RefCell<scope::Scope<'a>>>> {
+        if self.cur_scope.borrow().is_block() {
+            Some(Rc::clone(&self.cur_scope))
+        } else {
+            self.cur_scope.borrow().get_enclosing_block()
+        }
     }
 }

@@ -28,14 +28,13 @@ tup_mem :: tup.2;
 floats_count :: 10;
 floats : [floats_count]__f32;
 
+// Solving struct layouts
 A :: struct {
     b: B
 }
-
 B :: struct {
     c: C
 }
-
 C :: struct {
     a: *A
 }
@@ -96,4 +95,14 @@ vec3 :: union {
         yz: vec2,
     },
     v: [3]__f64,
+}
+
+// Pointer assignment checking
+// adoda: *const __f32;
+// aboba: *__f32 = adoda;
+
+vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {}
+
+main :: fun () -> void {
+    return;
 }

@@ -394,11 +394,6 @@ impl PrintableNode for ast::Type {
         printer.print_type(name, self).unwrap().unwrap()
     }
 }
-impl PrintableNode for ast::TypeFunctionParam {
-    fn print_ast(&self, name: &str, printer: &mut AstPrinter) -> TreeNode {
-        printer.print_type_fun_param(name, self).unwrap().unwrap()
-    }
-}
 impl PrintableNode for ast::Expr {
     fn print_ast(&self, name: &str, printer: &mut AstPrinter) -> TreeNode {
         printer.print_expr(name, self).unwrap().unwrap()
@@ -601,10 +596,6 @@ impl AstPrinter {
                     self.print_stmt("else_body", stmt)?;
                 }
             }
-            ast::Stmt::Loop { line_info: _, body } => {
-                write!(self, "::Loop")?;
-                self.print_stmt("body", body)?;
-            }
             ast::Stmt::Block {
                 line_info: _,
                 label,
@@ -678,7 +669,7 @@ impl AstPrinter {
                 ret,
             } => {
                 write!(self, "::Function")?;
-                self.print_list("params", params, Self::print_type_fun_param)?;
+                self.print_list("params", params, Self::print_type)?;
                 self.print_type("ret", ret)?;
             }
             ast::Type::Const { token, taipe } => {
@@ -728,14 +719,6 @@ impl AstPrinter {
                 self.print_tok("token", token)?;
             }
         }
-        Ok(())
-    }
-
-    fn visit_type_fun_param(&mut self, param: &ast::TypeFunctionParam) -> fmt::Result {
-        if let Some(name) = &param.name {
-            self.print_tok("name", name)?;
-        }
-        self.print_type("type", &param.taipe)?;
         Ok(())
     }
 
@@ -838,11 +821,6 @@ impl AstPrinter {
     define_printer!(print_param, visit_param, Param);
     define_printer!(print_stmt, visit_stmt, Stmt);
     define_printer!(print_type, visit_type, Type);
-    define_printer!(
-        print_type_fun_param,
-        visit_type_fun_param,
-        TypeFunctionParam
-    );
     define_printer!(print_expr, visit_expr, Expr);
     define_printer!(print_arg, visit_arg, Arg);
 

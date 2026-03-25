@@ -58,7 +58,6 @@ pub enum TokenKind {
     Or,
     If,
     While,
-    Loop,
     Yield,
     Continue,
     Break,
@@ -126,7 +125,6 @@ impl TokenKind {
             TokenKind::Or => "'or'",
             TokenKind::If => "'if'",
             TokenKind::While => "'while'",
-            TokenKind::Loop => "'loop'",
             TokenKind::Yield => "'yield'",
             TokenKind::Continue => "'continue'",
             TokenKind::Break => "'break'",
@@ -178,7 +176,6 @@ static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("false", TokenKind::False);
     keywords.insert("if", TokenKind::If);
     keywords.insert("while", TokenKind::While);
-    keywords.insert("loop", TokenKind::Loop);
     keywords.insert("yield", TokenKind::Yield);
     keywords.insert("continue", TokenKind::Continue);
     keywords.insert("break", TokenKind::Break);

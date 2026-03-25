@@ -1,3 +1,5 @@
+use indexmap::IndexMap;
+
 use crate::{
     ast,
     common::{HasLineInfo, Layout, LineInfo},
@@ -5,7 +7,7 @@ use crate::{
 };
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     rc::{Rc, Weak},
 };
 
@@ -80,8 +82,15 @@ pub enum State<'a> {
 #[derive(Clone)]
 pub enum Payload<'a> {
     Compound(Compound<'a>),
+    Function(Function),
+    Block,
     LayoutResolutionInProg,
     None,
+}
+
+#[derive(Clone)]
+pub struct Function {
+    pub ret_line_info: Option<LineInfo>,
 }
 
 #[derive(Clone)]
@@ -120,7 +129,7 @@ impl<'a> Compound<'a> {
     }
 }
 
-pub type Map<K, V> = BTreeMap<K, V>;
+pub type Map<K, V> = IndexMap<K, V>;
 
 #[derive(Clone)]
 pub struct Scope<'a> {
@@ -190,6 +199,56 @@ impl<'a> Scope<'a> {
             );
         }
         result
+    }
+
+    pub fn is_function(&self) -> bool {
+        match &self.state {
+            State::NotVisited(_) => panic!("impossible to know"),
+            State::VisitInProg => {
+                if self.is_block() {
+                    false
+                } else {
+                    panic!("impossible to know")
+                }
+            }
+            State::Visited(ctx) => ctx.taipe.is_function(),
+        }
+    }
+
+    pub fn get_enclosing_function(&self) -> Option<Rc<RefCell<Scope<'a>>>> {
+        if let Some(parent) = self.parent.upgrade() {
+            match &parent.borrow().state {
+                State::NotVisited(_) => panic!("impossible to know"),
+                State::VisitInProg => panic!("impossible to know"),
+                State::Visited(ctx) => {
+                    if ctx.taipe.is_function() {
+                        Some(Rc::clone(&parent))
+                    } else {
+                        None
+                    }
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn is_block(&self) -> bool {
+        match self.payload {
+            Payload::Block => true,
+            _ => false,
+        }
+    }
+
+    pub fn get_enclosing_block(&self) -> Option<Rc<RefCell<Scope<'a>>>> {
+        if let Some(parent) = self.parent.upgrade() {
+            match parent.borrow().payload {
+                Payload::Block => Some(Rc::clone(&parent)),
+                _ => None,
+            }
+        } else {
+            None
+        }
     }
 }
 
