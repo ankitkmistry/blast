@@ -123,7 +123,17 @@ impl<'a> Type<'a> {
 
     pub fn is_integer(&self) -> bool {
         match self {
-            Type::VarInt => true,
+            Type::VarInt
+            | Type::Int8
+            | Type::Int16
+            | Type::Int32
+            | Type::Int64
+            | Type::Int128
+            | Type::Uint8
+            | Type::Uint16
+            | Type::Uint32
+            | Type::Uint64
+            | Type::Uint128 => true,
             Type::Const(taipe) => taipe.is_integer(),
             _ => false,
         }
@@ -309,6 +319,21 @@ impl<'a> Value<'a> {
             Value::Uint32(val) => Some(Value::Uint32(!val)),
             Value::Uint64(val) => Some(Value::Uint64(!val)),
             Value::Uint128(val) => Some(Value::Uint128(!val)),
+            _ => None,
+        }
+    }
+    pub fn to_usize(&self) -> Option<usize> {
+        match self {
+            Value::Int8(val) => usize::try_from(*val).ok(),
+            Value::Int16(val) => usize::try_from(*val).ok(),
+            Value::Int32(val) => usize::try_from(*val).ok(),
+            Value::Int64(val) => usize::try_from(*val).ok(),
+            Value::Int128(val) => usize::try_from(*val).ok(),
+            Value::Uint8(val) => usize::try_from(*val).ok(),
+            Value::Uint16(val) => usize::try_from(*val).ok(),
+            Value::Uint32(val) => usize::try_from(*val).ok(),
+            Value::Uint64(val) => usize::try_from(*val).ok(),
+            Value::Uint128(val) => usize::try_from(*val).ok(),
             _ => None,
         }
     }

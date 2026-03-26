@@ -26,7 +26,8 @@ tup :: (11, 22, 33);
 tup_mem :: tup.2;
 
 floats_count :: 10;
-floats : [floats_count]__f32;
+// floats : [floats_count]__f32;
+floats : [10]__f32;
 
 // Solving struct layouts
 A :: struct {
@@ -104,7 +105,8 @@ vec3 :: union {
 number :: 0;
 invert :: ~number;
 
-vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {}
+vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {
+}
 
 main :: fun () -> void {
     return;

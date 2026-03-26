@@ -1019,22 +1019,35 @@ impl<'a> Analyzer<'a> {
                 let Some(expr) = expr else {
                     return Err(self.make_err("array length must be specified", node));
                 };
-                let length = self.visit_expr(expr)?;
-                if !length.taipe.is_integer() {
+                let length_ctx = self.visit_expr(expr)?;
+                if !length_ctx.taipe.is_integer() {
                     return Err(self
                         .make_err("argument of index operator should be an integer type", expr)
-                        .chain(
-                            self.make_note(format!("but got '{}'", length.taipe.to_string()), expr),
-                        ));
+                        .chain(self.make_note(
+                            format!("but got '{}'", length_ctx.taipe.to_string()),
+                            expr,
+                        )));
                 }
-                let Some(length) = length.value else {
+                let Some(length) = length_ctx.value else {
                     return Err(self.make_err("value cannot be evaluated at compile time", expr));
                 };
-                let context::Value::VarInt(length) = length else {
-                    unreachable!("probably some analyzer bug");
+                let Some(length) = self.transform_value_to_usize(&length, expr)? else {
+                    return Err(self.make_err(
+                        format!(
+                            "expected 'usize' but got '{}'",
+                            length_ctx.taipe.to_string()
+                        ),
+                        expr,
+                    ));
+                };
+                let Some(length) = length.to_usize() else {
+                    return Err(self.make_err(
+                        format!("'usize' cannot hold this value: '{}'", length.to_string()),
+                        expr,
+                    ));
                 };
                 Ok(context::Type::Array {
-                    count: self.varint2usize(length, expr.get_line_info())?,
+                    count: length,
                     taipe: Box::new(taipe),
                 })
             }
@@ -1125,18 +1138,30 @@ impl<'a> Analyzer<'a> {
             //  * value: *const T        -> result: const {type of member}
             //  * value: const *T        -> result: {type of member}
             //  * value: const *const T  -> result: const {type of member}
+            // note: T is never a pointer type
             ast::Expr::Member { expr, name } => {
                 let ctx = self.visit_expr(expr)?;
-                // Remember const
-                let is_const = ctx.taipe.remove_pointer().is_const();
-                // Turn `const *const T' => `T'
-                match ctx.taipe.remove_const().remove_pointer().remove_const() {
+                let (keep_const, taipe) = match ctx.taipe.clone() {
+                    context::Type::Pointer(taipe) => match *taipe {
+                        context::Type::Const(taipe) => (true, *taipe),
+                        taipe => (false, taipe),
+                    },
+                    context::Type::Const(taipe) => match *taipe {
+                        context::Type::Pointer(taipe) => match *taipe {
+                            context::Type::Const(taipe) => (true, *taipe),
+                            taipe => (false, taipe),
+                        },
+                        taipe => (true, taipe),
+                    },
+                    taipe => (false, taipe),
+                };
+                match taipe {
                     context::Type::Basic(scope) => {
                         let Some(scope) = scope.upgrade() else {
                             unreachable!("probably some analyzer bug");
                         };
                         let mut ctx = self.get_member(&scope, &name)?;
-                        if is_const && !ctx.taipe.is_const() {
+                        if keep_const {
                             ctx.taipe = context::Type::Const(Box::new(ctx.taipe));
                         }
                         Ok(ctx)
@@ -1173,16 +1198,18 @@ impl<'a> Analyzer<'a> {
                         // comptime: array indexing
                         // TODO: check usize for target system
                         let index = self.varint2usize(index, name.get_line_info())?;
-                        // Get the type and value respectively
-                        let taipe = items[index].clone();
-                        let value = if let Some(tuple) = ctx.value {
+                        // Get the type
+                        let mut taipe = items[index].clone();
+                        if keep_const {
+                            taipe = taipe.add_const();
+                        }
+                        // comptime: get value of tuple at specified index
+                        let value = ctx.value.map(|tuple| {
                             let context::Value::Tuple(tuple) = tuple else {
                                 unreachable!("probably some analyzer bug");
                             };
-                            Some(tuple[index].clone())
-                        } else {
-                            None
-                        };
+                            tuple[index].clone()
+                        });
                         Ok(Context { taipe, value })
                     }
                     context::Type::Module => {
@@ -1392,7 +1419,7 @@ impl<'a> Analyzer<'a> {
                 context::Type::VarInt => Ok(Context {
                     taipe: self.type_int.clone().add_const(),
                     value: if let Some(value) = ctx.value {
-                        self.transform_varint_to_int(value, expr)?.negate()
+                        self.transform_varint_to_int(&value, expr)?.negate()
                     } else {
                         None
                     },
@@ -1453,7 +1480,7 @@ impl<'a> Analyzer<'a> {
                 context::Type::VarInt => Ok(Context {
                     taipe: self.type_int.clone().add_const(),
                     value: if let Some(value) = ctx.value {
-                        self.transform_varint_to_int(value, expr)?.flip_bits()
+                        self.transform_varint_to_int(&value, expr)?.flip_bits()
                     } else {
                         None
                     },
@@ -1706,7 +1733,7 @@ impl<'a> Analyzer<'a> {
                     None,
                     Some((rhs, rhs_line_info)),
                 )?;
-                // Perform the operation at compile time
+                // comptime: perform logical not
                 ctx.value = ctx.value.map(|value| match value {
                     context::Value::Bool(b) => context::Value::Bool(!b),
                     _ => unreachable!("probably some analyzer bug"),
@@ -2028,13 +2055,15 @@ impl<'a> Analyzer<'a> {
         if let Some((
             Context {
                 ref mut taipe,
-                value: Some(ref mut value),
+                ref mut value,
             },
             rhs_line_info,
         )) = rhs
+            && let context::Type::VarInt = taipe.remove_const()
+            && let Some(value) = value
         {
             *taipe = self.type_int.clone();
-            *value = self.transform_varint_to_int(value.clone(), &rhs_line_info)?;
+            *value = self.transform_varint_to_int(&value, &rhs_line_info)?;
         }
         match (lhs, rhs) {
             (None, None) => panic!("either type or value information should be present"),
@@ -2520,62 +2549,145 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn transform_varint_to_usize(
+    fn transform_value(
         &self,
-        value: context::Value<'a>,
+        lhs: &context::Type<'a>,
+        rhs: &context::Value<'a>,
         line_info: &impl HasLineInfo,
-    ) -> CompileResult<context::Value<'a>> {
-        match value {
-            context::Value::VarInt(num) => {
-                let num = num.num;
-                let opt = match self.type_usize {
-                    context::Type::Uint8 => num.to_u8().map(|num| context::Value::Uint8(num)),
-                    context::Type::Uint16 => num.to_u16().map(|num| context::Value::Uint16(num)),
-                    context::Type::Uint32 => num.to_u32().map(|num| context::Value::Uint32(num)),
-                    context::Type::Uint64 => num.to_u64().map(|num| context::Value::Uint64(num)),
-                    context::Type::Uint128 => num.to_u128().map(|num| context::Value::Uint128(num)),
-                    _ => panic!("invalid type for Analyzer::type_usize"),
-                };
-                if let Some(num) = opt {
-                    Ok(num)
-                } else {
-                    Err(self.make_err(
-                        format!("'usize' cannot hold this value: '{}'", num),
-                        line_info,
-                    ))
-                }
+        type_name: Option<&str>,
+    ) -> CompileResult<Option<context::Value<'a>>> {
+        match (lhs, rhs) {
+            (_, context::Value::VarInt(_)) => {
+                Ok(Some(self.transform_varint(lhs, rhs, line_info, type_name)?))
             }
-            _ => Ok(value),
+            // Implicit signed integer conversions
+            (context::Type::Int128, context::Value::Int64(value)) => {
+                Ok(Some(context::Value::Int128((*value).into())))
+            }
+            (context::Type::Int128, context::Value::Int32(value)) => {
+                Ok(Some(context::Value::Int128((*value).into())))
+            }
+            (context::Type::Int128, context::Value::Int16(value)) => {
+                Ok(Some(context::Value::Int128((*value).into())))
+            }
+            (context::Type::Int128, context::Value::Int8(value)) => {
+                Ok(Some(context::Value::Int128((*value).into())))
+            }
+            (context::Type::Int64, context::Value::Int32(value)) => {
+                Ok(Some(context::Value::Int64((*value).into())))
+            }
+            (context::Type::Int64, context::Value::Int16(value)) => {
+                Ok(Some(context::Value::Int64((*value).into())))
+            }
+            (context::Type::Int64, context::Value::Int8(value)) => {
+                Ok(Some(context::Value::Int64((*value).into())))
+            }
+            (context::Type::Int32, context::Value::Int16(value)) => {
+                Ok(Some(context::Value::Int32((*value).into())))
+            }
+            (context::Type::Int32, context::Value::Int8(value)) => {
+                Ok(Some(context::Value::Int32((*value).into())))
+            }
+            (context::Type::Int16, context::Value::Int8(value)) => {
+                Ok(Some(context::Value::Int16((*value).into())))
+            }
+            // Implicit unsigned integer conversions
+            (context::Type::Uint128, context::Value::Uint64(value)) => {
+                Ok(Some(context::Value::Uint128((*value).into())))
+            }
+            (context::Type::Uint128, context::Value::Uint32(value)) => {
+                Ok(Some(context::Value::Uint128((*value).into())))
+            }
+            (context::Type::Uint128, context::Value::Uint16(value)) => {
+                Ok(Some(context::Value::Uint128((*value).into())))
+            }
+            (context::Type::Uint128, context::Value::Uint8(value)) => {
+                Ok(Some(context::Value::Uint128((*value).into())))
+            }
+            (context::Type::Uint64, context::Value::Uint32(value)) => {
+                Ok(Some(context::Value::Uint64((*value).into())))
+            }
+            (context::Type::Uint64, context::Value::Uint16(value)) => {
+                Ok(Some(context::Value::Uint64((*value).into())))
+            }
+            (context::Type::Uint64, context::Value::Uint8(value)) => {
+                Ok(Some(context::Value::Uint64((*value).into())))
+            }
+            (context::Type::Uint32, context::Value::Uint16(value)) => {
+                Ok(Some(context::Value::Uint32((*value).into())))
+            }
+            (context::Type::Uint32, context::Value::Uint8(value)) => {
+                Ok(Some(context::Value::Uint32((*value).into())))
+            }
+            (context::Type::Uint16, context::Value::Uint8(value)) => {
+                Ok(Some(context::Value::Uint16((*value).into())))
+            }
+            _ => Ok(None),
         }
     }
 
-    fn transform_varint_to_int(
+    fn transform_value_to_usize(
         &self,
-        value: context::Value<'a>,
+        value: &context::Value<'a>,
         line_info: &impl HasLineInfo,
+    ) -> CompileResult<Option<context::Value<'a>>> {
+        self.transform_value(&self.type_usize, value, line_info, Some("usize"))
+    }
+
+    fn transform_varint(
+        &self,
+        lhs: &context::Type<'a>,
+        rhs: &context::Value<'a>,
+        line_info: &impl HasLineInfo,
+        type_name: Option<&str>,
     ) -> CompileResult<context::Value<'a>> {
-        match value {
+        match rhs {
             context::Value::VarInt(num) => {
-                let num = num.num;
-                let opt = match self.type_int {
+                let num = &num.num;
+                let opt = match lhs {
                     context::Type::Int8 => num.to_i8().map(|num| context::Value::Int8(num)),
                     context::Type::Int16 => num.to_i16().map(|num| context::Value::Int16(num)),
                     context::Type::Int32 => num.to_i32().map(|num| context::Value::Int32(num)),
                     context::Type::Int64 => num.to_i64().map(|num| context::Value::Int64(num)),
                     context::Type::Int128 => num.to_i128().map(|num| context::Value::Int128(num)),
-                    _ => panic!("invalid type for Analyzer::type_int"),
+                    context::Type::Uint8 => num.to_u8().map(|num| context::Value::Uint8(num)),
+                    context::Type::Uint16 => num.to_u16().map(|num| context::Value::Uint16(num)),
+                    context::Type::Uint32 => num.to_u32().map(|num| context::Value::Uint32(num)),
+                    context::Type::Uint64 => num.to_u64().map(|num| context::Value::Uint64(num)),
+                    context::Type::Uint128 => num.to_u128().map(|num| context::Value::Uint128(num)),
+                    _ => panic!("invalid type for varint conversion"),
                 };
                 if let Some(num) = opt {
                     Ok(num)
                 } else {
                     Err(self.make_err(
-                        format!("'int' cannot hold this value: '{}'", num),
+                        format!(
+                            "'{}' cannot hold this value: '{}'",
+                            type_name.unwrap_or(&lhs.to_string()),
+                            num,
+                        ),
                         line_info,
                     ))
                 }
             }
-            _ => Ok(value),
+            _ => panic!("not a valid conversion"),
         }
+    }
+
+    fn transform_varint_to_usize(
+        &self,
+        value: &context::Value<'a>,
+        line_info: &impl HasLineInfo,
+    ) -> CompileResult<context::Value<'a>> {
+        self.transform_varint(&self.type_usize, value, line_info, Some("usize"))
+    }
+
+    fn transform_varint_to_int(
+        &self,
+        value: &context::Value<'a>,
+        line_info: &impl HasLineInfo,
+    ) -> CompileResult<context::Value<'a>> {
+        self.transform_varint(&self.type_int, value, line_info, Some("int"))
     }
 
     fn usize2usize(&self, val: usize, line_info: &impl HasLineInfo) -> CompileResult<Context<'a>> {
