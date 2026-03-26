@@ -1,6 +1,11 @@
 use std::{fs, path::Path, process::ExitCode};
 
-use crate::{analyzer::Analyzer, common::CompileResult, lexer::Lexer, parser::Parser};
+use crate::{
+    analyzer::Analyzer,
+    common::{CompileResult, Settings},
+    lexer::Lexer,
+    parser::Parser,
+};
 use clap::{self, ArgAction, command};
 
 mod analyzer;
@@ -34,6 +39,11 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
         )
         .get_matches();
 
+    let settings = Settings {
+        register_size: std::mem::size_of::<usize>(),
+        pointer_size: std::mem::size_of::<*const u8>(),
+    };
+
     let contents = fs::read_to_string(file_path).unwrap();
 
     let mut lexer = Lexer::new(file_path, &contents);
@@ -50,6 +60,7 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
         printer::print_ast("program", &ast);
     }
     let analyzer = Analyzer::new(
+        settings,
         file_path,
         Path::new(file_path).file_stem().unwrap().to_str().unwrap(),
         &ast,

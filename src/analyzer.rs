@@ -6,10 +6,14 @@ use std::{
 };
 
 use num_bigint::{BigInt, ToBigInt};
+use num_traits::cast::ToPrimitive;
 
 use crate::{
     ast,
-    common::{CompileError, CompileResult, HasLineInfo, Int, Layout, LineInfo, fuzzy_search_best},
+    common::{
+        CompileError, CompileResult, HasLineInfo, Int, Layout, LineInfo, Settings,
+        fuzzy_search_best,
+    },
     context::{self, Context},
     lexer::{Token, TokenKind, TokenValue},
     scope::{self, HasSrcInfo, Payload, State},
@@ -28,18 +32,44 @@ pub struct SemResult<'a> {
 pub struct Analyzer<'a> {
     roots: HashMap<String, Rc<RefCell<scope::Scope<'a>>>>,
     cur_scope: Rc<RefCell<scope::Scope<'a>>>,
+    settings: Settings,
+    type_int: context::Type<'a>,
+    type_uint: context::Type<'a>,
+    type_isize: context::Type<'a>,
+    type_usize: context::Type<'a>,
     saved_errs: Vec<CompileError>,
     warnings: Vec<CompileError>,
 }
 
 impl<'a> Analyzer<'a> {
-    pub fn new(file_path: &str, name: &str, root: &'a ast::Object) -> Self {
+    pub fn new(settings: Settings, file_path: &str, name: &str, root: &'a ast::Object) -> Self {
         let scope = scope::Scope::new_root(file_path, root);
         let mut roots = HashMap::new();
         roots.insert(name.to_owned(), Rc::clone(&scope));
+        let (type_int, type_uint) = match settings.register_size {
+            1 => (context::Type::Int8, context::Type::Uint8),
+            2 => (context::Type::Int16, context::Type::Uint16),
+            4 => (context::Type::Int32, context::Type::Uint32),
+            8 => (context::Type::Int64, context::Type::Uint64),
+            16 => (context::Type::Int128, context::Type::Uint128),
+            _ => panic!("invalid register size"),
+        };
+        let (type_isize, type_usize) = match settings.pointer_size {
+            1 => (context::Type::Int8, context::Type::Uint8),
+            2 => (context::Type::Int16, context::Type::Uint16),
+            4 => (context::Type::Int32, context::Type::Uint32),
+            8 => (context::Type::Int64, context::Type::Uint64),
+            16 => (context::Type::Int128, context::Type::Uint128),
+            _ => panic!("invalid register size"),
+        };
         Self {
             roots,
             cur_scope: scope,
+            settings,
+            type_int,
+            type_uint,
+            type_isize,
+            type_usize,
             saved_errs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -648,45 +678,24 @@ impl<'a> Analyzer<'a> {
         // Begin new scope
         let old_cur_scope = Rc::clone(&self.cur_scope);
         self.cur_scope = Rc::clone(&scope);
-        // Block yield information
-        struct BlockYieldInfo<'a> {
-            line_info: LineInfo,
-            ctx: Context<'a>,
-        }
-        let mut block_yield: Option<BlockYieldInfo> = None;
+        // Saves the (last index + 1) of the last stmt visited
+        let mut last_stmt_index = 0;
         // Visit individual statements
-        for stmt in stmts {
+        for (i, stmt) in stmts.iter().enumerate() {
             let ctx = self.visit_stmt(stmt)?;
+            last_stmt_index = i + 1;
+            // if ctx.taipe.is_void() {
+            //     continue;
+            // }
             if ctx.taipe.is_noreturn() {
-                continue;
-            }
-            // Now check if the block yield is consistent
-            if let Some(ref mut block_yield) = block_yield {
-                let lhs = block_yield.ctx.taipe.clone();
-                let lhs_line_info = block_yield.line_info;
-                let rhs = ctx;
-                let rhs_line_info = stmt.get_line_info();
-                // TODO: this needs to be improved
-                let ctx = self.resolve_assign(
-                    Some((lhs, lhs_line_info)),
-                    None,
-                    Some((rhs, rhs_line_info)),
-                )?;
-                block_yield.ctx = Context {
-                    taipe: ctx.taipe,
-                    value: None,
-                };
+                break;
             }
         }
-        let ctx = if let Some(block_yield) = block_yield {
-            block_yield.ctx
-        } else {
-            if stmts.is_empty() {
-                Context::from_void()
-            } else {
-                Context::from_noreturn()
-            }
-        };
+        if last_stmt_index < stmts.len() {
+            // We have unreachable code
+            return Err(self.make_err("unreachable code", &&stmts[last_stmt_index..]));
+        }
+        let ctx = Context::from_void();
         scope.borrow_mut().state = scope::State::Visited(ctx.clone());
         // Restore old scope
         self.cur_scope = old_cur_scope;
@@ -1021,11 +1030,11 @@ impl<'a> Analyzer<'a> {
                 let Some(length) = length.value else {
                     return Err(self.make_err("value cannot be evaluated at compile time", expr));
                 };
-                let context::Value::Int(length) = length else {
+                let context::Value::VarInt(length) = length else {
                     unreachable!("probably some analyzer bug");
                 };
                 Ok(context::Type::Array {
-                    count: self.bigint2usize(length, expr.get_line_info())?,
+                    count: self.varint2usize(length, expr.get_line_info())?,
                     taipe: Box::new(taipe),
                 })
             }
@@ -1104,118 +1113,18 @@ impl<'a> Analyzer<'a> {
             } => todo!(),
             ast::Expr::Binary { left, op, right } => todo!(),
             ast::Expr::Cast { expr, taipe } => todo!(),
-            ast::Expr::Unary { op, expr } => {
-                let ctx = self.visit_expr(expr)?;
-                match op.kind {
-                    TokenKind::Minus => match ctx.taipe.remove_const() {
-                        context::Type::Int => Ok(Context {
-                            taipe: ctx.taipe,
-                            value: if let Some(value) = ctx.value {
-                                value.negate()
-                            } else {
-                                None
-                            },
-                        }),
-                        context::Type::Float32 | context::Type::Float64 => Ok(Context {
-                            taipe: ctx.taipe,
-                            value: if let Some(value) = ctx.value {
-                                value.negate()
-                            } else {
-                                None
-                            },
-                        }),
-                        _ => {
-                            return Err(self.make_err(
-                                format!(
-                                    "cannot apply '-' operator on type '{}'",
-                                    ctx.taipe.to_string()
-                                ),
-                                expr,
-                            ));
-                        }
-                    },
-                    TokenKind::Tilde => match ctx.taipe.remove_const() {
-                        // TODO: comptime: implement this
-                        // ~ operator is not possible on variable sized integers
-                        context::Type::Int => Ok(Context {
-                            taipe: ctx.taipe,
-                            value: None,
-                        }),
-                        _ => {
-                            return Err(self.make_err(
-                                format!(
-                                    "cannot apply '~' operator on type '{}'",
-                                    ctx.taipe.to_string()
-                                ),
-                                expr,
-                            ));
-                        }
-                    },
-                    TokenKind::Star => match ctx.taipe.remove_const() {
-                        // TODO: comptime: what about implementing this in comptime
-                        // There are many edge cases and memory safety violation
-                        context::Type::Pointer(taipe) => Ok(Context {
-                            taipe: *taipe,
-                            value: None,
-                        }),
-                        _ => {
-                            return Err(self.make_err(
-                                format!("cannot dereference type '{}'", ctx.taipe.to_string()),
-                                expr,
-                            ));
-                        }
-                    },
-                    TokenKind::Ampersand => todo!(),
-                    TokenKind::Sizeof => {
-                        let taipe = match ctx.taipe {
-                            context::Type::Typedef => {
-                                let Some(taipe) = ctx.value else {
-                                    unreachable!("probably some analyzer bug");
-                                };
-                                let context::Value::Type(taipe) = taipe else {
-                                    unreachable!("probably some analyzer bug");
-                                };
-                                taipe
-                            }
-                            taipe => taipe,
-                        };
-                        let size = self.get_sizeof(&taipe, expr)?;
-                        // TODO: make this usize not variable int
-                        Ok(Context::from_int(Int::from_arbitrary(size as u64)))
-                    }
-                    TokenKind::Alignof => {
-                        let taipe = match ctx.taipe {
-                            context::Type::Typedef => {
-                                let Some(taipe) = ctx.value else {
-                                    unreachable!("probably some analyzer bug");
-                                };
-                                let context::Value::Type(taipe) = taipe else {
-                                    unreachable!("probably some analyzer bug");
-                                };
-                                taipe
-                            }
-                            taipe => taipe,
-                        };
-                        let alignment = self.get_alignof(&taipe, expr)?;
-                        // TODO: make this usize not variable int
-                        Ok(Context::from_int(Int::from_arbitrary(alignment as u64)))
-                    }
-                    TokenKind::Typeof => {
-                        if ctx.taipe.is_typedef() {
-                            return Err(self.make_err(
-                                format!(
-                                    "cannot use typeof operator on type '{}'",
-                                    ctx.taipe.to_string()
-                                ),
-                                expr,
-                            ));
-                        }
-                        Ok(Context::from_type(ctx.taipe))
-                    }
-                    TokenKind::Not => todo!(),
-                    _ => unreachable!("probably some parser bug"),
-                }
-            }
+            ast::Expr::Unary { op, expr } => self.visit_unary(op, expr),
+            // Postfix dot operator
+            //    result = value.name       // name is an identifier
+            // Description:
+            //    Flips all the bits of an signed or unsigned integer
+            // value and result can be:
+            //  * value: T               -> result: {type of member}
+            //  * value: const T         -> result: const {type of member}
+            //  * value: *T              -> result: {type of member}
+            //  * value: *const T        -> result: const {type of member}
+            //  * value: const *T        -> result: {type of member}
+            //  * value: const *const T  -> result: const {type of member}
             ast::Expr::Member { expr, name } => {
                 let ctx = self.visit_expr(expr)?;
                 // Remember const
@@ -1263,7 +1172,7 @@ impl<'a> Analyzer<'a> {
                         }
                         // comptime: array indexing
                         // TODO: check usize for target system
-                        let index = self.bigint2usize(index, name.get_line_info())?;
+                        let index = self.varint2usize(index, name.get_line_info())?;
                         // Get the type and value respectively
                         let taipe = items[index].clone();
                         let value = if let Some(tuple) = ctx.value {
@@ -1327,7 +1236,7 @@ impl<'a> Analyzer<'a> {
                     context::Type::Array { count, taipe } => {
                         let mut value: Option<context::Value<'a>> = None;
                         if let Some(index) = index.value {
-                            let context::Value::Int(index) = index else {
+                            let context::Value::VarInt(index) = index else {
                                 unreachable!("probably some analyzer bug");
                             };
                             // comptime: bounds checking
@@ -1342,7 +1251,7 @@ impl<'a> Analyzer<'a> {
                             }
                             // comptime: array indexing
                             // TODO: check usize for target system
-                            let index = self.bigint2usize(index, index_node.get_line_info())?;
+                            let index = self.varint2usize(index, index_node.get_line_info())?;
                             if let Some(array) = ctx.value {
                                 let context::Value::Array(array) = array else {
                                     unreachable!("probably some analyzer bug");
@@ -1363,7 +1272,7 @@ impl<'a> Analyzer<'a> {
                             let context::Value::Array(array) = array else {
                                 unreachable!("probably some analyzer bug");
                             };
-                            let context::Value::Int(index) = index else {
+                            let context::Value::VarInt(index) = index else {
                                 unreachable!("probably some analyzer bug");
                             };
                             // comptime: bounds checking
@@ -1381,7 +1290,7 @@ impl<'a> Analyzer<'a> {
                             }
                             // comptime: array indexing
                             // TODO: check usize for target system
-                            let index = self.bigint2usize(index, index_node.get_line_info())?;
+                            let index = self.varint2usize(index, index_node.get_line_info())?;
                             value = Some(array[index].clone());
                         }
                         Ok(Context {
@@ -1421,8 +1330,8 @@ impl<'a> Analyzer<'a> {
                     };
                     // TODO: check suffix
                     Ok(Context {
-                        taipe: context::Type::Const(Box::new(context::Type::Int)),
-                        value: Some(context::Value::Int(tok_val.clone())),
+                        taipe: context::Type::Const(Box::new(context::Type::VarInt)),
+                        value: Some(context::Value::VarInt(tok_val.clone())),
                     })
                 }
                 // TODO: get value from token
@@ -1467,6 +1376,350 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn visit_unary(&mut self, op: &Token, expr: &'a ast::Expr) -> CompileResult<Context<'a>> {
+        let ctx = self.visit_expr(expr)?;
+        match op.kind {
+            // Unary minus operator
+            //    result = -(value)
+            // Description:
+            //    Negates a signed integer or float
+            // value and result can be:
+            //  * value: {integer} -> result: const int
+            //  * value: iX        -> result: const iX
+            //  * value: fX        -> result: const fX
+            // note: value may be const or non-const
+            TokenKind::Minus => match ctx.taipe.remove_const() {
+                context::Type::VarInt => Ok(Context {
+                    taipe: self.type_int.clone().add_const(),
+                    value: if let Some(value) = ctx.value {
+                        self.transform_varint_to_int(value, expr)?.negate()
+                    } else {
+                        None
+                    },
+                }),
+                context::Type::Int8
+                | context::Type::Int16
+                | context::Type::Int32
+                | context::Type::Int64
+                | context::Type::Int128 => Ok(Context {
+                    taipe: ctx.taipe.add_const(),
+                    value: if let Some(value) = ctx.value {
+                        value.negate()
+                    } else {
+                        None
+                    },
+                }),
+                context::Type::Float32 | context::Type::Float64 => Ok(Context {
+                    taipe: ctx.taipe,
+                    value: if let Some(value) = ctx.value {
+                        value.negate()
+                    } else {
+                        None
+                    },
+                }),
+                context::Type::Uint8
+                | context::Type::Uint16
+                | context::Type::Uint32
+                | context::Type::Uint64
+                | context::Type::Uint128 => {
+                    return Err(self.make_err(
+                        format!(
+                            "cannot apply '-' operator on type '{}': unsigned values cannot be negated",
+                            ctx.taipe.to_string()
+                        ),
+                        expr,
+                    ));
+                }
+                _ => {
+                    return Err(self.make_err(
+                        format!(
+                            "cannot apply '-' operator on type '{}'",
+                            ctx.taipe.to_string()
+                        ),
+                        expr,
+                    ));
+                }
+            },
+            // Unary bit flip operator
+            //    result = ~(value)
+            // Description:
+            //    Flips all the bits of an signed or unsigned integer
+            // value and result can be:
+            //  * value: {integer} -> result: const int
+            //  * value: iX        -> result: const iX
+            //  * value: uX        -> result: const uX
+            // note: value may be const or non-const
+            TokenKind::Tilde => match ctx.taipe.remove_const() {
+                context::Type::VarInt => Ok(Context {
+                    taipe: self.type_int.clone().add_const(),
+                    value: if let Some(value) = ctx.value {
+                        self.transform_varint_to_int(value, expr)?.flip_bits()
+                    } else {
+                        None
+                    },
+                }),
+                context::Type::Int8
+                | context::Type::Int16
+                | context::Type::Int32
+                | context::Type::Int64
+                | context::Type::Int128
+                | context::Type::Uint8
+                | context::Type::Uint16
+                | context::Type::Uint32
+                | context::Type::Uint64
+                | context::Type::Uint128 => Ok(Context {
+                    taipe: ctx.taipe.add_const(),
+                    value: if let Some(value) = ctx.value {
+                        value.flip_bits()
+                    } else {
+                        None
+                    },
+                }),
+                _ => {
+                    return Err(self.make_err(
+                        format!(
+                            "cannot apply '~' operator on type '{}'",
+                            ctx.taipe.to_string()
+                        ),
+                        expr,
+                    ));
+                }
+            },
+            // Unary dereference operator
+            //    result = *(value)
+            // Description:
+            //    Dereferences the value of a pointer at the specific address
+            // value and result can be:
+            //  * value: *T        -> result: T
+            // note: value may be const or non-const
+            // TODO: comptime: what about implementing this in comptime
+            // There are many edge cases and memory safety violation
+            TokenKind::Star => match ctx.taipe.remove_const() {
+                context::Type::Pointer(taipe) => Ok(Context {
+                    taipe: *taipe,
+                    value: None,
+                }),
+                _ => {
+                    return Err(self.make_err(
+                        format!("cannot dereference type '{}'", ctx.taipe.to_string()),
+                        expr,
+                    ));
+                }
+            },
+            // Unary address of operator
+            //    result = &(value)
+            // Description:
+            //    Returns the address of the specific value
+            // value and result can be:
+            //  * value: T         -> result: *T
+            //      T cannot be:
+            //       * module
+            //       * typedef
+            //       * void
+            //       * noreturn
+            //  * value: {integer} -> result: *const int
+            // note: const-ness of value is tranferred to the result
+            //       for example: `const int` becomes `*const int`
+            // TODO: comptime: what about implementing this in comptime
+            // There are many edge cases and memory safety violation
+            TokenKind::Ampersand => {
+                fn is_addressable<'b>(taipe: &context::Type<'b>) -> bool {
+                    match taipe {
+                        context::Type::VarInt => true,
+                        context::Type::Const(taipe) => is_addressable(taipe),
+                        context::Type::Module
+                        | context::Type::Typedef
+                        | context::Type::Void
+                        | context::Type::Noreturn => false,
+                        _ => true,
+                    }
+                }
+                if !is_addressable(&ctx.taipe) {
+                    return Err(self.make_err(
+                        format!(
+                            "cannot take address of value of type '{}'",
+                            ctx.taipe.to_string()
+                        ),
+                        expr,
+                    ));
+                }
+                match ctx.taipe {
+                    context::Type::VarInt => Ok(Context {
+                        taipe: context::Type::Pointer(Box::new(context::Type::Const(Box::new(
+                            self.type_int.clone(),
+                        )))),
+                        value: None,
+                    }),
+                    _ => Ok(Context {
+                        taipe: context::Type::Pointer(Box::new(ctx.taipe)),
+                        value: None,
+                    }),
+                }
+            }
+            // Unary sizeof operator
+            //    result = sizeof(value)
+            // Description:
+            //    Returns the size of the value in memory in bytes
+            // value and result can be:
+            //  * value: T         -> result: usize
+            //  * value: typedef   -> result: usize
+            //      T cannot be:
+            //       * module
+            //       * void
+            //       * noreturn
+            //       * {integer}
+            // note: value may be const or non-const
+            TokenKind::Sizeof => {
+                fn is_sizeof_permitted<'b>(taipe: &context::Type<'b>) -> bool {
+                    match taipe {
+                        context::Type::VarInt => false,
+                        context::Type::Const(taipe) => is_sizeof_permitted(taipe),
+                        context::Type::Module | context::Type::Void | context::Type::Noreturn => {
+                            false
+                        }
+                        _ => true,
+                    }
+                }
+                if !is_sizeof_permitted(&ctx.taipe) {
+                    return Err(self.make_err(
+                        format!(
+                            "cannot take sizeof value of type '{}'",
+                            ctx.taipe.to_string()
+                        ),
+                        expr,
+                    ));
+                }
+                let taipe = match ctx.taipe {
+                    context::Type::Typedef => {
+                        let Some(value) = ctx.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let context::Value::Type(taipe) = value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        taipe
+                    }
+                    taipe => taipe,
+                };
+                let size = self.get_sizeof(&taipe, expr)?;
+                self.usize2usize(size, expr)
+            }
+            // Unary alignof operator
+            //    result = alignof(value)
+            // Description:
+            //    Returns the memory alignment of the value in bytes
+            // value and result can be:
+            //  * value: T         -> result: usize
+            //  * value: typedef   -> result: usize
+            //      T cannot be:
+            //       * module
+            //       * void
+            //       * noreturn
+            //       * {integer}
+            // note: value may be const or non-const
+            TokenKind::Alignof => {
+                fn is_alignof_permitted<'b>(taipe: &context::Type<'b>) -> bool {
+                    match taipe {
+                        context::Type::VarInt => false,
+                        context::Type::Const(taipe) => is_alignof_permitted(taipe),
+                        context::Type::Module | context::Type::Void | context::Type::Noreturn => {
+                            false
+                        }
+                        _ => true,
+                    }
+                }
+                if !is_alignof_permitted(&ctx.taipe) {
+                    return Err(self.make_err(
+                        format!(
+                            "cannot take alignof value of type '{}'",
+                            ctx.taipe.to_string()
+                        ),
+                        expr,
+                    ));
+                }
+                let taipe = match ctx.taipe {
+                    context::Type::Typedef => {
+                        let Some(value) = ctx.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let context::Value::Type(taipe) = value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        taipe
+                    }
+                    taipe => taipe,
+                };
+                let align = self.get_alignof(&taipe, expr)?;
+                self.usize2usize(align, expr)
+            }
+            // Unary typeof operator
+            //    result = typeof(value)
+            // Description:
+            //    Returns the type of the value
+            // value and result can be:
+            //  * value: T         -> result: typedef = T
+            //      T cannot be:
+            //       * module
+            //       * typedef
+            //       * noreturn
+            //       * {integer}
+            // note: value may be const or non-const
+            TokenKind::Typeof => {
+                fn is_typeof_permitted<'b>(taipe: &context::Type<'b>) -> bool {
+                    match taipe {
+                        context::Type::Const(taipe) => is_typeof_permitted(taipe),
+                        context::Type::VarInt
+                        | context::Type::Module
+                        | context::Type::Typedef
+                        | context::Type::Noreturn => false,
+                        _ => true,
+                    }
+                }
+                if is_typeof_permitted(&ctx.taipe) {
+                    return Err(self.make_err(
+                        format!(
+                            "cannot use typeof operator on type '{}'",
+                            ctx.taipe.to_string()
+                        ),
+                        expr,
+                    ));
+                }
+                Ok(Context::from_type(ctx.taipe))
+            }
+            // Unary logical not operator
+            //    result = not(value)
+            // Description:
+            //    Returns the logical opposite of value
+            //    for example: `true` gives `false` and `false` gives `true`
+            // value and result can be:
+            //  * value: bool      -> result: const bool
+            //  * value: T         -> result: const bool
+            //      T must be implicitly convertible to bool
+            // note: value may be const or non-const
+            TokenKind::Not => {
+                let lhs = context::Type::Bool;
+                let lhs_line_info = LineInfo::from_range(op, expr);
+                let rhs = ctx;
+                let rhs_line_info = expr.get_line_info();
+                let mut ctx = self.resolve_assign(
+                    Some((lhs, lhs_line_info)),
+                    None,
+                    Some((rhs, rhs_line_info)),
+                )?;
+                // Perform the operation at compile time
+                ctx.value = ctx.value.map(|value| match value {
+                    context::Value::Bool(b) => context::Value::Bool(!b),
+                    _ => unreachable!("probably some analyzer bug"),
+                });
+                Ok(Context {
+                    taipe: context::Type::Const(Box::new(context::Type::Bool)),
+                    value: ctx.value,
+                })
+            }
+            _ => unreachable!("probably some parser bug"),
+        }
+    }
+
     fn get_sizeof(
         &mut self,
         taipe: &context::Type<'a>,
@@ -1508,6 +1761,26 @@ impl<'a> Analyzer<'a> {
                 size: 1,
                 alignment: 1,
             },
+            context::Type::Int8 | context::Type::Uint8 => Layout {
+                size: 1,
+                alignment: 1,
+            },
+            context::Type::Int16 | context::Type::Uint16 => Layout {
+                size: 2,
+                alignment: 2,
+            },
+            context::Type::Int32 | context::Type::Uint32 => Layout {
+                size: 4,
+                alignment: 4,
+            },
+            context::Type::Int64 | context::Type::Uint64 => Layout {
+                size: 8,
+                alignment: 8,
+            },
+            context::Type::Int128 | context::Type::Uint128 => Layout {
+                size: 16,
+                alignment: 16,
+            },
             context::Type::Float32 => Layout {
                 size: 4,
                 alignment: 4,
@@ -1526,10 +1799,9 @@ impl<'a> Analyzer<'a> {
                 // Calling a function is nothing but bumping the instruction pointer.
                 // Functions are first class and they are nothing
                 // but special kind of pointers.
-                // TODO: make this compatible with multiple targets
                 Layout {
-                    size: 8,
-                    alignment: 8,
+                    size: self.settings.pointer_size,
+                    alignment: self.settings.pointer_size,
                 }
             }
             context::Type::Array { count, taipe } => {
@@ -1543,12 +1815,12 @@ impl<'a> Analyzer<'a> {
                 // pointer_size + pointer_size
                 // FIXME: fix this after generalizing fat pointers
                 Layout {
-                    size: 16,
-                    alignment: 16,
+                    size: 2 * self.settings.pointer_size,
+                    alignment: 2 * self.settings.pointer_size,
                 }
             }
             context::Type::Tuple(items) => todo!("layout of tuples is not implemented"),
-            context::Type::Int
+            context::Type::VarInt
             | context::Type::Module
             | context::Type::Typedef
             | context::Type::Void
@@ -1750,8 +2022,20 @@ impl<'a> Analyzer<'a> {
         &mut self,
         lhs: Option<(context::Type<'a>, LineInfo)>,
         eq_token: Option<&Token>,
-        rhs: Option<(Context<'a>, LineInfo)>,
+        mut rhs: Option<(Context<'a>, LineInfo)>,
     ) -> CompileResult<Context<'a>> {
+        // Fix {integer} problem, need to convert to int
+        if let Some((
+            Context {
+                ref mut taipe,
+                value: Some(ref mut value),
+            },
+            rhs_line_info,
+        )) = rhs
+        {
+            *taipe = self.type_int.clone();
+            *value = self.transform_varint_to_int(value.clone(), &rhs_line_info)?;
+        }
         match (lhs, rhs) {
             (None, None) => panic!("either type or value information should be present"),
             // Situation
@@ -1848,7 +2132,7 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 // Type checking and implicit casting
-                self.resolve_implicit_cast_ex(
+                self.resolve_implicit_cast(
                     lhs,
                     lhs_line_info,
                     rhs,
@@ -1861,16 +2145,6 @@ impl<'a> Analyzer<'a> {
     }
 
     fn resolve_implicit_cast(
-        &mut self,
-        lhs: context::Type<'a>,
-        lhs_line_info: LineInfo,
-        rhs: Context<'a>,
-        rhs_line_info: LineInfo,
-    ) -> CompileResult<Context<'a>> {
-        self.resolve_implicit_cast_ex(lhs, lhs_line_info, rhs, rhs_line_info, true, false)
-    }
-
-    fn resolve_implicit_cast_ex(
         &mut self,
         mut lhs: context::Type<'a>,
         lhs_line_info: LineInfo,
@@ -1904,6 +2178,28 @@ impl<'a> Analyzer<'a> {
         // }
         // Type checking and Implicit conversions
         match (&lhs, &rhs.taipe) {
+            // Implicit signed integer conversions
+            (context::Type::Int128, context::Type::Int64) => todo!(),
+            (context::Type::Int128, context::Type::Int32) => todo!(),
+            (context::Type::Int128, context::Type::Int16) => todo!(),
+            (context::Type::Int128, context::Type::Int8) => todo!(),
+            (context::Type::Int64, context::Type::Int32) => todo!(),
+            (context::Type::Int64, context::Type::Int16) => todo!(),
+            (context::Type::Int64, context::Type::Int8) => todo!(),
+            (context::Type::Int32, context::Type::Int16) => todo!(),
+            (context::Type::Int32, context::Type::Int8) => todo!(),
+            (context::Type::Int16, context::Type::Int8) => todo!(),
+            // Implicit unsigned integer conversions
+            (context::Type::Uint128, context::Type::Uint64) => todo!(),
+            (context::Type::Uint128, context::Type::Uint32) => todo!(),
+            (context::Type::Uint128, context::Type::Uint16) => todo!(),
+            (context::Type::Uint128, context::Type::Uint8) => todo!(),
+            (context::Type::Uint64, context::Type::Uint32) => todo!(),
+            (context::Type::Uint64, context::Type::Uint16) => todo!(),
+            (context::Type::Uint64, context::Type::Uint8) => todo!(),
+            (context::Type::Uint32, context::Type::Uint16) => todo!(),
+            (context::Type::Uint32, context::Type::Uint8) => todo!(),
+            (context::Type::Uint16, context::Type::Uint8) => todo!(),
             // (context::Type::Int, context::Type::Float32) => {
             //     if let Some(value) = &rhs.value {
             //         let context::Value::Float32(value) = value else {
@@ -1922,9 +2218,9 @@ impl<'a> Analyzer<'a> {
             //     }
             //     // TODO: record info for generating IR
             // }
-            (context::Type::Float32, context::Type::Int) => {
+            (context::Type::Float32, context::Type::VarInt) => {
                 if let Some(value) = &rhs.value {
-                    let context::Value::Int(value) = value else {
+                    let context::Value::VarInt(value) = value else {
                         unreachable!("probably some analyzer bug");
                     };
                     let Some(value) = value.to_f32() else {
@@ -1937,9 +2233,9 @@ impl<'a> Analyzer<'a> {
                 }
                 // TODO: record info for generating IR
             }
-            (context::Type::Float64, context::Type::Int) => {
+            (context::Type::Float64, context::Type::VarInt) => {
                 if let Some(value) = &rhs.value {
-                    let context::Value::Int(value) = value else {
+                    let context::Value::VarInt(value) = value else {
                         unreachable!("probably some analyzer bug");
                     };
                     let Some(value) = value.to_f64() else {
@@ -1973,14 +2269,9 @@ impl<'a> Analyzer<'a> {
                     taipe: (**rhs_const).clone(),
                     value: rhs.value.clone(),
                 };
-                if let Err(_) = self.resolve_implicit_cast_ex(
-                    lhs,
-                    lhs_line_info,
-                    rhs,
-                    rhs_line_info,
-                    false,
-                    true,
-                ) {
+                if let Err(_) =
+                    self.resolve_implicit_cast(lhs, lhs_line_info, rhs, rhs_line_info, false, true)
+                {
                     return_err!();
                 };
             }
@@ -1991,7 +2282,7 @@ impl<'a> Analyzer<'a> {
                         &lhs_line_info,
                     ));
                 }
-                if let Err(_) = self.resolve_implicit_cast_ex(
+                if let Err(_) = self.resolve_implicit_cast(
                     (**lhs_const).clone(),
                     lhs_line_info,
                     rhs.clone(),
@@ -2010,7 +2301,7 @@ impl<'a> Analyzer<'a> {
                     taipe: (**rhs_const).clone(),
                     value: rhs.value.clone(),
                 };
-                if let Err(_) = self.resolve_implicit_cast_ex(
+                if let Err(_) = self.resolve_implicit_cast(
                     lhs.clone(),
                     lhs_line_info,
                     rhs,
@@ -2032,14 +2323,9 @@ impl<'a> Analyzer<'a> {
                     taipe: (**rhs_ptr).clone(),
                     value: rhs.value.clone(),
                 };
-                if let Err(_) = self.resolve_implicit_cast_ex(
-                    lhs,
-                    lhs_line_info,
-                    rhs,
-                    rhs_line_info,
-                    false,
-                    true,
-                ) {
+                if let Err(_) =
+                    self.resolve_implicit_cast(lhs, lhs_line_info, rhs, rhs_line_info, false, true)
+                {
                     return_err!();
                 };
             }
@@ -2152,15 +2438,14 @@ impl<'a> Analyzer<'a> {
             };
             // Restore old scope
             self.cur_scope = old_cur_scope;
-            return Ok(Some(ctx));
+            Ok(Some(ctx))
         } else {
             // For better errors
             for name in scope.borrow().children.keys() {
                 searched_names.insert(name.clone());
             }
+            Ok(None)
         }
-
-        Ok(None)
     }
 
     fn get_name(&mut self, name: &Token) -> CompileResult<Context<'a>> {
@@ -2213,35 +2498,110 @@ impl<'a> Analyzer<'a> {
             }
         }
         match name {
-            "__bool" => {
-                return Ok(Some(Context {
-                    taipe: context::Type::Typedef,
-                    value: Some(context::Value::Type(context::Type::Bool)),
-                }));
-            }
-            "__char" => {
-                return Ok(Some(Context {
-                    taipe: context::Type::Typedef,
-                    value: Some(context::Value::Type(context::Type::Char)),
-                }));
-            }
-            "__f32" => {
-                return Ok(Some(Context {
-                    taipe: context::Type::Typedef,
-                    value: Some(context::Value::Type(context::Type::Float32)),
-                }));
-            }
-            "__f64" => {
-                return Ok(Some(Context {
-                    taipe: context::Type::Typedef,
-                    value: Some(context::Value::Type(context::Type::Float64)),
-                }));
-            }
+            "__bool" => Ok(Some(Context::from_type(context::Type::Bool))),
+            "__char" => Ok(Some(Context::from_type(context::Type::Char))),
+            "__i8" => Ok(Some(Context::from_type(context::Type::Int8))),
+            "__i16" => Ok(Some(Context::from_type(context::Type::Int16))),
+            "__i32" => Ok(Some(Context::from_type(context::Type::Int32))),
+            "__i64" => Ok(Some(Context::from_type(context::Type::Int64))),
+            "__i128" => Ok(Some(Context::from_type(context::Type::Int128))),
+            "__int" => Ok(Some(Context::from_type(self.type_int.clone()))),
+            "__isize" => Ok(Some(Context::from_type(self.type_isize.clone()))),
+            "__u8" => Ok(Some(Context::from_type(context::Type::Uint8))),
+            "__u16" => Ok(Some(Context::from_type(context::Type::Uint16))),
+            "__u32" => Ok(Some(Context::from_type(context::Type::Uint32))),
+            "__u64" => Ok(Some(Context::from_type(context::Type::Uint64))),
+            "__u128" => Ok(Some(Context::from_type(context::Type::Uint128))),
+            "__uint" => Ok(Some(Context::from_type(self.type_uint.clone()))),
+            "__usize" => Ok(Some(Context::from_type(self.type_usize.clone()))),
+            "__f32" => Ok(Some(Context::from_type(context::Type::Float32))),
+            "__f64" => Ok(Some(Context::from_type(context::Type::Float64))),
             _ => Ok(None),
         }
     }
 
-    fn bigint2usize(&self, num: Int, line_info: LineInfo) -> CompileResult<usize> {
+    fn transform_varint_to_usize(
+        &self,
+        value: context::Value<'a>,
+        line_info: &impl HasLineInfo,
+    ) -> CompileResult<context::Value<'a>> {
+        match value {
+            context::Value::VarInt(num) => {
+                let num = num.num;
+                let opt = match self.type_usize {
+                    context::Type::Uint8 => num.to_u8().map(|num| context::Value::Uint8(num)),
+                    context::Type::Uint16 => num.to_u16().map(|num| context::Value::Uint16(num)),
+                    context::Type::Uint32 => num.to_u32().map(|num| context::Value::Uint32(num)),
+                    context::Type::Uint64 => num.to_u64().map(|num| context::Value::Uint64(num)),
+                    context::Type::Uint128 => num.to_u128().map(|num| context::Value::Uint128(num)),
+                    _ => panic!("invalid type for Analyzer::type_usize"),
+                };
+                if let Some(num) = opt {
+                    Ok(num)
+                } else {
+                    Err(self.make_err(
+                        format!("'usize' cannot hold this value: '{}'", num),
+                        line_info,
+                    ))
+                }
+            }
+            _ => Ok(value),
+        }
+    }
+
+    fn transform_varint_to_int(
+        &self,
+        value: context::Value<'a>,
+        line_info: &impl HasLineInfo,
+    ) -> CompileResult<context::Value<'a>> {
+        match value {
+            context::Value::VarInt(num) => {
+                let num = num.num;
+                let opt = match self.type_int {
+                    context::Type::Int8 => num.to_i8().map(|num| context::Value::Int8(num)),
+                    context::Type::Int16 => num.to_i16().map(|num| context::Value::Int16(num)),
+                    context::Type::Int32 => num.to_i32().map(|num| context::Value::Int32(num)),
+                    context::Type::Int64 => num.to_i64().map(|num| context::Value::Int64(num)),
+                    context::Type::Int128 => num.to_i128().map(|num| context::Value::Int128(num)),
+                    _ => panic!("invalid type for Analyzer::type_int"),
+                };
+                if let Some(num) = opt {
+                    Ok(num)
+                } else {
+                    Err(self.make_err(
+                        format!("'int' cannot hold this value: '{}'", num),
+                        line_info,
+                    ))
+                }
+            }
+            _ => Ok(value),
+        }
+    }
+
+    fn usize2usize(&self, val: usize, line_info: &impl HasLineInfo) -> CompileResult<Context<'a>> {
+        let opt = match self.type_usize {
+            context::Type::Uint8 => val.to_u8().map(|val| context::Value::Uint8(val)),
+            context::Type::Uint16 => val.to_u16().map(|val| context::Value::Uint16(val)),
+            context::Type::Uint32 => val.to_u32().map(|val| context::Value::Uint32(val)),
+            context::Type::Uint64 => val.to_u64().map(|val| context::Value::Uint64(val)),
+            context::Type::Uint128 => val.to_u128().map(|val| context::Value::Uint128(val)),
+            _ => panic!("invalid type for Analyzer::type_usize"),
+        };
+        let value = if let Some(num) = opt {
+            num
+        } else {
+            return Err(self.make_err(
+                format!("'usize' cannot hold this value: '{}'", val),
+                line_info,
+            ));
+        };
+        Ok(Context {
+            taipe: self.type_usize.clone(),
+            value: Some(value),
+        })
+    }
+
+    fn varint2usize(&self, num: Int, line_info: LineInfo) -> CompileResult<usize> {
         if let Some(num) = num.to_usize() {
             Ok(num)
         } else {

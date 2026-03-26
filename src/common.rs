@@ -63,6 +63,16 @@ where
     }
 }
 
+impl<T> HasLineInfo for &[T]
+where
+    T: HasLineInfo,
+{
+    fn get_line_info(&self) -> LineInfo {
+        assert!(self.len() > 0);
+        LineInfo::from_range(self.first().unwrap(), self.last().unwrap())
+    }
+}
+
 impl<T> HasLineInfo for Box<T>
 where
     T: HasLineInfo,
@@ -311,11 +321,6 @@ impl Int {
         }
     }
 
-    pub fn negate(mut self) -> Self {
-        self.num = -self.num;
-        self
-    }
-
     pub fn to_usize(&self) -> Option<usize> {
         self.num.to_usize()
     }
@@ -339,6 +344,13 @@ impl Default for Int {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub struct Settings {
+    // Register size of the architecture in bytes
+    pub register_size: usize,
+    // Pointer size of the architecture in bytes
+    pub pointer_size:  usize,
 }
 
 /// Optimized Levenshtein distance function (O(min(m, n)) space)

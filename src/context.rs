@@ -38,7 +38,18 @@ pub enum Type<'a> {
     Char,
     /// Value can be:
     /// - Value::Int => integer value
-    Int,
+    VarInt,
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    Int128,
+    Uint8,
+    Uint16,
+    Uint32,
+    Uint64,
+    Uint128,
+    // Int,
     /// Value can be:
     /// - Value::Float32 => float32 value
     Float32,
@@ -62,7 +73,10 @@ pub enum Type<'a> {
     Pointer(Box<Type<'a>>),
     /// Value can be:
     /// - Value::Array => array value
-    Array { count: usize, taipe: Box<Type<'a>> },
+    Array {
+        count: usize,
+        taipe: Box<Type<'a>>,
+    },
     /// Value can be:
     /// - Value::Array => array value
     Fat(Box<Type<'a>>),
@@ -109,7 +123,7 @@ impl<'a> Type<'a> {
 
     pub fn is_integer(&self) -> bool {
         match self {
-            Type::Int => true,
+            Type::VarInt => true,
             Type::Const(taipe) => taipe.is_integer(),
             _ => false,
         }
@@ -195,7 +209,17 @@ impl<'a> ToString for Type<'a> {
         match self {
             Type::Bool => "__bool".to_string(),
             Type::Char => "__char".to_string(),
-            Type::Int => "__int".to_string(),
+            Type::VarInt => "{integer}".to_string(),
+            Type::Int8 => "__int8".to_string(),
+            Type::Int16 => "__int16".to_string(),
+            Type::Int32 => "__int32".to_string(),
+            Type::Int64 => "__int64".to_string(),
+            Type::Int128 => "__int128".to_string(),
+            Type::Uint8 => "__uint8".to_string(),
+            Type::Uint16 => "__uint16".to_string(),
+            Type::Uint32 => "__uint32".to_string(),
+            Type::Uint64 => "__uint64".to_string(),
+            Type::Uint128 => "__uint128".to_string(),
             Type::Float32 => "__f32".to_string(),
             Type::Float64 => "__f64".to_string(),
             Type::Const(taipe) => format!("const {}", taipe.to_string()),
@@ -237,7 +261,17 @@ impl<'a> ToString for Type<'a> {
 pub enum Value<'a> {
     Bool(bool),
     Char(char),
-    Int(Int),
+    VarInt(Int),
+    Int8(i8),
+    Int16(i16),
+    Int32(i32),
+    Int64(i64),
+    Int128(i128),
+    Uint8(u8),
+    Uint16(u16),
+    Uint32(u32),
+    Uint64(u64),
+    Uint128(u128),
     Float32(f32),
     Float64(f64),
     Array(Vec<Value<'a>>),
@@ -253,9 +287,28 @@ pub enum Value<'a> {
 impl<'a> Value<'a> {
     pub fn negate(self) -> Option<Self> {
         match self {
-            Value::Int(int) => Some(Value::Int(int.negate())),
             Value::Float32(val) => Some(Value::Float32(-val)),
             Value::Float64(val) => Some(Value::Float64(-val)),
+            Value::Int8(val) => Some(Value::Int8(-val)),
+            Value::Int16(val) => Some(Value::Int16(-val)),
+            Value::Int32(val) => Some(Value::Int32(-val)),
+            Value::Int64(val) => Some(Value::Int64(-val)),
+            Value::Int128(val) => Some(Value::Int128(-val)),
+            _ => None,
+        }
+    }
+    pub fn flip_bits(self) -> Option<Self> {
+        match self {
+            Value::Int8(val) => Some(Value::Int8(!val)),
+            Value::Int16(val) => Some(Value::Int16(!val)),
+            Value::Int32(val) => Some(Value::Int32(!val)),
+            Value::Int64(val) => Some(Value::Int64(!val)),
+            Value::Int128(val) => Some(Value::Int128(!val)),
+            Value::Uint8(val) => Some(Value::Uint8(!val)),
+            Value::Uint16(val) => Some(Value::Uint16(!val)),
+            Value::Uint32(val) => Some(Value::Uint32(!val)),
+            Value::Uint64(val) => Some(Value::Uint64(!val)),
+            Value::Uint128(val) => Some(Value::Uint128(!val)),
             _ => None,
         }
     }
@@ -266,7 +319,17 @@ impl<'a> ToString for Value<'a> {
         match self {
             Value::Bool(b) => b.to_string(),
             Value::Char(c) => format!("'{}'", c.to_string()),
-            Value::Int(num) => num.to_string(),
+            Value::VarInt(num) => num.to_string(),
+            Value::Int8(num) => num.to_string(),
+            Value::Int16(num) => num.to_string(),
+            Value::Int32(num) => num.to_string(),
+            Value::Int64(num) => num.to_string(),
+            Value::Int128(num) => num.to_string(),
+            Value::Uint8(num) => num.to_string(),
+            Value::Uint16(num) => num.to_string(),
+            Value::Uint32(num) => num.to_string(),
+            Value::Uint64(num) => num.to_string(),
+            Value::Uint128(num) => num.to_string(),
             Value::Float32(num) => num.to_string(),
             Value::Float64(num) => num.to_string(),
             Value::Array(values) => {
@@ -342,8 +405,8 @@ impl<'a> Context<'a> {
     }
     pub fn from_int(int: Int) -> Self {
         Self {
-            taipe: Type::Int,
-            value: Some(Value::Int(int)),
+            taipe: Type::VarInt,
+            value: Some(Value::VarInt(int)),
         }
     }
     pub fn from_str(text: &str) -> Self {

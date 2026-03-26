@@ -219,12 +219,18 @@ impl<'a> Scope<'a> {
         if let Some(parent) = self.parent.upgrade() {
             match &parent.borrow().state {
                 State::NotVisited(_) => panic!("impossible to know"),
-                State::VisitInProg => panic!("impossible to know"),
+                State::VisitInProg => {
+                    if self.is_block() {
+                        parent.borrow().get_enclosing_function()
+                    } else {
+                        panic!("impossible to know")
+                    }
+                }
                 State::Visited(ctx) => {
                     if ctx.taipe.is_function() {
                         Some(Rc::clone(&parent))
                     } else {
-                        None
+                        parent.borrow().get_enclosing_function()
                     }
                 }
             }
