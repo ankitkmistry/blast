@@ -33,6 +33,8 @@ pub enum TokenKind {
     Ampersand,
     Caret,
     Pipe,
+    ShiftLeft,
+    ShiftRight,
     LessEq,
     EqEq,
     NotEq,
@@ -102,6 +104,8 @@ impl TokenKind {
             TokenKind::Ampersand => "'&'",
             TokenKind::Caret => "'^'",
             TokenKind::Pipe => "'|'",
+            TokenKind::ShiftLeft => "'<<'",
+            TokenKind::ShiftRight => "'>>'",
             TokenKind::LessEq => "'<='",
             TokenKind::EqEq => "'=='",
             TokenKind::NotEq => "'!='",
@@ -243,6 +247,8 @@ impl Lexer {
                 '<' => {
                     if self.check("=") {
                         token!(LessEq)
+                    } else if self.check("<") {
+                        token!(ShiftLeft)
                     } else {
                         token!(LAngle)
                     }
@@ -250,6 +256,8 @@ impl Lexer {
                 '>' => {
                     if self.check("=") {
                         token!(GreaterEq)
+                    } else if self.check(">") {
+                        token!(ShiftRight)
                     } else {
                         token!(RAngle)
                     }

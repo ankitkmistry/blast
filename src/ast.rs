@@ -150,12 +150,6 @@ pub enum Expr {
         op: Token,
         rhs: Vec<Expr>,
     },
-    Binary2 {
-        left: Box<Expr>,
-        op1: Token,
-        op2: Token,
-        right: Box<Expr>,
-    },
     Binary {
         left: Box<Expr>,
         op: Token,
@@ -401,12 +395,6 @@ impl HasLineInfo for Expr {
     fn get_line_info(&self) -> LineInfo {
         match self {
             Expr::Assign { lhs, op: _, rhs } => LineInfo::from_range(lhs, rhs),
-            Expr::Binary2 {
-                left,
-                op1: _,
-                op2: _,
-                right,
-            } => LineInfo::from_range(left, right),
             Expr::Binary { left, op: _, right } => LineInfo::from_range(left, right),
             Expr::Cast { expr, taipe } => LineInfo::from_range(expr, taipe),
             Expr::Unary { op, expr } => LineInfo::from_range(op, expr),

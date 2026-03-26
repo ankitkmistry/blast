@@ -746,10 +746,10 @@ impl Parser {
         Ok(expr)
     }
 
-    // relational ::= bit_or (('<'|'<='|'=='|'!='|'>='|'>') bit_or)*;
+    // relational ::= bitwise (('<'|'<='|'=='|'!='|'>='|'>') bitwise)*;
     define_binary_op!(
         parse_relational,
-        parse_bit_or,
+        parse_bitwise,
         LAngle,
         LessEq,
         EqEq,
@@ -757,29 +757,21 @@ impl Parser {
         GreaterEq,
         RAngle
     );
-    // bit_or ::= bit_xor ('|' bit_xor)*;
-    define_binary_op!(parse_bit_or, parse_bit_xor, Pipe);
-    // bit_xor ::= bit_and ('^' bit_and)*;
-    define_binary_op!(parse_bit_xor, parse_bit_and, Caret);
-    // bit_and ::= shift ('&' shift)*;
-    define_binary_op!(parse_bit_and, parse_shift, Ampersand);
+    // bitwise ::= shift (('&'|'^'|'|') shift)*;
+    define_binary_op!(parse_bitwise, parse_shift, Ampersand, Caret, Pipe);
 
-    // shift ::= term (('<''<'|'>''>') term)*;
+    // shift ::= term (('<<'|'>>') term)*;
     fn parse_shift(&mut self) -> CompileResult<ast::Expr> {
         let mut left = self.parse_term()?;
         loop {
-            if let Some(tok1) = self.peek()
-                && let Some(tok2) = self.peek_at(1)
-                && ((tok1.kind == LAngle && tok2.kind == LAngle)
-                    || (tok1.kind == RAngle && tok2.kind == RAngle))
+            if let Some(tok) = self.peek()
+                && (tok.kind == ShiftLeft || tok.kind == ShiftRight)
             {
-                let op1 = self.get_token()?;
-                let op2 = self.get_token()?;
+                let op = self.get_token()?;
                 let right = self.parse_term()?;
-                left = ast::Expr::Binary2 {
+                left = ast::Expr::Binary {
                     left: Box::new(left),
-                    op1,
-                    op2,
+                    op,
                     right: Box::new(right),
                 };
             } else {
@@ -955,14 +947,14 @@ impl Parser {
                     })
                 }
                 _ => Err(self.expect_err(&[
-                    True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While,
-                    Break, Continue, Return,
+                    True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While, Break,
+                    Continue, Return,
                 ])),
             }
         } else {
             Err(self.expect_err(&[
-                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While,
-                Break, Continue, Return,
+                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While, Break,
+                Continue, Return,
             ]))
         }
     }

@@ -1118,12 +1118,6 @@ impl<'a> Analyzer<'a> {
     pub fn visit_expr(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
         match node {
             ast::Expr::Assign { lhs, op, rhs } => todo!(),
-            ast::Expr::Binary2 {
-                left,
-                op1,
-                op2,
-                right,
-            } => todo!(),
             ast::Expr::Binary { left, op, right } => todo!(),
             ast::Expr::Cast { expr, taipe } => todo!(),
             ast::Expr::Unary { op, expr } => self.visit_unary(op, expr),
