@@ -724,23 +724,11 @@ impl AstPrinter {
 
     fn visit_expr(&mut self, expr: &ast::Expr) -> fmt::Result {
         match expr {
-            ast::Expr::Assign { lhs, op, rhs } => {
+            ast::Expr::Assign { lhses: lhs, op, rhses: rhs } => {
                 write!(self, "::Assign")?;
                 self.print_list("lhs", lhs, Self::print_expr)?;
                 self.print_tok("op", op)?;
                 self.print_list("rhs", rhs, Self::print_expr)?;
-            }
-            ast::Expr::Binary2 {
-                left,
-                op1,
-                op2,
-                right,
-            } => {
-                write!(self, "::Binary2")?;
-                self.print_expr("left", left)?;
-                self.print_tok("op1", op1)?;
-                self.print_tok("op2", op2)?;
-                self.print_expr("right", right)?;
             }
             ast::Expr::Binary { left, op, right } => {
                 write!(self, "::Binary")?;

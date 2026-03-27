@@ -1117,7 +1117,36 @@ impl<'a> Analyzer<'a> {
 
     pub fn visit_expr(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
         match node {
-            ast::Expr::Assign { lhs, op, rhs } => todo!(),
+            ast::Expr::Assign { lhses, op, rhses } => {
+                match op.kind {
+                // TODO: implement augmented assignment
+                    TokenKind::Equal => {}
+                    _ => {
+                        return Err(self.make_err(
+                            format!(
+                                "semantic analyzer does not understand this operator: '{}='",
+                                &op.text
+                            ),
+                            op,
+                        ));
+                    }
+                }
+                for i in 0..rhses.len() {
+                    let rhs_node = &rhses[i];
+                    let rhs_line_info = rhs_node.get_line_info();
+                    let rhs = self.visit_expr(rhs_node)?;
+                    let lhs_node = &lhses[i];
+                    let lhs_line_info = lhs_node.get_line_info();
+                    let lhs = self.visit_expr(lhs_node)?;
+                    // TODO: do lvalue checking
+                    let _ = self.resolve_assign(
+                        Some((lhs.taipe, lhs_line_info)),
+                        None,
+                        Some((rhs, rhs_line_info)),
+                    )?;
+                }
+                Ok(Context::from_void())
+            }
             ast::Expr::Binary { left, op, right } => todo!(),
             ast::Expr::Cast { expr, taipe } => todo!(),
             ast::Expr::Unary { op, expr } => self.visit_unary(op, expr),
@@ -2176,6 +2205,19 @@ impl<'a> Analyzer<'a> {
         allow_assign_from_const: bool,
         allow_assign_to_const: bool,
     ) -> CompileResult<Context<'a>> {
+        macro_rules! return_err_const {
+            () => {
+                return Err(self
+                    .make_err(
+                        format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
+                        &lhs_line_info,
+                    )
+                    .chain(self.make_note(
+                        format!("type of value is '{}'", rhs.to_string()),
+                        &rhs_line_info,
+                    )));
+            };
+        }
         macro_rules! return_err {
             () => {
                 return Err(self
@@ -2282,10 +2324,7 @@ impl<'a> Analyzer<'a> {
             }
             (context::Type::Const(lhs_const), context::Type::Const(rhs_const)) => {
                 if !allow_assign_to_const {
-                    return Err(self.make_err(
-                        format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
-                        &lhs_line_info,
-                    ));
+                    return_err_const!();
                 }
                 let lhs = (**lhs_const).clone();
                 let rhs = Context {
@@ -2300,10 +2339,7 @@ impl<'a> Analyzer<'a> {
             }
             (context::Type::Const(lhs_const), _) => {
                 if !allow_assign_to_const {
-                    return Err(self.make_err(
-                        format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
-                        &lhs_line_info,
-                    ));
+                    return_err_const!();
                 }
                 if let Err(_) = self.resolve_implicit_cast(
                     (**lhs_const).clone(),

@@ -103,9 +103,10 @@ vec3 :: union {
 // aboba: *__f32 = adoda;
 
 number :: 0;
-invert :: ~number;
+invert := ~number;
 
 vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {
+    invert = 1;
 }
 
 main :: fun () -> void {

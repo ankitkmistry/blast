@@ -146,9 +146,9 @@ pub struct Arg {
 #[derive(Clone)]
 pub enum Expr {
     Assign {
-        lhs: Vec<Expr>,
+        lhses: Vec<Expr>,
         op: Token,
-        rhs: Vec<Expr>,
+        rhses: Vec<Expr>,
     },
     Binary {
         left: Box<Expr>,
@@ -394,7 +394,7 @@ impl HasLineInfo for Arg {
 impl HasLineInfo for Expr {
     fn get_line_info(&self) -> LineInfo {
         match self {
-            Expr::Assign { lhs, op: _, rhs } => LineInfo::from_range(lhs, rhs),
+            Expr::Assign { lhses: lhs, op: _, rhses: rhs } => LineInfo::from_range(lhs, rhs),
             Expr::Binary { left, op: _, right } => LineInfo::from_range(left, right),
             Expr::Cast { expr, taipe } => LineInfo::from_range(expr, taipe),
             Expr::Unary { op, expr } => LineInfo::from_range(op, expr),

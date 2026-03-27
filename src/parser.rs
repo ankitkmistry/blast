@@ -720,7 +720,7 @@ impl Parser {
                 "expected left hand side of an assignment",
             ));
         }
-        Ok(ast::Expr::Assign { lhs, op, rhs })
+        Ok(ast::Expr::Assign { lhses: lhs, op, rhses: rhs })
     }
 
     // logic_or ::= logic_and ('^' logic_and)*;
