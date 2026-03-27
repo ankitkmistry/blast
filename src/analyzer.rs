@@ -156,7 +156,7 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
-    pub fn pre_declare_decls(&mut self, decls: &'a [ast::Decl]) -> CompileResult<()> {
+    fn pre_declare_decls(&mut self, decls: &'a [ast::Decl]) -> CompileResult<()> {
         // Pre declare all the symbols without visiting
         // So that symbols that are declared later
         // are also accessible before they are introduced.
@@ -329,7 +329,7 @@ impl<'a> Analyzer<'a> {
         ))
     }
 
-    pub fn visit_decl(
+    fn visit_decl(
         &mut self,
         node: &'a ast::Decl,
         should_visit_children: bool,
@@ -890,7 +890,7 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    pub fn visit_type(&mut self, node: &'a ast::Type) -> CompileResult<context::Type<'a>> {
+    fn visit_type(&mut self, node: &'a ast::Type) -> CompileResult<context::Type<'a>> {
         match node {
             ast::Type::Path { items } => {
                 let mut index = 0;
@@ -1031,15 +1031,7 @@ impl<'a> Analyzer<'a> {
                 let Some(length) = length_ctx.value else {
                     return Err(self.make_err("value cannot be evaluated at compile time", expr));
                 };
-                let Some(length) = self.transform_value_to_usize(&length, expr)? else {
-                    return Err(self.make_err(
-                        format!(
-                            "expected 'usize' but got '{}'",
-                            length_ctx.taipe.to_string()
-                        ),
-                        expr,
-                    ));
-                };
+                let length = self.transform_value_to_usize(&length, expr)?;
                 let Some(length) = length.to_usize() else {
                     return Err(self.make_err(
                         format!("'usize' cannot hold this value: '{}'", length.to_string()),
@@ -1115,16 +1107,16 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
-    pub fn visit_expr(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
+    fn visit_expr(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
         match node {
             ast::Expr::Assign { lhses, op, rhses } => {
                 match op.kind {
-                // TODO: implement augmented assignment
+                    // TODO: implement augmented assignment
                     TokenKind::Equal => {}
                     _ => {
                         return Err(self.make_err(
                             format!(
-                                "semantic analyzer does not understand this operator: '{}='",
+                                "semantic analyzer does not understand operator '{}': not implemented yet",
                                 &op.text
                             ),
                             op,
@@ -1147,7 +1139,7 @@ impl<'a> Analyzer<'a> {
                 }
                 Ok(Context::from_void())
             }
-            ast::Expr::Binary { left, op, right } => todo!(),
+            ast::Expr::Binary { left, op, right } => self.visit_binary(left, op, right),
             ast::Expr::Cast { expr, taipe } => todo!(),
             ast::Expr::Unary { op, expr } => self.visit_unary(op, expr),
             // Postfix dot operator
@@ -1426,6 +1418,343 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    // Handles the following thing
+    //
+    //  * lhs: {integer} rhs: {integer} -> lhs: int  rhs: int
+    //  * lhs: {integer} rhs: iX        -> lhs: iX   rhs: iX
+    //  * lhs: {integer} rhs: uX        -> lhs: uX   rhs: uX
+    //  * lhs: {integer} rhs: fX        -> lhs: fX   rhs: fX
+    //
+    //  * lhs: {integer} rhs: {integer} -> lhs: int  rhs: int
+    //  * lhs: {integer} rhs: iX        -> lhs: iX   rhs: iX
+    //  * lhs: {integer} rhs: uX        -> lhs: uX   rhs: uX
+    //  * lhs: {integer} rhs: fX        -> lhs: fX   rhs: fX
+    //  * lhs: iX        rhs: {integer} -> lhs: iX   rhs: iX
+    //  * lhs: uX        rhs: {integer} -> lhs: uX   rhs: uX
+    //  * lhs: fX        rhs: {integer} -> lhs: fX   rhs: fX
+    fn resolve_value_promotion(
+        &self,
+        lhs: &mut Context<'a>,
+        left: &'a ast::Expr,
+        rhs: &mut Context<'a>,
+        right: &'a ast::Expr,
+    ) -> CompileResult<()> {
+        fn resolve_value_promotion_ex<'a>(
+            analyzer: &Analyzer<'a>,
+            lhs: &mut Context<'a>,
+            left: &'a ast::Expr,
+            rhs: &mut Context<'a>,
+            right: &'a ast::Expr,
+            should_check_another_time: bool,
+        ) -> CompileResult<()> {
+            if lhs.taipe.is_varint() && rhs.taipe.is_varint() {
+                lhs.taipe = analyzer.type_int.clone();
+                rhs.taipe = analyzer.type_int.clone();
+                if let Some(ref mut lhs_value) = lhs.value
+                    && let Some(ref mut rhs_value) = rhs.value
+                {
+                    *lhs_value = analyzer.transform_varint_to_int(&lhs_value, left)?;
+                    *rhs_value = analyzer.transform_varint_to_int(&rhs_value, right)?;
+                }
+                Ok(())
+            } else if lhs.taipe.is_varint() {
+                if rhs.taipe.is_integer() || rhs.taipe.is_float() {
+                    // Convert varint to respective type if it is worth it
+                    if let Some(ref mut lhs_value) = lhs.value {
+                        *lhs_value =
+                            analyzer.transform_varint(&rhs.taipe, &lhs_value, left, None)?;
+                    }
+                    lhs.taipe = rhs.taipe.clone();
+                    return Ok(());
+                }
+                Ok(())
+            } else if should_check_another_time {
+                resolve_value_promotion_ex(analyzer, rhs, right, lhs, left, false)
+            } else {
+                Ok(())
+            }
+        }
+        resolve_value_promotion_ex(self, lhs, left, rhs, right, true)
+    }
+
+    fn visit_binary(
+        &mut self,
+        left: &'a ast::Expr,
+        op: &Token,
+        right: &'a ast::Expr,
+    ) -> CompileResult<Context<'a>> {
+        let line_info = LineInfo::from_range(left, right);
+        let lhs = self.visit_expr(left)?;
+        let rhs = self.visit_expr(right)?;
+
+        macro_rules! return_err {
+            () => {
+                return Err(self.make_err(
+                    format!(
+                        "cannot apply '{}' operator on values of types '{}' and '{}'",
+                        &op.text,
+                        lhs.taipe.to_string(),
+                        rhs.taipe.to_string()
+                    ),
+                    &line_info,
+                ));
+            };
+            (integer_overflow) => {
+                return Err(self.make_err(
+                    format!(
+                        "detected integer overflow: '{}' {} '{}'",
+                        lhs.value.unwrap().to_string(),
+                        &op.text,
+                        rhs.value.unwrap().to_string()
+                    ),
+                    &line_info,
+                ));
+            };
+        }
+
+        match op.kind {
+            // // Logical
+            // TokenKind::And => todo!(),
+            // TokenKind::Or => todo!(),
+            // // Relational
+            // TokenKind::LAngle => todo!(),
+            // TokenKind::LessEq => todo!(),
+            // TokenKind::EqEq => todo!(),
+            // TokenKind::NotEq => todo!(),
+            // TokenKind::GreaterEq => todo!(),
+            // TokenKind::RAngle => todo!(),
+            // // Bitwise
+            // TokenKind::Ampersand => todo!(),
+            // TokenKind::Caret => todo!(),
+            // TokenKind::Pipe => todo!(),
+            // // Shift
+            // TokenKind::ShiftLeft => todo!(),
+            // TokenKind::ShiftRight => todo!(),
+
+            // Arithmetic
+
+            // Binary addition operator
+            //    result = (value1) + (value2)
+            // Description:
+            //    Returns the arithmetic sum of two values
+            // value and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const int
+            //  * value1: iX        value2: iX        -> result: const iX
+            //  * value1: uX        value2: uX        -> result: const uX
+            //  * value1: fX        value2: fX        -> result: const fX
+            //  * value1: {integer} value2: iX        -> result: const iX
+            //  * value1: {integer} value2: uX        -> result: const uX
+            //  * value1: {integer} value2: fX        -> result: const fX
+            //  * value1: iX        value2: {integer} -> result: const iX
+            //  * value1: uX        value2: {integer} -> result: const uX
+            //  * value1: fX        value2: {integer} -> result: const fX
+            // note: value may be const or non-const
+            TokenKind::Plus => {
+                if (lhs.taipe.is_integer() || lhs.taipe.is_float())
+                    && (rhs.taipe.is_integer() || rhs.taipe.is_float())
+                {
+                    let mut lhs = lhs.clone();
+                    let mut rhs = rhs.clone();
+                    self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
+                    if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
+                        return_err!();
+                    }
+                    Ok(Context {
+                        taipe: lhs.taipe.add_const(),
+                        value: if let Some(lhs_value) = lhs.value.clone()
+                            && let Some(rhs_value) = rhs.value.clone()
+                        {
+                            let Some(result) = lhs_value.add(rhs_value) else {
+                                return_err!(integer_overflow);
+                            };
+                            Some(result)
+                        } else {
+                            None
+                        },
+                    })
+                } else {
+                    return_err!();
+                }
+            }
+            // Binary subtraction operator
+            //    result = (value1) - (value2)
+            // Description:
+            //    Returns the result of arithmetic subtraction of two values
+            // value and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const int
+            //  * value1: iX        value2: iX        -> result: const iX
+            //  * value1: uX        value2: uX        -> result: const uX
+            //  * value1: fX        value2: fX        -> result: const fX
+            //  * value1: {integer} value2: iX        -> result: const iX
+            //  * value1: {integer} value2: uX        -> result: const uX
+            //  * value1: {integer} value2: fX        -> result: const fX
+            //  * value1: iX        value2: {integer} -> result: const iX
+            //  * value1: uX        value2: {integer} -> result: const uX
+            //  * value1: fX        value2: {integer} -> result: const fX
+            // note: value may be const or non-const
+            TokenKind::Minus => {
+                if (lhs.taipe.is_integer() || lhs.taipe.is_float())
+                    && (rhs.taipe.is_integer() || rhs.taipe.is_float())
+                {
+                    let mut lhs = lhs.clone();
+                    let mut rhs = rhs.clone();
+                    self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
+                    if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
+                        return_err!();
+                    }
+                    Ok(Context {
+                        taipe: lhs.taipe.add_const(),
+                        value: if let Some(lhs_value) = lhs.value.clone()
+                            && let Some(rhs_value) = rhs.value.clone()
+                        {
+                            let Some(result) = lhs_value.sub(rhs_value) else {
+                                return_err!(integer_overflow);
+                            };
+                            Some(result)
+                        } else {
+                            None
+                        },
+                    })
+                } else {
+                    return_err!();
+                }
+            }
+            // Binary multiplication operator
+            //    result = (value1) * (value2)
+            // Description:
+            //    Returns the arithmetic product of two values
+            // value and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const int
+            //  * value1: iX        value2: iX        -> result: const iX
+            //  * value1: uX        value2: uX        -> result: const uX
+            //  * value1: fX        value2: fX        -> result: const fX
+            //  * value1: {integer} value2: iX        -> result: const iX
+            //  * value1: {integer} value2: uX        -> result: const uX
+            //  * value1: {integer} value2: fX        -> result: const fX
+            //  * value1: iX        value2: {integer} -> result: const iX
+            //  * value1: uX        value2: {integer} -> result: const uX
+            //  * value1: fX        value2: {integer} -> result: const fX
+            // note: value may be const or non-const
+            TokenKind::Star => {
+                if (lhs.taipe.is_integer() || lhs.taipe.is_float())
+                    && (rhs.taipe.is_integer() || rhs.taipe.is_float())
+                {
+                    let mut lhs = lhs.clone();
+                    let mut rhs = rhs.clone();
+                    self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
+                    if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
+                        return_err!();
+                    }
+                    Ok(Context {
+                        taipe: lhs.taipe.add_const(),
+                        value: if let Some(lhs_value) = lhs.value.clone()
+                            && let Some(rhs_value) = rhs.value.clone()
+                        {
+                            let Some(result) = lhs_value.mul(rhs_value) else {
+                                return_err!(integer_overflow);
+                            };
+                            Some(result)
+                        } else {
+                            None
+                        },
+                    })
+                } else {
+                    return_err!();
+                }
+            }
+            // Binary division operator
+            //    result = (value1) / (value2)
+            // Description:
+            //    Returns the quotient of the arithmetic division of two values
+            // value and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const int
+            //  * value1: iX        value2: iX        -> result: const iX
+            //  * value1: uX        value2: uX        -> result: const uX
+            //  * value1: fX        value2: fX        -> result: const fX
+            //  * value1: {integer} value2: iX        -> result: const iX
+            //  * value1: {integer} value2: uX        -> result: const uX
+            //  * value1: {integer} value2: fX        -> result: const fX
+            //  * value1: iX        value2: {integer} -> result: const iX
+            //  * value1: uX        value2: {integer} -> result: const uX
+            //  * value1: fX        value2: {integer} -> result: const fX
+            // note: value may be const or non-const
+            TokenKind::Slash => {
+                if (lhs.taipe.is_integer() || lhs.taipe.is_float())
+                    && (rhs.taipe.is_integer() || rhs.taipe.is_float())
+                {
+                    let mut lhs = lhs.clone();
+                    let mut rhs = rhs.clone();
+                    self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
+                    if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
+                        return_err!();
+                    }
+                    Ok(Context {
+                        taipe: lhs.taipe.add_const(),
+                        value: if let Some(lhs_value) = lhs.value.clone()
+                            && let Some(rhs_value) = rhs.value.clone()
+                        {
+                            let Some(result) = lhs_value.div(rhs_value) else {
+                                return_err!(integer_overflow);
+                            };
+                            Some(result)
+                        } else {
+                            None
+                        },
+                    })
+                } else {
+                    return_err!();
+                }
+            }
+            // Binary modulo operator
+            //    result = (value1) % (value2)
+            // Description:
+            //    Returns the arithmetic modulo of two values
+            // value and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const int
+            //  * value1: iX        value2: iX        -> result: const iX
+            //  * value1: uX        value2: uX        -> result: const uX
+            //  * value1: {integer} value2: iX        -> result: const iX
+            //  * value1: {integer} value2: uX        -> result: const uX
+            //  * value1: iX        value2: {integer} -> result: const iX
+            //  * value1: uX        value2: {integer} -> result: const uX
+            // note: value may be const or non-const
+            TokenKind::Percent => {
+                if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
+                    let mut lhs = lhs.clone();
+                    let mut rhs = rhs.clone();
+                    self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
+                    if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
+                        return_err!();
+                    }
+                    Ok(Context {
+                        taipe: lhs.taipe.add_const(),
+                        value: if let Some(lhs_value) = lhs.value.clone()
+                            && let Some(rhs_value) = rhs.value.clone()
+                        {
+                            let Some(result) = lhs_value.mul(rhs_value) else {
+                                return_err!(integer_overflow);
+                            };
+                            Some(result)
+                        } else {
+                            None
+                        },
+                    })
+                } else {
+                    return_err!();
+                }
+            }
+            _ => {
+                return Err(self.make_err(
+                    format!(
+                        "sem_analyzer does not understand operator '{}': not implemented yet",
+                        &op.text
+                    ),
+                    op,
+                ));
+            }
+        }
+    }
+
     fn visit_unary(&mut self, op: &Token, expr: &'a ast::Expr) -> CompileResult<Context<'a>> {
         let ctx = self.visit_expr(expr)?;
         match op.kind {
@@ -1442,7 +1771,7 @@ impl<'a> Analyzer<'a> {
                 context::Type::VarInt => Ok(Context {
                     taipe: self.type_int.clone().add_const(),
                     value: if let Some(value) = ctx.value {
-                        self.transform_varint_to_int(&value, expr)?.negate()
+                        Some(self.transform_varint_to_int(&value, expr)?.negate())
                     } else {
                         None
                     },
@@ -1451,21 +1780,11 @@ impl<'a> Analyzer<'a> {
                 | context::Type::Int16
                 | context::Type::Int32
                 | context::Type::Int64
-                | context::Type::Int128 => Ok(Context {
+                | context::Type::Int128
+                | context::Type::Float32
+                | context::Type::Float64 => Ok(Context {
                     taipe: ctx.taipe.add_const(),
-                    value: if let Some(value) = ctx.value {
-                        value.negate()
-                    } else {
-                        None
-                    },
-                }),
-                context::Type::Float32 | context::Type::Float64 => Ok(Context {
-                    taipe: ctx.taipe,
-                    value: if let Some(value) = ctx.value {
-                        value.negate()
-                    } else {
-                        None
-                    },
+                    value: ctx.value.map(|value| value.negate()),
                 }),
                 context::Type::Uint8
                 | context::Type::Uint16
@@ -1503,7 +1822,7 @@ impl<'a> Analyzer<'a> {
                 context::Type::VarInt => Ok(Context {
                     taipe: self.type_int.clone().add_const(),
                     value: if let Some(value) = ctx.value {
-                        self.transform_varint_to_int(&value, expr)?.flip_bits()
+                        Some(self.transform_varint_to_int(&value, expr)?.flip_bits())
                     } else {
                         None
                     },
@@ -1519,11 +1838,7 @@ impl<'a> Analyzer<'a> {
                 | context::Type::Uint64
                 | context::Type::Uint128 => Ok(Context {
                     taipe: ctx.taipe.add_const(),
-                    value: if let Some(value) = ctx.value {
-                        value.flip_bits()
-                    } else {
-                        None
-                    },
+                    value: ctx.value.map(|value| value.flip_bits()),
                 }),
                 _ => {
                     return Err(self.make_err(
@@ -2074,19 +2389,28 @@ impl<'a> Analyzer<'a> {
         eq_token: Option<&Token>,
         mut rhs: Option<(Context<'a>, LineInfo)>,
     ) -> CompileResult<Context<'a>> {
-        // Fix {integer} problem, need to convert to int
+        // Fix {integer} problem:
+        // need to convert to lhs type if it is a integer or float
+        // otherwise int if there no lhs type info
         if let Some((
             Context {
-                ref mut taipe,
-                ref mut value,
+                taipe: ref mut rhs_type,
+                value: ref mut rhs_value,
             },
             rhs_line_info,
         )) = rhs
-            && let context::Type::VarInt = taipe.remove_const()
-            && let Some(value) = value
+            && let context::Type::VarInt = rhs_type.remove_const()
+            && let Some(rhs_value) = rhs_value
         {
-            *taipe = self.type_int.clone();
-            *value = self.transform_varint_to_int(&value, &rhs_line_info)?;
+            if let Some((ref lhs_type, _)) = lhs
+                && lhs_type.is_integer()
+            {
+                *rhs_type = lhs_type.clone();
+                *rhs_value = self.transform_varint(lhs_type, rhs_value, &rhs_line_info, None)?;
+            } else {
+                *rhs_type = self.type_int.clone();
+                *rhs_value = self.transform_varint_to_int(rhs_value, &rhs_line_info)?;
+            }
         }
         match (lhs, rhs) {
             (None, None) => panic!("either type or value information should be present"),
@@ -2585,74 +2909,75 @@ impl<'a> Analyzer<'a> {
         rhs: &context::Value<'a>,
         line_info: &impl HasLineInfo,
         type_name: Option<&str>,
-    ) -> CompileResult<Option<context::Value<'a>>> {
+    ) -> CompileResult<context::Value<'a>> {
         match (lhs, rhs) {
+            (context::Type::Const(lhs), _) => self.transform_value(lhs, rhs, line_info, type_name),
             (_, context::Value::VarInt(_)) => {
-                Ok(Some(self.transform_varint(lhs, rhs, line_info, type_name)?))
+                Ok(self.transform_varint(lhs, rhs, line_info, type_name)?)
             }
             // Implicit signed integer conversions
             (context::Type::Int128, context::Value::Int64(value)) => {
-                Ok(Some(context::Value::Int128((*value).into())))
+                Ok(context::Value::Int128((*value).into()))
             }
             (context::Type::Int128, context::Value::Int32(value)) => {
-                Ok(Some(context::Value::Int128((*value).into())))
+                Ok(context::Value::Int128((*value).into()))
             }
             (context::Type::Int128, context::Value::Int16(value)) => {
-                Ok(Some(context::Value::Int128((*value).into())))
+                Ok(context::Value::Int128((*value).into()))
             }
             (context::Type::Int128, context::Value::Int8(value)) => {
-                Ok(Some(context::Value::Int128((*value).into())))
+                Ok(context::Value::Int128((*value).into()))
             }
             (context::Type::Int64, context::Value::Int32(value)) => {
-                Ok(Some(context::Value::Int64((*value).into())))
+                Ok(context::Value::Int64((*value).into()))
             }
             (context::Type::Int64, context::Value::Int16(value)) => {
-                Ok(Some(context::Value::Int64((*value).into())))
+                Ok(context::Value::Int64((*value).into()))
             }
             (context::Type::Int64, context::Value::Int8(value)) => {
-                Ok(Some(context::Value::Int64((*value).into())))
+                Ok(context::Value::Int64((*value).into()))
             }
             (context::Type::Int32, context::Value::Int16(value)) => {
-                Ok(Some(context::Value::Int32((*value).into())))
+                Ok(context::Value::Int32((*value).into()))
             }
             (context::Type::Int32, context::Value::Int8(value)) => {
-                Ok(Some(context::Value::Int32((*value).into())))
+                Ok(context::Value::Int32((*value).into()))
             }
             (context::Type::Int16, context::Value::Int8(value)) => {
-                Ok(Some(context::Value::Int16((*value).into())))
+                Ok(context::Value::Int16((*value).into()))
             }
             // Implicit unsigned integer conversions
             (context::Type::Uint128, context::Value::Uint64(value)) => {
-                Ok(Some(context::Value::Uint128((*value).into())))
+                Ok(context::Value::Uint128((*value).into()))
             }
             (context::Type::Uint128, context::Value::Uint32(value)) => {
-                Ok(Some(context::Value::Uint128((*value).into())))
+                Ok(context::Value::Uint128((*value).into()))
             }
             (context::Type::Uint128, context::Value::Uint16(value)) => {
-                Ok(Some(context::Value::Uint128((*value).into())))
+                Ok(context::Value::Uint128((*value).into()))
             }
             (context::Type::Uint128, context::Value::Uint8(value)) => {
-                Ok(Some(context::Value::Uint128((*value).into())))
+                Ok(context::Value::Uint128((*value).into()))
             }
             (context::Type::Uint64, context::Value::Uint32(value)) => {
-                Ok(Some(context::Value::Uint64((*value).into())))
+                Ok(context::Value::Uint64((*value).into()))
             }
             (context::Type::Uint64, context::Value::Uint16(value)) => {
-                Ok(Some(context::Value::Uint64((*value).into())))
+                Ok(context::Value::Uint64((*value).into()))
             }
             (context::Type::Uint64, context::Value::Uint8(value)) => {
-                Ok(Some(context::Value::Uint64((*value).into())))
+                Ok(context::Value::Uint64((*value).into()))
             }
             (context::Type::Uint32, context::Value::Uint16(value)) => {
-                Ok(Some(context::Value::Uint32((*value).into())))
+                Ok(context::Value::Uint32((*value).into()))
             }
             (context::Type::Uint32, context::Value::Uint8(value)) => {
-                Ok(Some(context::Value::Uint32((*value).into())))
+                Ok(context::Value::Uint32((*value).into()))
             }
             (context::Type::Uint16, context::Value::Uint8(value)) => {
-                Ok(Some(context::Value::Uint16((*value).into())))
+                Ok(context::Value::Uint16((*value).into()))
             }
-            _ => Ok(None),
+            _ => panic!("invalid type for value conversion"),
         }
     }
 
@@ -2660,7 +2985,7 @@ impl<'a> Analyzer<'a> {
         &self,
         value: &context::Value<'a>,
         line_info: &impl HasLineInfo,
-    ) -> CompileResult<Option<context::Value<'a>>> {
+    ) -> CompileResult<context::Value<'a>> {
         self.transform_value(&self.type_usize, value, line_info, Some("usize"))
     }
 
@@ -2685,6 +3010,11 @@ impl<'a> Analyzer<'a> {
                     context::Type::Uint32 => num.to_u32().map(|num| context::Value::Uint32(num)),
                     context::Type::Uint64 => num.to_u64().map(|num| context::Value::Uint64(num)),
                     context::Type::Uint128 => num.to_u128().map(|num| context::Value::Uint128(num)),
+                    context::Type::Float32 => num.to_f32().map(|num| context::Value::Float32(num)),
+                    context::Type::Float64 => num.to_f64().map(|num| context::Value::Float64(num)),
+                    context::Type::Const(lhs) => {
+                        Some(self.transform_varint(lhs, rhs, line_info, type_name)?)
+                    }
                     _ => panic!("invalid type for varint conversion"),
                 };
                 if let Some(num) = opt {

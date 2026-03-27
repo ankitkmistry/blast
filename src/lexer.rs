@@ -25,11 +25,7 @@ pub enum TokenKind {
     Slash,
     Percent,
     Plus,
-    WrapPlus,
-    SatPlus,
     Minus,
-    WrapMinus,
-    SatMinus,
     Ampersand,
     Caret,
     Pipe,
@@ -96,11 +92,7 @@ impl TokenKind {
             TokenKind::Slash => "'/'",
             TokenKind::Percent => "'%'",
             TokenKind::Plus => "'+'",
-            TokenKind::WrapPlus => "'+%'",
-            TokenKind::SatPlus => "'+:'",
             TokenKind::Minus => "'-'",
-            TokenKind::WrapMinus => "'-%'",
-            TokenKind::SatMinus => "'-:'",
             TokenKind::Ampersand => "'&'",
             TokenKind::Caret => "'^'",
             TokenKind::Pipe => "'|'",
@@ -275,10 +267,6 @@ impl Lexer {
                 '-' => {
                     if self.check(">") {
                         token!(Arrow)
-                    } else if self.check("%") {
-                        token!(WrapMinus)
-                    } else if self.check(":") {
-                        token!(SatMinus)
                     } else {
                         token!(Minus)
                     }
@@ -307,15 +295,7 @@ impl Lexer {
                     }
                 }
                 '%' => token!(Percent),
-                '+' => {
-                    if self.check("%") {
-                        token!(WrapPlus)
-                    } else if self.check(":") {
-                        token!(SatPlus)
-                    } else {
-                        token!(Plus)
-                    }
-                }
+                '+' => token!(Plus),
                 '&' => token!(Ampersand),
                 '^' => token!(Caret),
                 '|' => token!(Pipe),

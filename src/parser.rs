@@ -195,28 +195,15 @@ impl Parser {
                         self.expect_term()?;
                         Ok(ast::Object::Expr(expr))
                     } else {
-                        Err(self.expect_err(&[
-                            // Object begin tokens
-                            Module, Struct, Union, Fun, Typedef, //
-                            // Expr begin tokens
-                            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof,
-                            Typeof, //
-                            // Primary expr begin tokens
-                            True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace,
-                            LBrack, //
-                        ]))
+                        Err(self.expect_err_more(
+                            &["<expression>"],
+                            &[Module, Struct, Union, Fun, Typedef],
+                        ))
                     }
                 }
             }
         } else {
-            Err(self.expect_err(&[
-                // Object begin tokens
-                Module, Struct, Union, Fun, Typedef, //
-                // Expr begin tokens
-                Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof, Typeof, //
-                // Primary expr begin tokens
-                True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
-            ]))
+            Err(self.expect_err_more(&["<expression>"], &[Module, Struct, Union, Fun, Typedef]))
         }
     }
 
@@ -384,7 +371,7 @@ impl Parser {
     //       | 'continue' label? ';'
     //       | 'break' label? expr? ';'
     //       | 'return' expr? ';'
-    //       | expr ';'
+    //       | expr_or_assign ';'
     //       | ';'
     //       ;
     fn parse_stmt(&mut self) -> CompileResult<ast::Stmt> {
@@ -451,32 +438,22 @@ impl Parser {
                 Semicolon => Ok(ast::Stmt::Nop(self.get_token()?)),
                 _ => {
                     if self.is_expr_start() {
-                        let expr = self.parse_expr()?;
+                        let expr = self.parse_expr_or_assign()?;
                         self.expect_term()?;
                         Ok(ast::Stmt::Expr(Box::new(expr)))
                     } else {
-                        Err(self.expect_err(&[
-                            // Stmt begin tokens
-                            If, Label, While, LBrace, Yield, Continue, Break, Return, //
-                            // Expr begin tokens
-                            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof,
-                            Typeof, //
-                            // Primary expr begin tokens
-                            True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace,
-                            LBrack, //
-                        ]))
+                        Err(self.expect_err_more(
+                            &["<expression>"],
+                            &[If, Label, While, LBrace, Yield, Continue, Break, Return],
+                        ))
                     }
                 }
             }
         } else {
-            Err(self.expect_err(&[
-                // Stmt begin tokens
-                If, Label, While, LBrace, Yield, Continue, Break, Return, //
-                // Expr begin tokens
-                Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof, Typeof, //
-                // Primary expr begin tokens
-                True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
-            ]))
+            Err(self.expect_err_more(
+                &["<expression>"],
+                &[If, Label, While, LBrace, Yield, Continue, Break, Return],
+            ))
         }
     }
 
@@ -682,6 +659,9 @@ impl Parser {
     }
 
     fn is_expr_start(&mut self) -> bool {
+        let Some(peek) = self.peek() else {
+            return false;
+        };
         [
             // Expr begin tokens
             Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof, Typeof, //
@@ -689,23 +669,22 @@ impl Parser {
             True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
         ]
         .into_iter()
-        .any(|kind| {
-            if let Some(tok) = self.peek() {
-                kind == tok.kind
-            } else {
-                false
-            }
-        })
+        .any(|kind| kind == peek.kind)
     }
 
-    // expr ::= assigment | logic_or;
+    // expr_or_assign ::= assigment | expr;
+    fn parse_expr_or_assign(&mut self) -> CompileResult<ast::Expr> {
+        self.rule_or(Self::parse_assignment, Self::parse_logical)
+    }
+
+    // expr ::= logical;
     fn parse_expr(&mut self) -> CompileResult<ast::Expr> {
-        self.rule_or(Self::parse_assignment, Self::parse_logic_or)
+        self.parse_logical()
     }
 
     // assignment ::= (<!empty>logic_or_list) '=' (<!empty>logic_or_list);
     fn parse_assignment(&mut self) -> CompileResult<ast::Expr> {
-        let lhs = self.parse_logic_or_list();
+        let lhs = self.parse_logical_list();
         if lhs.is_empty() {
             return Err(self.make_error(
                 &self.peek().unwrap(), // TODO: unwrap should be changed
@@ -713,20 +692,22 @@ impl Parser {
             ));
         }
         let op = self.expect(Equal)?;
-        let rhs = self.parse_logic_or_list();
+        let rhs = self.parse_logical_list();
         if rhs.is_empty() {
             return Err(self.make_error(
                 &self.peek().unwrap(), // TODO: unwrap should be changed
                 "expected left hand side of an assignment",
             ));
         }
-        Ok(ast::Expr::Assign { lhses: lhs, op, rhses: rhs })
+        Ok(ast::Expr::Assign {
+            lhses: lhs,
+            op,
+            rhses: rhs,
+        })
     }
 
-    // logic_or ::= logic_and ('^' logic_and)*;
-    define_binary_op!(parse_logic_or, parse_logic_and, Or);
-    // logic_and ::= logic_not ('^' logic_not)*;
-    define_binary_op!(parse_logic_and, parse_logic_not, And);
+    // logical ::= logic_not (('and'|'or') logic_not)*;
+    define_binary_op!(parse_logical, parse_logic_not, And, Or);
 
     // logic_not ::= 'not'* relational;
     fn parse_logic_not(&mut self) -> CompileResult<ast::Expr> {
@@ -786,11 +767,7 @@ impl Parser {
         parse_term,
         parse_factor,
         Plus,
-        WrapPlus,
-        SatPlus,
         Minus,
-        WrapMinus,
-        SatMinus
     );
 
     // factor ::= cast (('*'|'/'|'%') cast)*;
@@ -984,7 +961,7 @@ impl Parser {
     define_rule_list!(crate::ast::Field, parse_field_list, parse_field);
     define_rule_list!(crate::ast::Param, parse_param_list, parse_param);
     define_rule_list!(crate::ast::Type, parse_type_list, parse_type);
-    define_rule_list!(crate::ast::Expr, parse_logic_or_list, parse_logic_or);
+    define_rule_list!(crate::ast::Expr, parse_logical_list, parse_logical);
     define_rule_list!(crate::ast::Arg, parse_arg_list, parse_arg);
     define_rule_list!(crate::ast::Expr, parse_expr_list, parse_expr);
 
