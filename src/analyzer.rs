@@ -1523,13 +1523,226 @@ impl<'a> Analyzer<'a> {
             // TokenKind::NotEq => todo!(),
             // TokenKind::GreaterEq => todo!(),
             // TokenKind::RAngle => todo!(),
-            // // Bitwise
-            // TokenKind::Ampersand => todo!(),
-            // TokenKind::Caret => todo!(),
-            // TokenKind::Pipe => todo!(),
-            // // Shift
-            // TokenKind::ShiftLeft => todo!(),
-            // TokenKind::ShiftRight => todo!(),
+
+            // Bitwise
+
+            // Binary bitwise and operator
+            //    result = (value1) & (value2)
+            // Description:
+            //    Returns the result of bitwise and of two integers
+            // value and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const int
+            //  * value1: iX        value2: iX        -> result: const iX
+            //  * value1: uX        value2: uX        -> result: const uX
+            //  * value1: {integer} value2: iX        -> result: const iX
+            //  * value1: {integer} value2: uX        -> result: const uX
+            //  * value1: iX        value2: {integer} -> result: const iX
+            //  * value1: uX        value2: {integer} -> result: const uX
+            // note: value may be const or non-const
+            TokenKind::Ampersand => {
+                if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
+                    let mut lhs = lhs.clone();
+                    let mut rhs = rhs.clone();
+                    self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
+                    if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
+                        return_err!();
+                    }
+                    Ok(Context {
+                        taipe: lhs.taipe.add_const(),
+                        value: if let Some(lhs_value) = lhs.value.clone()
+                            && let Some(rhs_value) = rhs.value.clone()
+                        {
+                            Some(lhs_value.bit_and(rhs_value))
+                        } else {
+                            None
+                        },
+                    })
+                } else {
+                    return_err!();
+                }
+            },
+            // Binary bitwise xor operator
+            //    result = (value1) ^ (value2)
+            // Description:
+            //    Returns the result of bitwise xor of two integers
+            // value and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const int
+            //  * value1: iX        value2: iX        -> result: const iX
+            //  * value1: uX        value2: uX        -> result: const uX
+            //  * value1: {integer} value2: iX        -> result: const iX
+            //  * value1: {integer} value2: uX        -> result: const uX
+            //  * value1: iX        value2: {integer} -> result: const iX
+            //  * value1: uX        value2: {integer} -> result: const uX
+            // note: value may be const or non-const
+            TokenKind::Caret => {
+                if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
+                    let mut lhs = lhs.clone();
+                    let mut rhs = rhs.clone();
+                    self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
+                    if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
+                        return_err!();
+                    }
+                    Ok(Context {
+                        taipe: lhs.taipe.add_const(),
+                        value: if let Some(lhs_value) = lhs.value.clone()
+                            && let Some(rhs_value) = rhs.value.clone()
+                        {
+                            Some(lhs_value.bit_xor(rhs_value))
+                        } else {
+                            None
+                        },
+                    })
+                } else {
+                    return_err!();
+                }
+            },
+            // Binary bitwise or operator
+            //    result = (value1) | (value2)
+            // Description:
+            //    Returns the result of bitwise or of two integers
+            // value and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const int
+            //  * value1: iX        value2: iX        -> result: const iX
+            //  * value1: uX        value2: uX        -> result: const uX
+            //  * value1: {integer} value2: iX        -> result: const iX
+            //  * value1: {integer} value2: uX        -> result: const uX
+            //  * value1: iX        value2: {integer} -> result: const iX
+            //  * value1: uX        value2: {integer} -> result: const uX
+            // note: value may be const or non-const
+            TokenKind::Pipe => {
+                if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
+                    let mut lhs = lhs.clone();
+                    let mut rhs = rhs.clone();
+                    self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
+                    if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
+                        return_err!();
+                    }
+                    Ok(Context {
+                        taipe: lhs.taipe.add_const(),
+                        value: if let Some(lhs_value) = lhs.value.clone()
+                            && let Some(rhs_value) = rhs.value.clone()
+                        {
+                            Some(lhs_value.bit_or(rhs_value))
+                        } else {
+                            None
+                        },
+                    })
+                } else {
+                    return_err!();
+                }
+            }
+
+            // Shift
+
+            // Binary bitwise shift left operator
+            //    result = (value1) << (value2)
+            // Description:
+            //    Shifts the bits of an value towards left and fills zero in the right
+            //    and returns the value
+            // value and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const int
+            //  * value1: iX        value2: uX        -> result: const iX
+            //  * value1: uX        value2: uX        -> result: const uX
+            //  * value1: {integer} value2: uX        -> result: const iX
+            //  * value1: {integer} value2: uX        -> result: const iX
+            //  * value1: iX        value2: {integer} -> result: const iX
+            //  * value1: uX        value2: {integer} -> result: const uX
+            // note: value may be const or non-const
+            // TODO: due to rust we convert rhs to u32 (which is not the intended behaviour)
+            TokenKind::ShiftLeft => {
+                if lhs.taipe.is_integer() {
+                    if !rhs.taipe.is_varint() && !rhs.taipe.is_unsigned_integer() {
+                        return Err(self.make_err(
+                            format!(
+                                "expected unsigned integer but got '{}'",
+                                rhs.taipe.to_string()
+                            ),
+                            right,
+                        ));
+                    }
+                    let mut lhs = lhs.clone();
+                    let mut rhs = rhs.clone();
+                    // convert varint -> int
+                    if lhs.taipe.is_varint() {
+                        lhs.taipe = self.type_int.clone();
+                        if let Some(ref mut value) = lhs.value {
+                            *value = self.transform_varint_to_int(value, right)?;
+                        }
+                    }
+                    dbg!(rhs.to_string());
+                    rhs.taipe = context::Type::Uint32;
+                    if let Some(ref mut value) = rhs.value {
+                        *value = self.transform_value(&rhs.taipe, value, right, None)?;
+                    }
+                    Ok(Context {
+                        taipe: lhs.taipe.add_const(),
+                        value: if let Some(lhs_value) = lhs.value.clone()
+                            && let Some(rhs_value) = rhs.value.clone()
+                        {
+                            Some(lhs_value.shl(rhs_value))
+                        } else {
+                            None
+                        },
+                    })
+                } else {
+                    return_err!();
+                }
+            }
+            // Binary bitwise shift right operator
+            //    result = (value1) >> (value2)
+            // Description:
+            //    Shifts the bits of an value towards right and fills zero in the right
+            //    if the value1 is unsigned and sign extends it if the value is signed
+            //    and returns the value
+            // value and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const int
+            //  * value1: iX        value2: uX        -> result: const iX
+            //  * value1: uX        value2: uX        -> result: const uX
+            //  * value1: {integer} value2: uX        -> result: const iX
+            //  * value1: {integer} value2: uX        -> result: const iX
+            //  * value1: iX        value2: {integer} -> result: const iX
+            //  * value1: uX        value2: {integer} -> result: const uX
+            // note: value may be const or non-const
+            // TODO: due to rust we convert rhs to u32 (which is not the intended behaviour)
+            TokenKind::ShiftRight => {
+                if lhs.taipe.is_integer() {
+                    if !rhs.taipe.is_varint() && !rhs.taipe.is_unsigned_integer() {
+                        return Err(self.make_err(
+                            format!(
+                                "expected unsigned integer but got '{}'",
+                                rhs.taipe.to_string()
+                            ),
+                            right,
+                        ));
+                    }
+                    let mut lhs = lhs.clone();
+                    let mut rhs = rhs.clone();
+                    // convert varint -> int
+                    if lhs.taipe.is_varint() {
+                        lhs.taipe = self.type_int.clone();
+                        if let Some(ref mut value) = lhs.value {
+                            *value = self.transform_varint_to_int(value, right)?;
+                        }
+                    }
+                    dbg!(rhs.to_string());
+                    rhs.taipe = context::Type::Uint32;
+                    if let Some(ref mut value) = rhs.value {
+                        *value = self.transform_value(&rhs.taipe, value, right, None)?;
+                    }
+                    Ok(Context {
+                        taipe: lhs.taipe.add_const(),
+                        value: if let Some(lhs_value) = lhs.value.clone()
+                            && let Some(rhs_value) = rhs.value.clone()
+                        {
+                            Some(lhs_value.shr(rhs_value))
+                        } else {
+                            None
+                        },
+                    })
+                } else {
+                    return_err!();
+                }
+            }
 
             // Arithmetic
 
@@ -1731,7 +1944,7 @@ impl<'a> Analyzer<'a> {
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
                         {
-                            let Some(result) = lhs_value.mul(rhs_value) else {
+                            let Some(result) = lhs_value.modulo(rhs_value) else {
                                 return_err!(integer_overflow);
                             };
                             Some(result)
@@ -2915,6 +3128,17 @@ impl<'a> Analyzer<'a> {
             (_, context::Value::VarInt(_)) => {
                 Ok(self.transform_varint(lhs, rhs, line_info, type_name)?)
             }
+            // Trivial conversion
+            (context::Type::Int128, context::Value::Int128(_)) => Ok(rhs.clone()),
+            (context::Type::Int64, context::Value::Int64(_)) => Ok(rhs.clone()),
+            (context::Type::Int32, context::Value::Int32(_)) => Ok(rhs.clone()),
+            (context::Type::Int16, context::Value::Int16(_)) => Ok(rhs.clone()),
+            (context::Type::Int8, context::Value::Int8(_)) => Ok(rhs.clone()),
+            (context::Type::Uint128, context::Value::Uint128(_)) => Ok(rhs.clone()),
+            (context::Type::Uint64, context::Value::Uint64(_)) => Ok(rhs.clone()),
+            (context::Type::Uint32, context::Value::Uint32(_)) => Ok(rhs.clone()),
+            (context::Type::Uint16, context::Value::Uint16(_)) => Ok(rhs.clone()),
+            (context::Type::Uint8, context::Value::Uint8(_)) => Ok(rhs.clone()),
             // Implicit signed integer conversions
             (context::Type::Int128, context::Value::Int64(value)) => {
                 Ok(context::Value::Int128((*value).into()))
