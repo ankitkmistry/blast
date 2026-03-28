@@ -1,5 +1,9 @@
 use core::fmt;
-use std::{cell::RefCell, cmp::Ordering, rc::Weak};
+use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    rc::{Rc, Weak},
+};
 
 use crate::{common::Int, scope};
 
@@ -665,8 +669,9 @@ impl<'a> ToString for Value<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Context<'a> {
+    pub is_lvalue: bool,
     pub taipe: Type<'a>,
     pub value: Option<Value<'a>>,
 }
@@ -674,22 +679,21 @@ pub struct Context<'a> {
 impl<'a> Context<'a> {
     pub fn from_bool(value: bool) -> Self {
         Self {
-            // TODO: making this const has implications on
-            // assigning a simple string to a variable (that is not const)
-            taipe: Type::Const(Box::new(Type::Bool)),
+            is_lvalue: false,
+            taipe: Type::Bool,
             value: Some(Value::Bool(value)),
         }
     }
     pub fn from_char(c: char) -> Self {
         Self {
-            // TODO: making this const has implications on
-            // assigning a simple string to a variable (that is not const)
-            taipe: Type::Const(Box::new(Type::Char)),
+            is_lvalue: false,
+            taipe: Type::Char,
             value: Some(Value::Char(c)),
         }
     }
     pub fn from_int(int: Int) -> Self {
         Self {
+            is_lvalue: false,
             taipe: Type::VarInt,
             value: Some(Value::VarInt(int)),
         }
@@ -697,6 +701,7 @@ impl<'a> Context<'a> {
     pub fn from_str(text: &str) -> Self {
         let chars = text.chars().map(|c| Value::Char(c)).collect::<Vec<_>>();
         Context {
+            is_lvalue: false,
             taipe: Type::Array {
                 count: chars.len(),
                 taipe: Box::new(Type::Const(Box::new(Type::Char))),
@@ -706,30 +711,28 @@ impl<'a> Context<'a> {
     }
     pub fn from_type(taipe: Type<'a>) -> Self {
         Self {
+            is_lvalue: false,
             taipe: Type::Typedef,
             value: Some(Value::Type(taipe)),
         }
     }
     pub fn from_void() -> Self {
         Self {
+            is_lvalue: false,
             taipe: Type::Void,
-            value: None,
-        }
-    }
-    pub fn from_type_literal() -> Self {
-        Self {
-            taipe: Type::Typedef,
             value: None,
         }
     }
     pub fn from_noreturn() -> Self {
         Self {
+            is_lvalue: false,
             taipe: Type::Noreturn,
             value: None,
         }
     }
     pub fn from_module(module: Weak<RefCell<scope::Scope<'a>>>) -> Self {
         Self {
+            is_lvalue: true,
             taipe: Type::Module,
             value: Some(Value::Module(module)),
         }

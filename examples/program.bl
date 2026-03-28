@@ -109,9 +109,13 @@ i :: 7265465651321354631;
 j :: 4654654651321354631;
 // k :: i + j;
 
+pp :: 1;
+p := &pp;
+ppp := 1;
+
 vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {
+    p = &ppp;
     // return lhs + rhs;
-    invert = i and j;
 }
 
 main :: fun () -> void {

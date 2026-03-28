@@ -499,10 +499,13 @@ impl<'a> Analyzer<'a> {
                             param_types.push(context::Param {
                                 taipe: taipe.clone(),
                             });
-                            let _ = self.declare_sym_ex(
-                                scope::State::Visited(Context { taipe, value: None }),
-                                name,
-                            )?;
+                            let param_scope =
+                                self.declare_sym_ex(scope::State::VisitInProg, name)?;
+                            param_scope.borrow_mut().state = scope::State::Visited(Context {
+                                is_lvalue: true,
+                                taipe,
+                                value: None,
+                            });
                         }
                         // Visit the return type
                         let ret_type = if let Some(ret) = ret {
@@ -514,6 +517,7 @@ impl<'a> Analyzer<'a> {
                         };
                         // Create the context
                         let rhs = Context {
+                            is_lvalue: true,
                             taipe: context::Type::Function {
                                 ret: Box::new(ret_type),
                                 params: param_types,
@@ -571,11 +575,12 @@ impl<'a> Analyzer<'a> {
                         // Visit expr
                         let rhs = self.visit_var(name, expr)?;
                         // Resolve assignment
-                        let ctx = self.resolve_assign(
+                        let mut ctx = self.resolve_assign(
                             lhs,
                             eq_token.as_ref(),
                             Some((rhs, expr.get_line_info())),
                         )?;
+                        ctx.is_lvalue = true;
                         // Complete the visit
                         scope.borrow_mut().state = scope::State::Visited(ctx.clone());
                         Ok(ctx)
@@ -823,6 +828,7 @@ impl<'a> Analyzer<'a> {
         self.cur_scope = Rc::clone(&scope);
         // Mark it evaluated
         let ctx = Context {
+            is_lvalue: true,
             taipe: context::Type::Typedef,
             value: Some(context::Value::Type(context::Type::Basic(Rc::downgrade(
                 &scope,
@@ -864,33 +870,28 @@ impl<'a> Analyzer<'a> {
         expr: &'a ast::Expr,
     ) -> CompileResult<Context<'a>> {
         match self.visit_expr(expr) {
-            Ok(ctx) => {
+            Ok(mut ctx) => {
                 if ctx.taipe.is_module() {
                     Err(self.make_err("cannot assign a module to a variable", expr))
                 } else {
+                    ctx.is_lvalue = true;
                     Ok(ctx)
                 }
             }
-            Err(err) => {
-                if let CompileError::SemCyclic {
+            Err(CompileError::SemCyclic {
+                file_path,
+                line_info,
+            }) => Err(self
+                .make_err(
+                    "inference is ambiguous, encountered cyclic references",
+                    name,
+                )
+                .chain(self.make_note_with_path(
+                    "another one declared here",
                     file_path,
-                    line_info,
-                } = err
-                {
-                    Err(self
-                        .make_err(
-                            "inference is ambiguous, encountered cyclic references",
-                            name,
-                        )
-                        .chain(self.make_note_with_path(
-                            "another one declared here",
-                            file_path,
-                            &line_info,
-                        )))
-                } else {
-                    Err(err)
-                }
-            }
+                    &line_info,
+                ))),
+            Err(err) => Err(err),
         }
     }
 
@@ -1134,7 +1135,11 @@ impl<'a> Analyzer<'a> {
                     let lhs_node = &lhses[i];
                     let lhs_line_info = lhs_node.get_line_info();
                     let lhs = self.visit_expr(lhs_node)?;
-                    // TODO: do lvalue checking
+                    // do lvalue checking
+                    if !lhs.is_lvalue {
+                        return Err(self
+                            .make_err("cannot assign to a prvalue (pure rvalue)", &lhs_line_info));
+                    }
                     let _ = self.resolve_assign(
                         Some((lhs.taipe, lhs_line_info)),
                         None,
@@ -1229,7 +1234,11 @@ impl<'a> Analyzer<'a> {
                             };
                             tuple[index].clone()
                         });
-                        Ok(Context { taipe, value })
+                        Ok(Context {
+                            is_lvalue: false,
+                            taipe,
+                            value,
+                        })
                     }
                     context::Type::Module => {
                         let Some(value) = ctx.value else {
@@ -1306,6 +1315,7 @@ impl<'a> Analyzer<'a> {
                             }
                         }
                         Ok(Context {
+                            is_lvalue: false,
                             taipe: *taipe,
                             value,
                         })
@@ -1340,6 +1350,7 @@ impl<'a> Analyzer<'a> {
                             value = Some(array[index].clone());
                         }
                         Ok(Context {
+                            is_lvalue: false,
                             taipe: *taipe,
                             value,
                         })
@@ -1376,13 +1387,15 @@ impl<'a> Analyzer<'a> {
                     };
                     // TODO: check suffix
                     Ok(Context {
-                        taipe: context::Type::Const(Box::new(context::Type::VarInt)),
+                        is_lvalue: false,
+                        taipe: context::Type::VarInt,
                         value: Some(context::Value::VarInt(tok_val.clone())),
                     })
                 }
                 // TODO: get value from token
                 TokenKind::FloatLit => Ok(Context {
-                    taipe: context::Type::Const(Box::new(context::Type::Float64)),
+                    is_lvalue: false,
+                    taipe: context::Type::Float64,
                     value: None,
                 }),
                 TokenKind::Ident => self.get_name(&token),
@@ -1404,12 +1417,14 @@ impl<'a> Analyzer<'a> {
                 }
                 if types.len() == values.len() {
                     Ok(Context {
-                        taipe: context::Type::Const(Box::new(context::Type::Tuple(types))),
+                        is_lvalue: false,
+                        taipe: context::Type::Tuple(types),
                         value: Some(context::Value::Tuple(values)),
                     })
                 } else {
                     Ok(Context {
-                        taipe: context::Type::Const(Box::new(context::Type::Tuple(types))),
+                        is_lvalue: false,
+                        taipe: context::Type::Tuple(types),
                         value: None,
                     })
                 }
@@ -1522,7 +1537,7 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the result of logical short-circuiting and of two bools
             // value1, value2 and result can be:
-            //  * value1: bool      value2: bool      -> result: const bool
+            //  * value1: bool      value2: bool      -> result: bool
             // note: value may be const or non-const
             // TODO: implement short circuiting
             TokenKind::And => {
@@ -1530,7 +1545,8 @@ impl<'a> Analyzer<'a> {
                     return_err!();
                 }
                 Ok(Context {
-                    taipe: context::Type::Const(Box::new(context::Type::Bool)),
+                    is_lvalue: false,
+                    taipe: context::Type::Bool,
                     value: if let Some(lhs_value) = lhs.value
                         && let Some(rhs_value) = rhs.value
                     {
@@ -1551,7 +1567,7 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the result of logical short-circuiting and of two bools
             // value1, value2 and result can be:
-            //  * value1: bool      value2: bool      -> result: const bool
+            //  * value1: bool      value2: bool      -> result: bool
             // note: value may be const or non-const
             // TODO: implement short circuiting
             TokenKind::Or => {
@@ -1559,7 +1575,8 @@ impl<'a> Analyzer<'a> {
                     return_err!();
                 }
                 Ok(Context {
-                    taipe: context::Type::Const(Box::new(context::Type::Bool)),
+                    is_lvalue: false,
+                    taipe: context::Type::Bool,
                     value: if let Some(lhs_value) = lhs.value
                         && let Some(rhs_value) = rhs.value
                     {
@@ -1585,22 +1602,22 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the result of comparison of two values
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const bool
-            //  * value1: iX        value2: iX        -> result: const bool
-            //  * value1: uX        value2: uX        -> result: const bool
-            //  * value1: fX        value2: fX        -> result: const bool
-            //  * value1: {integer} value2: iX        -> result: const bool
-            //  * value1: {integer} value2: uX        -> result: const bool
-            //  * value1: {integer} value2: fX        -> result: const bool
-            //  * value1: iX        value2: {integer} -> result: const bool
-            //  * value1: uX        value2: {integer} -> result: const bool
-            //  * value1: fX        value2: {integer} -> result: const bool
+            //  * value1: {integer} value2: {integer} -> result: bool
+            //  * value1: iX        value2: iX        -> result: bool
+            //  * value1: uX        value2: uX        -> result: bool
+            //  * value1: fX        value2: fX        -> result: bool
+            //  * value1: {integer} value2: iX        -> result: bool
+            //  * value1: {integer} value2: uX        -> result: bool
+            //  * value1: {integer} value2: fX        -> result: bool
+            //  * value1: iX        value2: {integer} -> result: bool
+            //  * value1: uX        value2: {integer} -> result: bool
+            //  * value1: fX        value2: {integer} -> result: bool
             //
-            //  * value1: bool      value2: bool      -> result: const bool
-            //  * value1: char      value2: char      -> result: const bool
-            //  * value1: typedef   value2: typedef   -> result: const bool
-            //  * value1: *T        value2: *T        -> result: const bool
-            //  * value1: *const T  value2: *const T  -> result: const bool
+            //  * value1: bool      value2: bool      -> result: bool
+            //  * value1: char      value2: char      -> result: bool
+            //  * value1: typedef   value2: typedef   -> result: bool
+            //  * value1: *T        value2: *T        -> result: bool
+            //  * value1: *const T  value2: *const T  -> result: bool
             // note: value may be const or non-const
             TokenKind::LAngle
             | TokenKind::LessEq
@@ -1694,7 +1711,8 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 Ok(Context {
-                    taipe: context::Type::Const(Box::new(context::Type::Bool)),
+                    is_lvalue: false,
+                    taipe: context::Type::Bool,
                     value,
                 })
             }
@@ -1703,13 +1721,13 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the result of bitwise and of two integers
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const int
-            //  * value1: iX        value2: iX        -> result: const iX
-            //  * value1: uX        value2: uX        -> result: const uX
-            //  * value1: {integer} value2: iX        -> result: const iX
-            //  * value1: {integer} value2: uX        -> result: const uX
-            //  * value1: iX        value2: {integer} -> result: const iX
-            //  * value1: uX        value2: {integer} -> result: const uX
+            //  * value1: {integer} value2: {integer} -> result: int
+            //  * value1: iX        value2: iX        -> result: iX
+            //  * value1: uX        value2: uX        -> result: uX
+            //  * value1: {integer} value2: iX        -> result: iX
+            //  * value1: {integer} value2: uX        -> result: uX
+            //  * value1: iX        value2: {integer} -> result: iX
+            //  * value1: uX        value2: {integer} -> result: uX
             // note: value may be const or non-const
             TokenKind::Ampersand => {
                 if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
@@ -1720,6 +1738,7 @@ impl<'a> Analyzer<'a> {
                         return_err!();
                     }
                     Ok(Context {
+                        is_lvalue: false,
                         taipe: lhs.taipe.add_const(),
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
@@ -1738,13 +1757,13 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the result of bitwise xor of two integers
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const int
-            //  * value1: iX        value2: iX        -> result: const iX
-            //  * value1: uX        value2: uX        -> result: const uX
-            //  * value1: {integer} value2: iX        -> result: const iX
-            //  * value1: {integer} value2: uX        -> result: const uX
-            //  * value1: iX        value2: {integer} -> result: const iX
-            //  * value1: uX        value2: {integer} -> result: const uX
+            //  * value1: {integer} value2: {integer} -> result: int
+            //  * value1: iX        value2: iX        -> result: iX
+            //  * value1: uX        value2: uX        -> result: uX
+            //  * value1: {integer} value2: iX        -> result: iX
+            //  * value1: {integer} value2: uX        -> result: uX
+            //  * value1: iX        value2: {integer} -> result: iX
+            //  * value1: uX        value2: {integer} -> result: uX
             // note: value may be const or non-const
             TokenKind::Caret => {
                 if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
@@ -1755,6 +1774,7 @@ impl<'a> Analyzer<'a> {
                         return_err!();
                     }
                     Ok(Context {
+                        is_lvalue: false,
                         taipe: lhs.taipe.add_const(),
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
@@ -1773,13 +1793,13 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the result of bitwise or of two integers
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const int
-            //  * value1: iX        value2: iX        -> result: const iX
-            //  * value1: uX        value2: uX        -> result: const uX
-            //  * value1: {integer} value2: iX        -> result: const iX
-            //  * value1: {integer} value2: uX        -> result: const uX
-            //  * value1: iX        value2: {integer} -> result: const iX
-            //  * value1: uX        value2: {integer} -> result: const uX
+            //  * value1: {integer} value2: {integer} -> result: int
+            //  * value1: iX        value2: iX        -> result: iX
+            //  * value1: uX        value2: uX        -> result: uX
+            //  * value1: {integer} value2: iX        -> result: iX
+            //  * value1: {integer} value2: uX        -> result: uX
+            //  * value1: iX        value2: {integer} -> result: iX
+            //  * value1: uX        value2: {integer} -> result: uX
             // note: value may be const or non-const
             TokenKind::Pipe => {
                 if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
@@ -1790,6 +1810,7 @@ impl<'a> Analyzer<'a> {
                         return_err!();
                     }
                     Ok(Context {
+                        is_lvalue: false,
                         taipe: lhs.taipe.add_const(),
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
@@ -1809,13 +1830,13 @@ impl<'a> Analyzer<'a> {
             //    Shifts the bits of an value towards left and fills zero in the right
             //    and returns the value
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const int
-            //  * value1: iX        value2: uX        -> result: const iX
-            //  * value1: uX        value2: uX        -> result: const uX
-            //  * value1: {integer} value2: uX        -> result: const iX
-            //  * value1: {integer} value2: uX        -> result: const iX
-            //  * value1: iX        value2: {integer} -> result: const iX
-            //  * value1: uX        value2: {integer} -> result: const uX
+            //  * value1: {integer} value2: {integer} -> result: int
+            //  * value1: iX        value2: uX        -> result: iX
+            //  * value1: uX        value2: uX        -> result: uX
+            //  * value1: {integer} value2: uX        -> result: iX
+            //  * value1: {integer} value2: uX        -> result: iX
+            //  * value1: iX        value2: {integer} -> result: iX
+            //  * value1: uX        value2: {integer} -> result: uX
             // note: value may be const or non-const
             // TODO: due to rust we convert rhs to u32 (which is not the intended behaviour)
             TokenKind::ShiftLeft => {
@@ -1844,6 +1865,7 @@ impl<'a> Analyzer<'a> {
                         *value = self.transform_value(&rhs.taipe, value, right, None)?;
                     }
                     Ok(Context {
+                        is_lvalue: false,
                         taipe: lhs.taipe.add_const(),
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
@@ -1864,13 +1886,13 @@ impl<'a> Analyzer<'a> {
             //    if the value1 is unsigned and sign extends it if the value is signed
             //    and returns the value
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const int
-            //  * value1: iX        value2: uX        -> result: const iX
-            //  * value1: uX        value2: uX        -> result: const uX
-            //  * value1: {integer} value2: uX        -> result: const iX
-            //  * value1: {integer} value2: uX        -> result: const iX
-            //  * value1: iX        value2: {integer} -> result: const iX
-            //  * value1: uX        value2: {integer} -> result: const uX
+            //  * value1: {integer} value2: {integer} -> result: int
+            //  * value1: iX        value2: uX        -> result: iX
+            //  * value1: uX        value2: uX        -> result: uX
+            //  * value1: {integer} value2: uX        -> result: iX
+            //  * value1: {integer} value2: uX        -> result: iX
+            //  * value1: iX        value2: {integer} -> result: iX
+            //  * value1: uX        value2: {integer} -> result: uX
             // note: value may be const or non-const
             // TODO: due to rust we convert rhs to u32 (which is not the intended behaviour)
             TokenKind::ShiftRight => {
@@ -1899,6 +1921,7 @@ impl<'a> Analyzer<'a> {
                         *value = self.transform_value(&rhs.taipe, value, right, None)?;
                     }
                     Ok(Context {
+                        is_lvalue: false,
                         taipe: lhs.taipe.add_const(),
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
@@ -1917,16 +1940,16 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the arithmetic sum of two values
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const int
-            //  * value1: iX        value2: iX        -> result: const iX
-            //  * value1: uX        value2: uX        -> result: const uX
-            //  * value1: fX        value2: fX        -> result: const fX
-            //  * value1: {integer} value2: iX        -> result: const iX
-            //  * value1: {integer} value2: uX        -> result: const uX
-            //  * value1: {integer} value2: fX        -> result: const fX
-            //  * value1: iX        value2: {integer} -> result: const iX
-            //  * value1: uX        value2: {integer} -> result: const uX
-            //  * value1: fX        value2: {integer} -> result: const fX
+            //  * value1: {integer} value2: {integer} -> result: int
+            //  * value1: iX        value2: iX        -> result: iX
+            //  * value1: uX        value2: uX        -> result: uX
+            //  * value1: fX        value2: fX        -> result: fX
+            //  * value1: {integer} value2: iX        -> result: iX
+            //  * value1: {integer} value2: uX        -> result: uX
+            //  * value1: {integer} value2: fX        -> result: fX
+            //  * value1: iX        value2: {integer} -> result: iX
+            //  * value1: uX        value2: {integer} -> result: uX
+            //  * value1: fX        value2: {integer} -> result: fX
             // note: value may be const or non-const
             TokenKind::Plus => {
                 if (lhs.taipe.is_integer() || lhs.taipe.is_float())
@@ -1939,7 +1962,8 @@ impl<'a> Analyzer<'a> {
                         return_err!();
                     }
                     Ok(Context {
-                        taipe: lhs.taipe.add_const(),
+                        is_lvalue: false,
+                        taipe: lhs.taipe.remove_const(),
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
                         {
@@ -1960,16 +1984,16 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the result of arithmetic subtraction of two values
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const int
-            //  * value1: iX        value2: iX        -> result: const iX
-            //  * value1: uX        value2: uX        -> result: const uX
-            //  * value1: fX        value2: fX        -> result: const fX
-            //  * value1: {integer} value2: iX        -> result: const iX
-            //  * value1: {integer} value2: uX        -> result: const uX
-            //  * value1: {integer} value2: fX        -> result: const fX
-            //  * value1: iX        value2: {integer} -> result: const iX
-            //  * value1: uX        value2: {integer} -> result: const uX
-            //  * value1: fX        value2: {integer} -> result: const fX
+            //  * value1: {integer} value2: {integer} -> result: int
+            //  * value1: iX        value2: iX        -> result: iX
+            //  * value1: uX        value2: uX        -> result: uX
+            //  * value1: fX        value2: fX        -> result: fX
+            //  * value1: {integer} value2: iX        -> result: iX
+            //  * value1: {integer} value2: uX        -> result: uX
+            //  * value1: {integer} value2: fX        -> result: fX
+            //  * value1: iX        value2: {integer} -> result: iX
+            //  * value1: uX        value2: {integer} -> result: uX
+            //  * value1: fX        value2: {integer} -> result: fX
             // note: value may be const or non-const
             TokenKind::Minus => {
                 if (lhs.taipe.is_integer() || lhs.taipe.is_float())
@@ -1982,7 +2006,8 @@ impl<'a> Analyzer<'a> {
                         return_err!();
                     }
                     Ok(Context {
-                        taipe: lhs.taipe.add_const(),
+                        is_lvalue: false,
+                        taipe: lhs.taipe.remove_const(),
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
                         {
@@ -2003,16 +2028,16 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the arithmetic product of two values
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const int
-            //  * value1: iX        value2: iX        -> result: const iX
-            //  * value1: uX        value2: uX        -> result: const uX
-            //  * value1: fX        value2: fX        -> result: const fX
-            //  * value1: {integer} value2: iX        -> result: const iX
-            //  * value1: {integer} value2: uX        -> result: const uX
-            //  * value1: {integer} value2: fX        -> result: const fX
-            //  * value1: iX        value2: {integer} -> result: const iX
-            //  * value1: uX        value2: {integer} -> result: const uX
-            //  * value1: fX        value2: {integer} -> result: const fX
+            //  * value1: {integer} value2: {integer} -> result: int
+            //  * value1: iX        value2: iX        -> result: iX
+            //  * value1: uX        value2: uX        -> result: uX
+            //  * value1: fX        value2: fX        -> result: fX
+            //  * value1: {integer} value2: iX        -> result: iX
+            //  * value1: {integer} value2: uX        -> result: uX
+            //  * value1: {integer} value2: fX        -> result: fX
+            //  * value1: iX        value2: {integer} -> result: iX
+            //  * value1: uX        value2: {integer} -> result: uX
+            //  * value1: fX        value2: {integer} -> result: fX
             // note: value may be const or non-const
             TokenKind::Star => {
                 if (lhs.taipe.is_integer() || lhs.taipe.is_float())
@@ -2025,6 +2050,7 @@ impl<'a> Analyzer<'a> {
                         return_err!();
                     }
                     Ok(Context {
+                        is_lvalue: false,
                         taipe: lhs.taipe.add_const(),
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
@@ -2046,16 +2072,16 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the quotient of the arithmetic division of two values
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const int
-            //  * value1: iX        value2: iX        -> result: const iX
-            //  * value1: uX        value2: uX        -> result: const uX
-            //  * value1: fX        value2: fX        -> result: const fX
-            //  * value1: {integer} value2: iX        -> result: const iX
-            //  * value1: {integer} value2: uX        -> result: const uX
-            //  * value1: {integer} value2: fX        -> result: const fX
-            //  * value1: iX        value2: {integer} -> result: const iX
-            //  * value1: uX        value2: {integer} -> result: const uX
-            //  * value1: fX        value2: {integer} -> result: const fX
+            //  * value1: {integer} value2: {integer} -> result: int
+            //  * value1: iX        value2: iX        -> result: iX
+            //  * value1: uX        value2: uX        -> result: uX
+            //  * value1: fX        value2: fX        -> result: fX
+            //  * value1: {integer} value2: iX        -> result: iX
+            //  * value1: {integer} value2: uX        -> result: uX
+            //  * value1: {integer} value2: fX        -> result: fX
+            //  * value1: iX        value2: {integer} -> result: iX
+            //  * value1: uX        value2: {integer} -> result: uX
+            //  * value1: fX        value2: {integer} -> result: fX
             // note: value may be const or non-const
             TokenKind::Slash => {
                 if (lhs.taipe.is_integer() || lhs.taipe.is_float())
@@ -2068,6 +2094,7 @@ impl<'a> Analyzer<'a> {
                         return_err!();
                     }
                     Ok(Context {
+                        is_lvalue: false,
                         taipe: lhs.taipe.add_const(),
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
@@ -2089,13 +2116,13 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Returns the arithmetic modulo of two values
             // value1, value2 and result can be:
-            //  * value1: {integer} value2: {integer} -> result: const int
-            //  * value1: iX        value2: iX        -> result: const iX
-            //  * value1: uX        value2: uX        -> result: const uX
-            //  * value1: {integer} value2: iX        -> result: const iX
-            //  * value1: {integer} value2: uX        -> result: const uX
-            //  * value1: iX        value2: {integer} -> result: const iX
-            //  * value1: uX        value2: {integer} -> result: const uX
+            //  * value1: {integer} value2: {integer} -> result: int
+            //  * value1: iX        value2: iX        -> result: iX
+            //  * value1: uX        value2: uX        -> result: uX
+            //  * value1: {integer} value2: iX        -> result: iX
+            //  * value1: {integer} value2: uX        -> result: uX
+            //  * value1: iX        value2: {integer} -> result: iX
+            //  * value1: uX        value2: {integer} -> result: uX
             // note: value may be const or non-const
             TokenKind::Percent => {
                 if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
@@ -2106,6 +2133,7 @@ impl<'a> Analyzer<'a> {
                         return_err!();
                     }
                     Ok(Context {
+                        is_lvalue: false,
                         taipe: lhs.taipe.add_const(),
                         value: if let Some(lhs_value) = lhs.value.clone()
                             && let Some(rhs_value) = rhs.value.clone()
@@ -2136,13 +2164,14 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Negates a signed integer or float
             // value and result can be:
-            //  * value: {integer} -> result: const int
-            //  * value: iX        -> result: const iX
-            //  * value: fX        -> result: const fX
+            //  * value: {integer} -> result: int
+            //  * value: iX        -> result: iX
+            //  * value: fX        -> result: fX
             // note: value may be const or non-const
             TokenKind::Minus => match ctx.taipe.remove_const() {
                 context::Type::VarInt => Ok(Context {
-                    taipe: self.type_int.clone().add_const(),
+                    is_lvalue: false,
+                    taipe: self.type_int.clone(),
                     value: if let Some(value) = ctx.value {
                         Some(self.transform_varint_to_int(&value, expr)?.negate())
                     } else {
@@ -2156,7 +2185,8 @@ impl<'a> Analyzer<'a> {
                 | context::Type::Int128
                 | context::Type::Float32
                 | context::Type::Float64 => Ok(Context {
-                    taipe: ctx.taipe.add_const(),
+                    is_lvalue: false,
+                    taipe: ctx.taipe,
                     value: ctx.value.map(|value| value.negate()),
                 }),
                 context::Type::Uint8
@@ -2187,13 +2217,14 @@ impl<'a> Analyzer<'a> {
             // Description:
             //    Flips all the bits of an signed or unsigned integer
             // value and result can be:
-            //  * value: {integer} -> result: const int
-            //  * value: iX        -> result: const iX
-            //  * value: uX        -> result: const uX
+            //  * value: {integer} -> result: int
+            //  * value: iX        -> result: iX
+            //  * value: uX        -> result: uX
             // note: value may be const or non-const
             TokenKind::Tilde => match ctx.taipe.remove_const() {
                 context::Type::VarInt => Ok(Context {
-                    taipe: self.type_int.clone().add_const(),
+                    is_lvalue: false,
+                    taipe: self.type_int.clone(),
                     value: if let Some(value) = ctx.value {
                         Some(self.transform_varint_to_int(&value, expr)?.flip_bits())
                     } else {
@@ -2210,7 +2241,8 @@ impl<'a> Analyzer<'a> {
                 | context::Type::Uint32
                 | context::Type::Uint64
                 | context::Type::Uint128 => Ok(Context {
-                    taipe: ctx.taipe.add_const(),
+                    is_lvalue: false,
+                    taipe: ctx.taipe,
                     value: ctx.value.map(|value| value.flip_bits()),
                 }),
                 _ => {
@@ -2234,6 +2266,7 @@ impl<'a> Analyzer<'a> {
             // There are many edge cases and memory safety violation
             TokenKind::Star => match ctx.taipe.remove_const() {
                 context::Type::Pointer(taipe) => Ok(Context {
+                    is_lvalue: true,
                     taipe: *taipe,
                     value: None,
                 }),
@@ -2281,14 +2314,21 @@ impl<'a> Analyzer<'a> {
                         expr,
                     ));
                 }
-                match ctx.taipe {
+                if !ctx.is_lvalue {
+                    return Err(
+                        self.make_err("cannot take address of a prvalue (pure rvalue)", expr)
+                    );
+                }
+                match ctx.taipe.remove_const() {
                     context::Type::VarInt => Ok(Context {
+                        is_lvalue: false,
                         taipe: context::Type::Pointer(Box::new(context::Type::Const(Box::new(
                             self.type_int.clone(),
                         )))),
                         value: None,
                     }),
                     _ => Ok(Context {
+                        is_lvalue: false,
                         taipe: context::Type::Pointer(Box::new(ctx.taipe)),
                         value: None,
                     }),
@@ -2430,28 +2470,26 @@ impl<'a> Analyzer<'a> {
             //    Returns the logical opposite of value
             //    for example: `true` gives `false` and `false` gives `true`
             // value and result can be:
-            //  * value: bool      -> result: const bool
-            //  * value: T         -> result: const bool
-            //      T must be implicitly convertible to bool
+            //  * value: bool      -> result: bool
             // note: value may be const or non-const
             TokenKind::Not => {
-                let lhs = context::Type::Bool;
-                let lhs_line_info = LineInfo::from_range(op, expr);
-                let rhs = ctx;
-                let rhs_line_info = expr.get_line_info();
-                let mut ctx = self.resolve_assign(
-                    Some((lhs, lhs_line_info)),
-                    None,
-                    Some((rhs, rhs_line_info)),
-                )?;
                 // comptime: perform logical not
-                ctx.value = ctx.value.map(|value| match value {
-                    context::Value::Bool(b) => context::Value::Bool(!b),
-                    _ => unreachable!("probably some analyzer bug"),
-                });
+                if !ctx.taipe.is_bool() {
+                    return Err(self.make_err(
+                        format!(
+                            "cannot use not operator on type '{}'",
+                            ctx.taipe.to_string()
+                        ),
+                        expr,
+                    ));
+                }
                 Ok(Context {
-                    taipe: context::Type::Const(Box::new(context::Type::Bool)),
-                    value: ctx.value,
+                    is_lvalue: false,
+                    taipe: context::Type::Bool,
+                    value: ctx.value.map(|value| match value {
+                        context::Value::Bool(b) => context::Value::Bool(!b),
+                        _ => unreachable!("probably some analyzer bug"),
+                    }),
                 })
             }
             _ => unreachable!("probably some parser bug"),
@@ -2767,6 +2805,7 @@ impl<'a> Analyzer<'a> {
         // otherwise int if there no lhs type info
         if let Some((
             Context {
+                is_lvalue: _,
                 taipe: ref mut rhs_type,
                 value: ref mut rhs_value,
             },
@@ -2809,6 +2848,7 @@ impl<'a> Analyzer<'a> {
                             ));
                         }
                         Ok(Context {
+                            is_lvalue: false,
                             taipe: rhs.taipe.add_const(),
                             value: rhs.value,
                         })
@@ -2823,6 +2863,7 @@ impl<'a> Analyzer<'a> {
                             return Err(self.make_err("expected ':'", eq_token));
                         }
                         Ok(Context {
+                            is_lvalue: false,
                             taipe: lhs,
                             value: rhs.value,
                         })
@@ -2839,6 +2880,7 @@ impl<'a> Analyzer<'a> {
             (Some((lhs, _)), None) => {
                 assert!(eq_token.is_none());
                 Ok(Context {
+                    is_lvalue: false,
                     taipe: lhs,
                     value: None,
                 })
@@ -3025,6 +3067,7 @@ impl<'a> Analyzer<'a> {
                 }
                 let lhs = (**lhs_const).clone();
                 let rhs = Context {
+                    is_lvalue: false,
                     taipe: (**rhs_const).clone(),
                     value: rhs.value.clone(),
                 };
@@ -3054,6 +3097,7 @@ impl<'a> Analyzer<'a> {
                     return_err!();
                 }
                 let rhs = Context {
+                    is_lvalue: false,
                     taipe: (**rhs_const).clone(),
                     value: rhs.value.clone(),
                 };
@@ -3076,6 +3120,7 @@ impl<'a> Analyzer<'a> {
                 assert!(rhs.value.is_none());
                 let lhs = (**lhs_ptr).clone();
                 let rhs = Context {
+                    is_lvalue: false,
                     taipe: (**rhs_ptr).clone(),
                     value: rhs.value.clone(),
                 };
@@ -3119,6 +3164,7 @@ impl<'a> Analyzer<'a> {
             lhs = lhs.add_const();
         }
         Ok(Context {
+            is_lvalue: false,
             taipe: lhs,
             value: rhs.value,
         })
@@ -3452,6 +3498,7 @@ impl<'a> Analyzer<'a> {
             ));
         };
         Ok(Context {
+            is_lvalue: false,
             taipe: self.type_usize.clone(),
             value: Some(value),
         })
