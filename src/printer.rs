@@ -584,7 +584,6 @@ impl AstPrinter {
                 label,
                 expr,
                 then_body,
-                else_body,
             } => {
                 write!(self, "::While")?;
                 if let Some(tok) = label {
@@ -592,9 +591,6 @@ impl AstPrinter {
                 }
                 self.print_expr("expr", expr)?;
                 self.print_stmt("then_body", then_body)?;
-                if let Some(stmt) = else_body {
-                    self.print_stmt("else_body", stmt)?;
-                }
             }
             ast::Stmt::Block {
                 line_info: _,
@@ -615,14 +611,11 @@ impl AstPrinter {
                     self.print_tok("label", tok)?;
                 }
             }
-            ast::Stmt::Break { token, label, expr } => {
+            ast::Stmt::Break { token, label } => {
                 write!(self, "::Break")?;
                 self.print_tok("token", token)?;
                 if let Some(tok) = label {
                     self.print_tok("label", tok)?;
-                }
-                if let Some(expr) = expr {
-                    self.print_expr("expr", expr)?;
                 }
             }
             ast::Stmt::Return { token, expr } => {

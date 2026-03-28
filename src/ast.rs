@@ -69,7 +69,6 @@ pub enum Stmt {
         label: Option<Token>,
         expr: Expr,
         then_body: Box<Stmt>,
-        else_body: Option<Box<Stmt>>,
     },
     Block {
         line_info: LineInfo,
@@ -86,7 +85,6 @@ pub enum Stmt {
     Break {
         token: Token,
         label: Option<Token>,
-        expr: Option<Expr>,
     },
     Return {
         token: Token,
@@ -300,7 +298,6 @@ impl HasLineInfo for Stmt {
                 label: _,
                 expr: _,
                 then_body: _,
-                else_body: _,
             } => *line_info,
             Stmt::Block {
                 line_info,
@@ -314,10 +311,8 @@ impl HasLineInfo for Stmt {
                     token.get_line_info()
                 }
             }
-            Stmt::Break { token, label, expr } => {
-                if let Some(e) = expr {
-                    LineInfo::from_range(token, e)
-                } else if let Some(l) = label {
+            Stmt::Break { token, label } => {
+                if let Some(l) = label {
                     LineInfo::from_range(token, l)
                 } else {
                     token.get_line_info()

@@ -646,44 +646,11 @@ impl<'a> Analyzer<'a> {
                 else_body,
             } => self.visit_if_stmt(expr, then_body, else_body.as_ref().map(|s| &**s)),
             ast::Stmt::While {
-                line_info,
+                line_info: _,
                 label,
                 expr,
                 then_body,
-                else_body,
-            } => {
-                let cond = self.visit_expr(expr)?;
-                if !cond.taipe.is_bool() {
-                    return Err(self.make_err(
-                        format!(
-                            "expected value of type '{}' but got value of type '{}'",
-                            context::Type::Bool.to_string(),
-                            cond.to_string()
-                        ),
-                        expr,
-                    ));
-                }
-                // TODO: check then_body_result.taipe == Noreturn, Void, others
-                self.mut_current_function_data(|data| {
-                    if let Some(label) = label {
-                        data.loop_stack
-                            .insert(label.text.clone(), scope::LoopInfo {});
-                    } else {
-                        data.loop_stack.insert(
-                            format!(
-                                "loop.{}$",
-                                LOOP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                            ),
-                            scope::LoopInfo {},
-                        );
-                    }
-                });
-                let then_body_result = self.visit_stmt(then_body)?;
-                self.mut_current_function_data(|data| {
-                    data.loop_stack.pop();
-                });
-                Ok(Context::from_void())
-            }
+            } => self.visit_while_stmt(label.as_ref(), expr, then_body),
             ast::Stmt::Block { line_info, stmts } => self.visit_block(*line_info, stmts),
             ast::Stmt::Yield { token: _, expr } => Ok(self.visit_expr(expr)?),
             ast::Stmt::Continue { token, label } => self.use_current_function_data(|data| {
@@ -700,33 +667,30 @@ impl<'a> Analyzer<'a> {
                         }
                         return Err(self
                             .make_err(format!("undefined loop label '{}'", label.text), label)
-                            .chain(self.make_did_you_mean_err(&label.text, &searched_names)));
+                            .chain(self.make_did_you_mean_help(&label.text, &searched_names)));
                     }
                 }
                 Ok(Context::from_noreturn())
             }),
-            ast::Stmt::Break { token, label, expr } => {
-                // TODO: check expr
-                self.use_current_function_data(|data| {
-                    if data.loop_stack.is_empty() {
-                        return Err(
-                            self.make_err(format!("'{}' can be used only in a loop", token.text), node)
-                        );
-                    }
-                    if let Some(label) = label {
-                        if !data.loop_stack.contains_key(&label.text) {
-                            let mut searched_names = HashSet::new();
-                            for (name, _) in &data.loop_stack {
-                                searched_names.insert(name.clone());
-                            }
-                            return Err(self
-                                .make_err(format!("undefined loop label '{}'", label.text), label)
-                                .chain(self.make_did_you_mean_err(&label.text, &searched_names)));
+            ast::Stmt::Break { token, label } => self.use_current_function_data(|data| {
+                if data.loop_stack.is_empty() {
+                    return Err(
+                        self.make_err(format!("'{}' can be used only in a loop", token.text), node)
+                    );
+                }
+                if let Some(label) = label {
+                    if !data.loop_stack.contains_key(&label.text) {
+                        let mut searched_names = HashSet::new();
+                        for (name, _) in &data.loop_stack {
+                            searched_names.insert(name.clone());
                         }
+                        return Err(self
+                            .make_err(format!("undefined loop label '{}'", label.text), label)
+                            .chain(self.make_did_you_mean_help(&label.text, &searched_names)));
                     }
-                    Ok(Context::from_noreturn())
-                })
-            },
+                }
+                Ok(Context::from_noreturn())
+            }),
             ast::Stmt::Return { token, expr } => self.visit_return(token, expr.as_ref()),
             ast::Stmt::Decl(decl) => {
                 self.visit_decl(decl, false)?;
@@ -737,6 +701,58 @@ impl<'a> Analyzer<'a> {
                 Ok(Context::from_void())
             }
             ast::Stmt::Nop(_) => Ok(Context::from_void()),
+        }
+    }
+
+    fn visit_while_stmt(
+        &mut self,
+        label: Option<&Token>,
+        expr: &'a ast::Expr,
+        then_body: &'a ast::Stmt,
+    ) -> Result<Context<'a>, CompileError> {
+        let cond = self.visit_expr(expr)?;
+        if !cond.taipe.is_bool() {
+            return Err(self.make_err(
+                format!(
+                    "expected value of type '{}' but got value of type '{}'",
+                    context::Type::Bool.to_string(),
+                    cond.to_string()
+                ),
+                expr,
+            ));
+        }
+        // TODO: check then_body_result.taipe == Noreturn, Void, others
+        self.mut_current_function_data(|data| {
+            if let Some(label) = label {
+                data.loop_stack
+                    .insert(label.text.clone(), scope::LoopInfo {});
+            } else {
+                data.loop_stack.insert(
+                    format!(
+                        "loop.{}$",
+                        LOOP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    ),
+                    scope::LoopInfo {},
+                );
+            }
+        });
+        let then_body_result = self.visit_stmt(then_body)?;
+        self.mut_current_function_data(|data| {
+            data.loop_stack.pop();
+        });
+        if then_body_result.taipe.is_noreturn() {
+            Ok(Context::from_noreturn())
+        } else if then_body_result.taipe.is_void() {
+            Ok(Context::from_void())
+        } else {
+            Err(self.make_err(
+                format!(
+                    "expected '{}' but got '{}'",
+                    context::Type::Void.to_string(),
+                    then_body_result.to_string()
+                ),
+                then_body,
+            ))
         }
     }
 
@@ -3417,7 +3433,7 @@ impl<'a> Analyzer<'a> {
                     ),
                     name,
                 )
-                .chain(self.make_did_you_mean_err(&name.text, &searched_names)))
+                .chain(self.make_did_you_mean_help(&name.text, &searched_names)))
         }
     }
 
@@ -3474,7 +3490,7 @@ impl<'a> Analyzer<'a> {
         } else {
             Err(self
                 .make_err("undefined reference", name)
-                .chain(self.make_did_you_mean_err(&name.text, &searched_names)))
+                .chain(self.make_did_you_mean_help(&name.text, &searched_names)))
         }
     }
 
@@ -3722,7 +3738,7 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn make_did_you_mean_err(&self, name: &str, searched_names: &HashSet<String>) -> CompileError {
+    fn make_did_you_mean_help(&self, name: &str, searched_names: &HashSet<String>) -> CompileError {
         let maybe = fuzzy_search_best(name, &searched_names, None);
         if maybe.len() == 1 {
             self.make_help(format!("did you mean '{}'?", maybe.iter().next().unwrap()))

@@ -369,7 +369,7 @@ impl Parser {
     //       | block
     //       | 'yield' expr ';'
     //       | 'continue' label? ';'
-    //       | 'break' label? expr? ';'
+    //       | 'break' label? ';'
     //       | 'return' expr? ';'
     //       | expr_or_assign ';'
     //       | ';'
@@ -418,9 +418,8 @@ impl Parser {
                     } else {
                         None
                     };
-                    let expr = self.rule_optional(Self::parse_expr);
                     self.expect_term()?;
-                    Ok(ast::Stmt::Break { token, label, expr })
+                    Ok(ast::Stmt::Break { token, label })
                 }
                 Return => {
                     let token = self.get_token()?;
@@ -491,7 +490,7 @@ impl Parser {
         })
     }
 
-    // while_stmt ::= label? 'while' expr block ('else' block)?;
+    // while_stmt ::= label? 'while' expr block;
     fn parse_while_stmt(&mut self) -> CompileResult<ast::Stmt> {
         let label = if let Some(tok) = self.peek()
             && tok.kind == Label
@@ -503,21 +502,12 @@ impl Parser {
         let start = self.expect(While)?;
         let expr = self.parse_expr()?;
         let then_body = Box::new(self.parse_block()?);
-        let else_body = if let Some(tok) = self.peek()
-            && tok.kind == Else
-        {
-            self.get_token()?;
-            Some(Box::new(self.parse_block()?))
-        } else {
-            None
-        };
         let end = self.cur().unwrap();
         Ok(ast::Stmt::While {
             line_info: LineInfo::from_range(label.as_ref().unwrap_or(&start), &end),
             label,
             expr,
             then_body,
-            else_body,
         })
     }
 
