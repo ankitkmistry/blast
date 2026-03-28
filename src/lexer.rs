@@ -502,7 +502,7 @@ impl Lexer {
             .unwrap();
         Ok(self.make_token_with_val(
             TokenKind::IntLit,
-            Some(TokenValue::Int(Int::parse(&buf, radix, signed, size))),
+            Some(TokenValue::Int(Int::parse(&buf, radix))),
         ))
     }
 

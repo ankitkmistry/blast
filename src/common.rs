@@ -170,154 +170,36 @@ impl Default for Layout {
 #[derive(Clone, Debug)]
 pub struct Int {
     pub num: BigInt,
-    max: Option<BigInt>,
-    min: Option<BigInt>,
 }
 
 impl Int {
     pub fn new() -> Self {
         Self {
             num: BigInt::ZERO,
-            max: None,
-            min: None,
         }
     }
 
-    // pub fn from_i8(num: i8) -> Self {
-    //     Self {
-    //         num: num.to_bigint().unwrap(),
-    //         max: i8::MAX.to_bigint(),
-    //         min: i8::MIN.to_bigint(),
-    //     }
-    // }
-    //
-    // pub fn from_i16(num: i16) -> Self {
-    //     Self {
-    //         num: num.to_bigint().unwrap(),
-    //         max: i16::MAX.to_bigint(),
-    //         min: i16::MIN.to_bigint(),
-    //     }
-    // }
-    //
-    // pub fn from_i32(num: i32) -> Self {
-    //     Self {
-    //         num: num.to_bigint().unwrap(),
-    //         max: i32::MAX.to_bigint(),
-    //         min: i32::MIN.to_bigint(),
-    //     }
-    // }
-    //
-    // pub fn from_i64(num: i64) -> Self {
-    //     Self {
-    //         num: num.to_bigint().unwrap(),
-    //         max: i64::MAX.to_bigint(),
-    //         min: i64::MIN.to_bigint(),
-    //     }
-    // }
-
-    pub fn parse(buf: &[u8], radix: u32, signed: bool, size: u32) -> Self {
-        let max = match size {
-            8 => {
-                if signed {
-                    i8::MAX.to_bigint()
-                } else {
-                    u8::MAX.to_bigint()
-                }
-            }
-            16 => {
-                if signed {
-                    i16::MAX.to_bigint()
-                } else {
-                    u16::MAX.to_bigint()
-                }
-            }
-            32 => {
-                if signed {
-                    i32::MAX.to_bigint()
-                } else {
-                    u32::MAX.to_bigint()
-                }
-            }
-            64 => {
-                if signed {
-                    i64::MAX.to_bigint()
-                } else {
-                    u64::MAX.to_bigint()
-                }
-            }
-            _ => None,
-        };
-        let min = match size {
-            8 => {
-                if signed {
-                    i8::MIN.to_bigint()
-                } else {
-                    u8::MIN.to_bigint()
-                }
-            }
-            16 => {
-                if signed {
-                    i16::MIN.to_bigint()
-                } else {
-                    u16::MIN.to_bigint()
-                }
-            }
-            32 => {
-                if signed {
-                    i32::MIN.to_bigint()
-                } else {
-                    u32::MIN.to_bigint()
-                }
-            }
-            64 => {
-                if signed {
-                    i64::MIN.to_bigint()
-                } else {
-                    u64::MIN.to_bigint()
-                }
-            }
-            _ => None,
-        };
-        Self::parse_helper(buf, radix, max, min)
+    pub fn parse(buf: &[u8], radix: u32) -> Self {
+        Self::parse_helper(buf, radix)
     }
 
     pub fn parse_arbitrary(buf: &[u8], radix: u32) -> Self {
-        Self::parse_helper(buf, radix, None, None)
+        Self::parse_helper(buf, radix)
     }
 
-    fn parse_helper(buf: &[u8], radix: u32, max: Option<BigInt>, min: Option<BigInt>) -> Self {
+    fn parse_helper(buf: &[u8], radix: u32) -> Self {
         Self {
             num: BigInt::parse_bytes(buf, radix).unwrap(),
-            max,
-            min,
         }
     }
 
     pub fn from_arbitrary(num: u64) -> Self {
-        Self::from_helper(num, None, None)
+        Self::from_helper(num)
     }
 
-    pub fn from_f32(num: f32) -> Self {
+    fn from_helper(num: u64) -> Self {
         Self {
             num: num.to_bigint().unwrap(),
-            max: None,
-            min: None,
-        }
-    }
-
-    pub fn from_f64(num: f64) -> Self {
-        Self {
-            num: num.to_bigint().unwrap(),
-            max: None,
-            min: None,
-        }
-    }
-
-    fn from_helper(num: u64, max: Option<BigInt>, min: Option<BigInt>) -> Self {
-        Self {
-            num: num.to_bigint().unwrap(),
-            max,
-            min,
         }
     }
 

@@ -1,5 +1,6 @@
 use std::{
     cell::{Ref, RefCell},
+    cmp::Ordering,
     collections::{HashMap, HashSet},
     rc::Rc,
     sync::atomic::AtomicU64,
@@ -449,7 +450,10 @@ impl<'a> Analyzer<'a> {
                     //     using A;
                     //     bar: i32;
                     // }
-                    ast::Object::Compound { line_info, field } => {
+                    ast::Object::Compound {
+                        line_info: _,
+                        field,
+                    } => {
                         colon_compulsory!(self, eq_token);
                         // Visit type
                         if let Some(taipe) = taipe {
@@ -1419,12 +1423,6 @@ impl<'a> Analyzer<'a> {
     }
 
     // Handles the following thing
-    //
-    //  * lhs: {integer} rhs: {integer} -> lhs: int  rhs: int
-    //  * lhs: {integer} rhs: iX        -> lhs: iX   rhs: iX
-    //  * lhs: {integer} rhs: uX        -> lhs: uX   rhs: uX
-    //  * lhs: {integer} rhs: fX        -> lhs: fX   rhs: fX
-    //
     //  * lhs: {integer} rhs: {integer} -> lhs: int  rhs: int
     //  * lhs: {integer} rhs: iX        -> lhs: iX   rhs: iX
     //  * lhs: {integer} rhs: uX        -> lhs: uX   rhs: uX
@@ -1432,6 +1430,12 @@ impl<'a> Analyzer<'a> {
     //  * lhs: iX        rhs: {integer} -> lhs: iX   rhs: iX
     //  * lhs: uX        rhs: {integer} -> lhs: uX   rhs: uX
     //  * lhs: fX        rhs: {integer} -> lhs: fX   rhs: fX
+    //
+    // In other words handles this, if not matched then flips it and checks again
+    //  * lhs: {integer} rhs: {integer} -> lhs: int  rhs: int
+    //  * lhs: {integer} rhs: iX        -> lhs: iX   rhs: iX
+    //  * lhs: {integer} rhs: uX        -> lhs: uX   rhs: uX
+    //  * lhs: {integer} rhs: fX        -> lhs: fX   rhs: fX
     fn resolve_value_promotion(
         &self,
         lhs: &mut Context<'a>,
@@ -1513,24 +1517,192 @@ impl<'a> Analyzer<'a> {
         }
 
         match op.kind {
-            // // Logical
-            // TokenKind::And => todo!(),
-            // TokenKind::Or => todo!(),
-            // // Relational
-            // TokenKind::LAngle => todo!(),
-            // TokenKind::LessEq => todo!(),
-            // TokenKind::EqEq => todo!(),
-            // TokenKind::NotEq => todo!(),
-            // TokenKind::GreaterEq => todo!(),
-            // TokenKind::RAngle => todo!(),
-
-            // Bitwise
-
+            // Binary logical and operator
+            //    result = (value1) and (value2)
+            // Description:
+            //    Returns the result of logical short-circuiting and of two bools
+            // value1, value2 and result can be:
+            //  * value1: bool      value2: bool      -> result: const bool
+            // note: value may be const or non-const
+            // TODO: implement short circuiting
+            TokenKind::And => {
+                if !lhs.taipe.is_bool() || !rhs.taipe.is_bool() {
+                    return_err!();
+                }
+                Ok(Context {
+                    taipe: context::Type::Const(Box::new(context::Type::Bool)),
+                    value: if let Some(lhs_value) = lhs.value
+                        && let Some(rhs_value) = rhs.value
+                    {
+                        let context::Value::Bool(lhs_value) = lhs_value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let context::Value::Bool(rhs_value) = rhs_value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        Some(context::Value::Bool(lhs_value && rhs_value))
+                    } else {
+                        None
+                    },
+                })
+            }
+            // Binary logical and operator
+            //    result = (value1) and (value2)
+            // Description:
+            //    Returns the result of logical short-circuiting and of two bools
+            // value1, value2 and result can be:
+            //  * value1: bool      value2: bool      -> result: const bool
+            // note: value may be const or non-const
+            // TODO: implement short circuiting
+            TokenKind::Or => {
+                if !lhs.taipe.is_bool() || !rhs.taipe.is_bool() {
+                    return_err!();
+                }
+                Ok(Context {
+                    taipe: context::Type::Const(Box::new(context::Type::Bool)),
+                    value: if let Some(lhs_value) = lhs.value
+                        && let Some(rhs_value) = rhs.value
+                    {
+                        let context::Value::Bool(lhs_value) = lhs_value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let context::Value::Bool(rhs_value) = rhs_value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        Some(context::Value::Bool(lhs_value || rhs_value))
+                    } else {
+                        None
+                    },
+                })
+            }
+            // Binary relational operators
+            //    result = (value1) <  (value2)
+            //    result = (value1) <= (value2)
+            //    result = (value1) == (value2)
+            //    result = (value1) != (value2)
+            //    result = (value1) >  (value2)
+            //    result = (value1) >= (value2)
+            // Description:
+            //    Returns the result of comparison of two values
+            // value1, value2 and result can be:
+            //  * value1: {integer} value2: {integer} -> result: const bool
+            //  * value1: iX        value2: iX        -> result: const bool
+            //  * value1: uX        value2: uX        -> result: const bool
+            //  * value1: fX        value2: fX        -> result: const bool
+            //  * value1: {integer} value2: iX        -> result: const bool
+            //  * value1: {integer} value2: uX        -> result: const bool
+            //  * value1: {integer} value2: fX        -> result: const bool
+            //  * value1: iX        value2: {integer} -> result: const bool
+            //  * value1: uX        value2: {integer} -> result: const bool
+            //  * value1: fX        value2: {integer} -> result: const bool
+            //
+            //  * value1: bool      value2: bool      -> result: const bool
+            //  * value1: char      value2: char      -> result: const bool
+            //  * value1: typedef   value2: typedef   -> result: const bool
+            //  * value1: *T        value2: *T        -> result: const bool
+            //  * value1: *const T  value2: *const T  -> result: const bool
+            // note: value may be const or non-const
+            TokenKind::LAngle
+            | TokenKind::LessEq
+            | TokenKind::EqEq
+            | TokenKind::NotEq
+            | TokenKind::GreaterEq
+            | TokenKind::RAngle => {
+                let mut lhs = lhs.clone();
+                let mut rhs = rhs.clone();
+                if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
+                    return_err!();
+                }
+                self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
+                let mut value: Option<context::Value<'a>> = None;
+                match lhs.taipe.remove_const() {
+                    context::Type::Bool
+                    | context::Type::Char
+                    | context::Type::Int8
+                    | context::Type::Int16
+                    | context::Type::Int32
+                    | context::Type::Int64
+                    | context::Type::Int128
+                    | context::Type::Uint8
+                    | context::Type::Uint16
+                    | context::Type::Uint32
+                    | context::Type::Uint64
+                    | context::Type::Uint128
+                    | context::Type::Float32
+                    | context::Type::Float64 => {
+                        if let Some(ref lhs_value) = lhs.value
+                            && let Some(ref rhs_value) = rhs.value
+                        {
+                            let ord = lhs_value.compare(rhs_value);
+                            // Refer to: https://doc.rust-lang.org/std/cmp/trait.PartialOrd.html
+                            value = Some(context::Value::Bool(match op.kind {
+                                TokenKind::EqEq => match ord {
+                                    Some(Ordering::Equal) => true,
+                                    _ => false,
+                                },
+                                TokenKind::LAngle => match ord {
+                                    Some(Ordering::Less) => true,
+                                    _ => false,
+                                },
+                                TokenKind::RAngle => match ord {
+                                    Some(Ordering::Greater) => true,
+                                    _ => false,
+                                },
+                                TokenKind::LessEq => match ord {
+                                    Some(Ordering::Less) | Some(Ordering::Equal) => true,
+                                    _ => false,
+                                },
+                                TokenKind::GreaterEq => match ord {
+                                    Some(Ordering::Greater) | Some(Ordering::Equal) => true,
+                                    _ => false,
+                                },
+                                TokenKind::NotEq => match ord {
+                                    Some(Ordering::Equal) => false,
+                                    _ => true,
+                                },
+                                _ => unreachable!("probably some analyzer bug"),
+                            }));
+                        }
+                        todo!()
+                    }
+                    context::Type::Typedef => {
+                        let Some(lhs_value) = lhs.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let context::Value::Type(lhs_type) = lhs_value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let Some(rhs_value) = rhs.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let context::Value::Type(rhs_type) = rhs_value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        value = Some(context::Value::Bool(lhs_type == rhs_type));
+                    }
+                    context::Type::Pointer(_) => {
+                        if let Some(_lhs_value) = lhs.value {
+                            todo!("pointer comparison is not implemented for compile time")
+                        }
+                    }
+                    // context::Type::Basic(weak) => todo!(),
+                    // context::Type::Array { count, taipe } => todo!(),
+                    // context::Type::Fat(_) => todo!(),
+                    // context::Type::Tuple(items) => todo!(),
+                    _ => {
+                        return_err!();
+                    }
+                }
+                Ok(Context {
+                    taipe: context::Type::Const(Box::new(context::Type::Bool)),
+                    value,
+                })
+            }
             // Binary bitwise and operator
             //    result = (value1) & (value2)
             // Description:
             //    Returns the result of bitwise and of two integers
-            // value and result can be:
+            // value1, value2 and result can be:
             //  * value1: {integer} value2: {integer} -> result: const int
             //  * value1: iX        value2: iX        -> result: const iX
             //  * value1: uX        value2: uX        -> result: const uX
@@ -1560,12 +1732,12 @@ impl<'a> Analyzer<'a> {
                 } else {
                     return_err!();
                 }
-            },
+            }
             // Binary bitwise xor operator
             //    result = (value1) ^ (value2)
             // Description:
             //    Returns the result of bitwise xor of two integers
-            // value and result can be:
+            // value1, value2 and result can be:
             //  * value1: {integer} value2: {integer} -> result: const int
             //  * value1: iX        value2: iX        -> result: const iX
             //  * value1: uX        value2: uX        -> result: const uX
@@ -1595,12 +1767,12 @@ impl<'a> Analyzer<'a> {
                 } else {
                     return_err!();
                 }
-            },
+            }
             // Binary bitwise or operator
             //    result = (value1) | (value2)
             // Description:
             //    Returns the result of bitwise or of two integers
-            // value and result can be:
+            // value1, value2 and result can be:
             //  * value1: {integer} value2: {integer} -> result: const int
             //  * value1: iX        value2: iX        -> result: const iX
             //  * value1: uX        value2: uX        -> result: const uX
@@ -1631,15 +1803,12 @@ impl<'a> Analyzer<'a> {
                     return_err!();
                 }
             }
-
-            // Shift
-
             // Binary bitwise shift left operator
             //    result = (value1) << (value2)
             // Description:
             //    Shifts the bits of an value towards left and fills zero in the right
             //    and returns the value
-            // value and result can be:
+            // value1, value2 and result can be:
             //  * value1: {integer} value2: {integer} -> result: const int
             //  * value1: iX        value2: uX        -> result: const iX
             //  * value1: uX        value2: uX        -> result: const uX
@@ -1694,7 +1863,7 @@ impl<'a> Analyzer<'a> {
             //    Shifts the bits of an value towards right and fills zero in the right
             //    if the value1 is unsigned and sign extends it if the value is signed
             //    and returns the value
-            // value and result can be:
+            // value1, value2 and result can be:
             //  * value1: {integer} value2: {integer} -> result: const int
             //  * value1: iX        value2: uX        -> result: const iX
             //  * value1: uX        value2: uX        -> result: const uX
@@ -1743,14 +1912,11 @@ impl<'a> Analyzer<'a> {
                     return_err!();
                 }
             }
-
-            // Arithmetic
-
             // Binary addition operator
             //    result = (value1) + (value2)
             // Description:
             //    Returns the arithmetic sum of two values
-            // value and result can be:
+            // value1, value2 and result can be:
             //  * value1: {integer} value2: {integer} -> result: const int
             //  * value1: iX        value2: iX        -> result: const iX
             //  * value1: uX        value2: uX        -> result: const uX
@@ -1793,7 +1959,7 @@ impl<'a> Analyzer<'a> {
             //    result = (value1) - (value2)
             // Description:
             //    Returns the result of arithmetic subtraction of two values
-            // value and result can be:
+            // value1, value2 and result can be:
             //  * value1: {integer} value2: {integer} -> result: const int
             //  * value1: iX        value2: iX        -> result: const iX
             //  * value1: uX        value2: uX        -> result: const uX
@@ -1836,7 +2002,7 @@ impl<'a> Analyzer<'a> {
             //    result = (value1) * (value2)
             // Description:
             //    Returns the arithmetic product of two values
-            // value and result can be:
+            // value1, value2 and result can be:
             //  * value1: {integer} value2: {integer} -> result: const int
             //  * value1: iX        value2: iX        -> result: const iX
             //  * value1: uX        value2: uX        -> result: const uX
@@ -1879,7 +2045,7 @@ impl<'a> Analyzer<'a> {
             //    result = (value1) / (value2)
             // Description:
             //    Returns the quotient of the arithmetic division of two values
-            // value and result can be:
+            // value1, value2 and result can be:
             //  * value1: {integer} value2: {integer} -> result: const int
             //  * value1: iX        value2: iX        -> result: const iX
             //  * value1: uX        value2: uX        -> result: const uX
@@ -1922,7 +2088,7 @@ impl<'a> Analyzer<'a> {
             //    result = (value1) % (value2)
             // Description:
             //    Returns the arithmetic modulo of two values
-            // value and result can be:
+            // value1, value2 and result can be:
             //  * value1: {integer} value2: {integer} -> result: const int
             //  * value1: iX        value2: iX        -> result: const iX
             //  * value1: uX        value2: uX        -> result: const uX
@@ -1957,13 +2123,7 @@ impl<'a> Analyzer<'a> {
                 }
             }
             _ => {
-                return Err(self.make_err(
-                    format!(
-                        "sem_analyzer does not understand operator '{}': not implemented yet",
-                        &op.text
-                    ),
-                    op,
-                ));
+                return_err!();
             }
         }
     }

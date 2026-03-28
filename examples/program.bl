@@ -105,13 +105,13 @@ vec3 :: union {
 number :: 0;
 invert := ~number;
 
-i :: 72;
-j : __u32 : 4;
-k :: i >> j;
+i :: 7265465651321354631;
+j :: 4654654651321354631;
+// k :: i + j;
 
 vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {
     // return lhs + rhs;
-    invert = 1 + i;
+    invert = i and j;
 }
 
 main :: fun () -> void {

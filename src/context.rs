@@ -1,5 +1,5 @@
 use core::fmt;
-use std::{cell::RefCell, rc::Weak};
+use std::{cell::RefCell, cmp::Ordering, rc::Weak};
 
 use crate::{common::Int, scope};
 
@@ -120,6 +120,13 @@ impl<'a> Type<'a> {
         }
     }
 
+    pub fn is_bool(&self) -> bool {
+        match self {
+            Type::Bool => true,
+            Type::Const(taipe) => taipe.is_bool(),
+            _ => false,
+        }
+    }
     pub fn is_varint(&self) -> bool {
         match self {
             Type::VarInt => true,
@@ -552,6 +559,25 @@ impl<'a> Value<'a> {
             (Value::Uint32(a), Value::Uint32(b)) => Value::Uint32(a & b),
             (Value::Uint64(a), Value::Uint64(b)) => Value::Uint64(a & b),
             (Value::Uint128(a), Value::Uint128(b)) => Value::Uint128(a & b),
+            _ => panic!("invalid operation on value"),
+        }
+    }
+    pub fn compare(&self, other: &Value<'a>) -> Option<Ordering> {
+        match (self, other) {
+            (Value::Bool(a), Value::Bool(b)) => a.partial_cmp(b),
+            (Value::Char(a), Value::Char(b)) => a.partial_cmp(b),
+            (Value::Int8(a), Value::Int8(b)) => a.partial_cmp(b),
+            (Value::Int16(a), Value::Int16(b)) => a.partial_cmp(b),
+            (Value::Int32(a), Value::Int32(b)) => a.partial_cmp(b),
+            (Value::Int64(a), Value::Int64(b)) => a.partial_cmp(b),
+            (Value::Int128(a), Value::Int128(b)) => a.partial_cmp(b),
+            (Value::Uint8(a), Value::Uint8(b)) => a.partial_cmp(b),
+            (Value::Uint16(a), Value::Uint16(b)) => a.partial_cmp(b),
+            (Value::Uint32(a), Value::Uint32(b)) => a.partial_cmp(b),
+            (Value::Uint64(a), Value::Uint64(b)) => a.partial_cmp(b),
+            (Value::Uint128(a), Value::Uint128(b)) => a.partial_cmp(b),
+            (Value::Float32(a), Value::Float32(b)) => a.partial_cmp(b),
+            (Value::Float64(a), Value::Float64(b)) => a.partial_cmp(b),
             _ => panic!("invalid operation on value"),
         }
     }
