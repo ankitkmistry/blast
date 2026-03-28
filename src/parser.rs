@@ -477,6 +477,7 @@ impl Parser {
         let else_body = if let Some(tok) = self.peek()
             && tok.kind == Else
         {
+            self.get_token()?;
             Some(Box::new(self.parse_block()?))
         } else {
             None
@@ -505,6 +506,7 @@ impl Parser {
         let else_body = if let Some(tok) = self.peek()
             && tok.kind == Else
         {
+            self.get_token()?;
             Some(Box::new(self.parse_block()?))
         } else {
             None

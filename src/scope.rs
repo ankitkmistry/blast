@@ -89,7 +89,11 @@ pub enum Payload<'a> {
 }
 
 #[derive(Clone)]
+pub struct LoopInfo;
+
+#[derive(Clone)]
 pub struct Function {
+    pub loop_stack: IndexMap<String, LoopInfo>,
     pub ret_line_info: Option<LineInfo>,
 }
 

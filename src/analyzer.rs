@@ -6,6 +6,7 @@ use std::{
     sync::atomic::AtomicU64,
 };
 
+use indexmap::IndexMap;
 use num_bigint::{BigInt, ToBigInt};
 use num_traits::cast::ToPrimitive;
 
@@ -24,6 +25,7 @@ use crate::{
 // It should be a member of scope
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static BLOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LOOP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub struct SemResult<'a> {
     pub roots: HashMap<String, Rc<RefCell<scope::Scope<'a>>>>,
@@ -529,6 +531,7 @@ impl<'a> Analyzer<'a> {
                         // Mark it visited
                         scope.borrow_mut().state = scope::State::Visited(ctx.clone());
                         scope.borrow_mut().payload = scope::Payload::Function(scope::Function {
+                            loop_stack: IndexMap::new(),
                             ret_line_info: ret.as_ref().map(|ret| ret.get_line_info()),
                         });
                         // TODO: visit stmts
@@ -637,22 +640,93 @@ impl<'a> Analyzer<'a> {
     fn visit_stmt(&mut self, node: &'a ast::Stmt) -> CompileResult<Context<'a>> {
         match node {
             ast::Stmt::If {
-                line_info,
+                line_info: _,
                 expr,
                 then_body,
                 else_body,
-            } => todo!(),
+            } => self.visit_if_stmt(expr, then_body, else_body.as_ref().map(|s| &**s)),
             ast::Stmt::While {
                 line_info,
                 label,
                 expr,
                 then_body,
                 else_body,
-            } => todo!(),
+            } => {
+                let cond = self.visit_expr(expr)?;
+                if !cond.taipe.is_bool() {
+                    return Err(self.make_err(
+                        format!(
+                            "expected value of type '{}' but got value of type '{}'",
+                            context::Type::Bool.to_string(),
+                            cond.to_string()
+                        ),
+                        expr,
+                    ));
+                }
+                // TODO: check then_body_result.taipe == Noreturn, Void, others
+                self.mut_current_function_data(|data| {
+                    if let Some(label) = label {
+                        data.loop_stack
+                            .insert(label.text.clone(), scope::LoopInfo {});
+                    } else {
+                        data.loop_stack.insert(
+                            format!(
+                                "loop.{}$",
+                                LOOP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                            ),
+                            scope::LoopInfo {},
+                        );
+                    }
+                });
+                let then_body_result = self.visit_stmt(then_body)?;
+                self.mut_current_function_data(|data| {
+                    data.loop_stack.pop();
+                });
+                Ok(Context::from_void())
+            }
             ast::Stmt::Block { line_info, stmts } => self.visit_block(*line_info, stmts),
             ast::Stmt::Yield { token: _, expr } => Ok(self.visit_expr(expr)?),
-            ast::Stmt::Continue { token, label } => todo!(),
-            ast::Stmt::Break { token, label, expr } => todo!(),
+            ast::Stmt::Continue { token, label } => self.use_current_function_data(|data| {
+                if data.loop_stack.is_empty() {
+                    return Err(
+                        self.make_err(format!("'{}' can be used only in a loop", token.text), node)
+                    );
+                }
+                if let Some(label) = label {
+                    if !data.loop_stack.contains_key(&label.text) {
+                        let mut searched_names = HashSet::new();
+                        for (name, _) in &data.loop_stack {
+                            searched_names.insert(name.clone());
+                        }
+                        return Err(self
+                            .make_err(format!("undefined loop label '{}'", label.text), label)
+                            .chain(self.make_did_you_mean_err(&label.text, &searched_names)));
+                    }
+                }
+                Ok(Context::from_noreturn())
+            }),
+            ast::Stmt::Break { token, label, expr } => {
+                // TODO: check expr
+                self.use_current_function_data(|data| {
+                    if data.loop_stack.is_empty() {
+                        return Err(
+                            self.make_err(format!("'{}' can be used only in a loop", token.text), node)
+                        );
+                    }
+                    if let Some(label) = label {
+                        if !data.loop_stack.contains_key(&label.text) {
+                            let mut searched_names = HashSet::new();
+                            for (name, _) in &data.loop_stack {
+                                searched_names.insert(name.clone());
+                            }
+                            return Err(self
+                                .make_err(format!("undefined loop label '{}'", label.text), label)
+                                .chain(self.make_did_you_mean_err(&label.text, &searched_names)));
+                        }
+                    }
+                    Ok(Context::from_noreturn())
+                })
+            },
             ast::Stmt::Return { token, expr } => self.visit_return(token, expr.as_ref()),
             ast::Stmt::Decl(decl) => {
                 self.visit_decl(decl, false)?;
@@ -663,6 +737,75 @@ impl<'a> Analyzer<'a> {
                 Ok(Context::from_void())
             }
             ast::Stmt::Nop(_) => Ok(Context::from_void()),
+        }
+    }
+
+    fn visit_if_stmt(
+        &mut self,
+        expr: &'a ast::Expr,
+        then_body: &'a ast::Stmt,
+        else_body: Option<&'a ast::Stmt>,
+    ) -> Result<Context<'a>, CompileError> {
+        let cond = self.visit_expr(expr)?;
+        if !cond.taipe.is_bool() {
+            return Err(self.make_err(
+                format!(
+                    "expected value of type '{}' but got value of type '{}'",
+                    context::Type::Bool.to_string(),
+                    cond.to_string()
+                ),
+                expr,
+            ));
+        }
+        let then_body_result = self.visit_stmt(then_body)?;
+        if let Some(else_body) = else_body {
+            let else_body_result = self.visit_stmt(else_body)?;
+            if then_body_result.taipe.is_noreturn() {
+                Ok(else_body_result)
+            } else if then_body_result.taipe == else_body_result.taipe {
+                // TODO: allow mixing of compatible values
+                Ok(Context {
+                    is_lvalue: then_body_result.is_lvalue && else_body_result.is_lvalue,
+                    taipe: then_body_result.taipe,
+                    value: if let Some(cond_value) = cond.value {
+                        // comptime: evaluate if statement
+                        let context::Value::Bool(cond_value) = cond_value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        if cond_value {
+                            then_body_result.value
+                        } else {
+                            else_body_result.value
+                        }
+                    } else {
+                        None
+                    },
+                })
+            } else {
+                return Err(self.make_err(
+                    format!(
+                        "expected '{}' but got '{}'",
+                        then_body_result.to_string(),
+                        else_body_result.to_string(),
+                    ),
+                    else_body,
+                ));
+            }
+        } else {
+            if then_body_result.taipe.is_noreturn() {
+                Ok(Context::from_noreturn())
+            } else if then_body_result.taipe.is_void() {
+                Ok(Context::from_void())
+            } else {
+                Err(self.make_err(
+                    format!(
+                        "expected '{}' but got '{}'",
+                        context::Type::Void.to_string(),
+                        then_body_result.to_string()
+                    ),
+                    then_body,
+                ))
+            }
         }
     }
 
@@ -677,7 +820,10 @@ impl<'a> Analyzer<'a> {
         let scope::State::Visited(ctx) = function.borrow().state.clone() else {
             unreachable!("probably some analyzer bug");
         };
-        let scope::Payload::Function(scope::Function { ret_line_info }) = function.borrow().payload
+        let scope::Payload::Function(scope::Function {
+            loop_stack: _,
+            ret_line_info,
+        }) = function.borrow().payload
         else {
             unreachable!("probably some analyzer bug");
         };
@@ -799,6 +945,8 @@ impl<'a> Analyzer<'a> {
             self.warnings
                 .push(self.make_warning("unreachable code", &&stmts[last_stmt_index..]));
         }
+        // Blocks cannot return concrete values because a block may have potential side effects
+        block_ret.value = None;
         scope.borrow_mut().state = scope::State::Visited(block_ret.clone());
         // Restore old scope
         self.cur_scope = old_cur_scope;
@@ -1712,10 +1860,10 @@ impl<'a> Analyzer<'a> {
             | TokenKind::RAngle => {
                 let mut lhs = lhs.clone();
                 let mut rhs = rhs.clone();
+                self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                 if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
                     return_err!();
                 }
-                self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                 let mut value: Option<context::Value<'a>> = None;
                 match lhs.taipe.remove_const() {
                     context::Type::Bool
@@ -1765,7 +1913,6 @@ impl<'a> Analyzer<'a> {
                                 _ => unreachable!("probably some analyzer bug"),
                             }));
                         }
-                        todo!()
                     }
                     context::Type::Typedef => {
                         let Some(lhs_value) = lhs.value else {
@@ -2886,17 +3033,21 @@ impl<'a> Analyzer<'a> {
             },
             rhs_line_info,
         )) = rhs
-            && let context::Type::VarInt = rhs_type.remove_const()
-            && let Some(rhs_value) = rhs_value
+            && rhs_type.is_varint()
         {
-            if let Some((ref lhs_type, _)) = lhs
-                && lhs_type.is_integer()
-            {
-                *rhs_type = lhs_type.clone();
-                *rhs_value = self.transform_varint(lhs_type, rhs_value, &rhs_line_info, None)?;
+            if let Some((ref lhs_type, _)) = lhs {
+                if lhs_type.is_integer() && !lhs_type.is_varint() {
+                    *rhs_type = lhs_type.clone();
+                    if let Some(rhs_value) = rhs_value {
+                        *rhs_value =
+                            self.transform_varint(lhs_type, rhs_value, &rhs_line_info, None)?;
+                    }
+                }
             } else {
                 *rhs_type = self.type_int.clone();
-                *rhs_value = self.transform_varint_to_int(rhs_value, &rhs_line_info)?;
+                if let Some(rhs_value) = rhs_value {
+                    *rhs_value = self.transform_varint_to_int(rhs_value, &rhs_line_info)?;
+                }
             }
         }
         match (lhs, rhs) {
@@ -2916,7 +3067,7 @@ impl<'a> Analyzer<'a> {
                     // name :: value;
                     // ---------------------------------
                     TokenKind::Colon => {
-                        if rhs.value.is_none() {
+                        if rhs.value.is_none() && self.get_current_function().is_none() {
                             return Err(self.make_err(
                                 "value cannot be evaluated at compile time",
                                 &rhs_line_info,
@@ -3057,28 +3208,31 @@ impl<'a> Analyzer<'a> {
         // }
         // Type checking and Implicit conversions
         match (&lhs, &rhs.taipe) {
-            // Implicit signed integer conversions
-            (context::Type::Int128, context::Type::Int64) => todo!(),
-            (context::Type::Int128, context::Type::Int32) => todo!(),
-            (context::Type::Int128, context::Type::Int16) => todo!(),
-            (context::Type::Int128, context::Type::Int8) => todo!(),
-            (context::Type::Int64, context::Type::Int32) => todo!(),
-            (context::Type::Int64, context::Type::Int16) => todo!(),
-            (context::Type::Int64, context::Type::Int8) => todo!(),
-            (context::Type::Int32, context::Type::Int16) => todo!(),
-            (context::Type::Int32, context::Type::Int8) => todo!(),
-            (context::Type::Int16, context::Type::Int8) => todo!(),
-            // Implicit unsigned integer conversions
-            (context::Type::Uint128, context::Type::Uint64) => todo!(),
-            (context::Type::Uint128, context::Type::Uint32) => todo!(),
-            (context::Type::Uint128, context::Type::Uint16) => todo!(),
-            (context::Type::Uint128, context::Type::Uint8) => todo!(),
-            (context::Type::Uint64, context::Type::Uint32) => todo!(),
-            (context::Type::Uint64, context::Type::Uint16) => todo!(),
-            (context::Type::Uint64, context::Type::Uint8) => todo!(),
-            (context::Type::Uint32, context::Type::Uint16) => todo!(),
-            (context::Type::Uint32, context::Type::Uint8) => todo!(),
-            (context::Type::Uint16, context::Type::Uint8) => todo!(),
+            // Implicit integer conversions
+            (context::Type::Int128, context::Type::Int64)
+            | (context::Type::Int128, context::Type::Int32)
+            | (context::Type::Int128, context::Type::Int16)
+            | (context::Type::Int128, context::Type::Int8)
+            | (context::Type::Int64, context::Type::Int32)
+            | (context::Type::Int64, context::Type::Int16)
+            | (context::Type::Int64, context::Type::Int8)
+            | (context::Type::Int32, context::Type::Int16)
+            | (context::Type::Int32, context::Type::Int8)
+            | (context::Type::Int16, context::Type::Int8)
+            | (context::Type::Uint128, context::Type::Uint64)
+            | (context::Type::Uint128, context::Type::Uint32)
+            | (context::Type::Uint128, context::Type::Uint16)
+            | (context::Type::Uint128, context::Type::Uint8)
+            | (context::Type::Uint64, context::Type::Uint32)
+            | (context::Type::Uint64, context::Type::Uint16)
+            | (context::Type::Uint64, context::Type::Uint8)
+            | (context::Type::Uint32, context::Type::Uint16)
+            | (context::Type::Uint32, context::Type::Uint8)
+            | (context::Type::Uint16, context::Type::Uint8) => {
+                if let Some(ref mut rhs_value) = rhs.value {
+                    *rhs_value = self.transform_value(&lhs, rhs_value, &rhs_line_info, None)?;
+                }
+            }
             // (context::Type::Int, context::Type::Float32) => {
             //     if let Some(value) = &rhs.value {
             //         let context::Value::Float32(value) = value else {
@@ -3254,31 +3408,16 @@ impl<'a> Analyzer<'a> {
         if let Some(ctx) = self.resolve_member(&scope, &name.text, &mut searched_names)? {
             Ok(ctx)
         } else {
-            let maybe = fuzzy_search_best(&name.text, &searched_names, None);
-            let mut err = self.make_err(
-                format!(
-                    "'{}' has no member named '{}'",
-                    scope.borrow().sym_path.to_string(),
-                    &name.text
-                ),
-                name,
-            );
-            if maybe.len() == 1 {
-                err = err.chain(
-                    self.make_help(format!("did you mean '{}'?", maybe.iter().next().unwrap())),
-                );
-            } else if maybe.len() != 0 {
-                let mut maybe_str = String::new();
-                for name in maybe {
-                    maybe_str.push('\'');
-                    maybe_str.push_str(&name);
-                    maybe_str.push_str("', ");
-                }
-                maybe_str.pop();
-                maybe_str.pop();
-                err = err.chain(self.make_help(format!("did you mean one of {}?", maybe_str)));
-            }
-            Err(err)
+            Err(self
+                .make_err(
+                    format!(
+                        "'{}' has no member named '{}'",
+                        scope.borrow().sym_path.to_string(),
+                        &name.text
+                    ),
+                    name,
+                )
+                .chain(self.make_did_you_mean_err(&name.text, &searched_names)))
         }
     }
 
@@ -3333,24 +3472,9 @@ impl<'a> Analyzer<'a> {
             }
             Ok(ctx)
         } else {
-            let maybe = fuzzy_search_best(&name.text, &searched_names, None);
-            let mut err = self.make_err("undefined reference", name);
-            if maybe.len() == 1 {
-                err = err.chain(
-                    self.make_help(format!("did you mean '{}'?", maybe.iter().next().unwrap())),
-                );
-            } else if maybe.len() != 0 {
-                let mut maybe_str = String::new();
-                for name in maybe {
-                    maybe_str.push('\'');
-                    maybe_str.push_str(&name);
-                    maybe_str.push_str("', ");
-                }
-                maybe_str.pop();
-                maybe_str.pop();
-                err = err.chain(self.make_help(format!("did you mean one of {}?", maybe_str)));
-            }
-            Err(err)
+            Err(self
+                .make_err("undefined reference", name)
+                .chain(self.make_did_you_mean_err(&name.text, &searched_names)))
         }
     }
 
@@ -3417,7 +3541,7 @@ impl<'a> Analyzer<'a> {
             (_, context::Value::VarInt(_)) => {
                 Ok(self.transform_varint(lhs, rhs, line_info, type_name)?)
             }
-            // Trivial conversion
+            // Trivial conversions
             (context::Type::Int128, context::Value::Int128(_)) => Ok(rhs.clone()),
             (context::Type::Int64, context::Value::Int64(_)) => Ok(rhs.clone()),
             (context::Type::Int32, context::Value::Int32(_)) => Ok(rhs.clone()),
@@ -3598,6 +3722,25 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn make_did_you_mean_err(&self, name: &str, searched_names: &HashSet<String>) -> CompileError {
+        let maybe = fuzzy_search_best(name, &searched_names, None);
+        if maybe.len() == 1 {
+            self.make_help(format!("did you mean '{}'?", maybe.iter().next().unwrap()))
+        } else if maybe.len() != 0 {
+            let mut maybe_str = String::new();
+            for name in maybe {
+                maybe_str.push('\'');
+                maybe_str.push_str(&name);
+                maybe_str.push_str("', ");
+            }
+            maybe_str.pop();
+            maybe_str.pop();
+            self.make_help(format!("did you mean one of {}?", maybe_str))
+        } else {
+            CompileError::Errors(Vec::new())
+        }
+    }
+
     fn make_note_with_path(
         &self,
         msg: impl ToString,
@@ -3647,6 +3790,28 @@ impl<'a> Analyzer<'a> {
         } else {
             self.cur_scope.borrow().get_enclosing_function()
         }
+    }
+
+    fn use_current_function_data<F, T>(&self, handler: F) -> T
+    where
+        F: FnOnce(&scope::Function) -> T,
+    {
+        let function = self.get_current_function().expect("not in a function");
+        let scope::Payload::Function(ref data) = function.borrow().payload else {
+            unreachable!("probably some analyzer bug");
+        };
+        handler(data)
+    }
+
+    fn mut_current_function_data<F, T>(&self, handler: F) -> T
+    where
+        F: FnOnce(&mut scope::Function) -> T,
+    {
+        let function = self.get_current_function().expect("not in a function");
+        let scope::Payload::Function(ref mut data) = function.borrow_mut().payload else {
+            unreachable!("probably some analyzer bug");
+        };
+        handler(data)
     }
 
     fn get_current_block(&self) -> Option<Rc<RefCell<scope::Scope<'a>>>> {

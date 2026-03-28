@@ -120,6 +120,31 @@ vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {
     return lhs;
 }
 
+factorial :: fun (n: __uint) -> __uint {
+    if n == 0 {
+        return 1;
+    } else {
+        // return n * factorial(n - 1);
+        return n * (n - 1);
+    }
+}
+
+fib :: fun (n: __uint) -> __uint {
+    a: __uint = 1;
+    b: __uint = 1;
+    $hakla while true {
+        $hala while b <= n {
+            // print("{}", a);
+            temp :: a;
+            a = b;
+            b = temp + b;
+            continue $hala;
+            break $haka;
+        }
+    }
+    return a;
+}
+
 main :: fun () -> void {
     return;
 }

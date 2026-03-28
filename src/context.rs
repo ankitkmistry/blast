@@ -245,23 +245,20 @@ impl<'a> ToString for Type<'a> {
             Type::Bool => "__bool".to_string(),
             Type::Char => "__char".to_string(),
             Type::VarInt => "{integer}".to_string(),
-            Type::Int8 => "__int8".to_string(),
-            Type::Int16 => "__int16".to_string(),
-            Type::Int32 => "__int32".to_string(),
-            Type::Int64 => "__int64".to_string(),
-            Type::Int128 => "__int128".to_string(),
-            Type::Uint8 => "__uint8".to_string(),
-            Type::Uint16 => "__uint16".to_string(),
-            Type::Uint32 => "__uint32".to_string(),
-            Type::Uint64 => "__uint64".to_string(),
-            Type::Uint128 => "__uint128".to_string(),
+            Type::Int8 => "__i8".to_string(),
+            Type::Int16 => "__i16".to_string(),
+            Type::Int32 => "__i32".to_string(),
+            Type::Int64 => "__i64".to_string(),
+            Type::Int128 => "__i128".to_string(),
+            Type::Uint8 => "__u8".to_string(),
+            Type::Uint16 => "__u16".to_string(),
+            Type::Uint32 => "__u32".to_string(),
+            Type::Uint64 => "__u64".to_string(),
+            Type::Uint128 => "__u128".to_string(),
             Type::Float32 => "__f32".to_string(),
             Type::Float64 => "__f64".to_string(),
             Type::Const(taipe) => format!("const {}", taipe.to_string()),
-            Type::Basic(scope) => scope
-                .borrow()
-                .sym_path
-                .to_string(),
+            Type::Basic(scope) => scope.borrow().sym_path.to_string(),
             Type::Function { ret, params } => format!(
                 "fun ({}) -> {}",
                 params
@@ -640,14 +637,8 @@ impl<'a> ToString for Value<'a> {
                     .join(", ")
             ),
             Value::Type(t) => t.to_string(),
-            Value::Module(weak) => weak
-                .borrow()
-                .sym_path
-                .to_string(),
-            Value::Function(weak) => weak
-                .borrow()
-                .sym_path
-                .to_string(),
+            Value::Module(weak) => weak.borrow().sym_path.to_string(),
+            Value::Function(weak) => weak.borrow().sym_path.to_string(),
         }
     }
 }
