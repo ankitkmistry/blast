@@ -73,13 +73,11 @@ pub enum Stmt {
     },
     Block {
         line_info: LineInfo,
-        label: Option<Token>,
         stmts: Vec<Stmt>,
     },
     Yield {
         token: Token,
-        label: Option<Token>,
-        expr: Option<Expr>,
+        expr: Expr,
     },
     Continue {
         token: Token,
@@ -306,18 +304,9 @@ impl HasLineInfo for Stmt {
             } => *line_info,
             Stmt::Block {
                 line_info,
-                label: _,
                 stmts: _,
             } => *line_info,
-            Stmt::Yield { token, label, expr } => {
-                if let Some(e) = expr {
-                    LineInfo::from_range(token, e)
-                } else if let Some(l) = label {
-                    LineInfo::from_range(token, l)
-                } else {
-                    token.get_line_info()
-                }
-            }
+            Stmt::Yield { token, expr } => LineInfo::from_range(token, expr),
             Stmt::Continue { token, label } => {
                 if let Some(l) = label {
                     LineInfo::from_range(token, l)
@@ -394,7 +383,11 @@ impl HasLineInfo for Arg {
 impl HasLineInfo for Expr {
     fn get_line_info(&self) -> LineInfo {
         match self {
-            Expr::Assign { lhses: lhs, op: _, rhses: rhs } => LineInfo::from_range(lhs, rhs),
+            Expr::Assign {
+                lhses: lhs,
+                op: _,
+                rhses: rhs,
+            } => LineInfo::from_range(lhs, rhs),
             Expr::Binary { left, op: _, right } => LineInfo::from_range(left, right),
             Expr::Cast { expr, taipe } => LineInfo::from_range(expr, taipe),
             Expr::Unary { op, expr } => LineInfo::from_range(op, expr),

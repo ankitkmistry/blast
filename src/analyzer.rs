@@ -613,10 +613,9 @@ impl<'a> Analyzer<'a> {
             } => todo!(),
             ast::Stmt::Block {
                 line_info,
-                label,
                 stmts,
-            } => self.visit_block(*line_info, label.as_ref(), stmts),
-            ast::Stmt::Yield { token, label, expr } => todo!(),
+            } => self.visit_block(*line_info, stmts),
+            ast::Stmt::Yield { token, expr } => todo!(),
             ast::Stmt::Continue { token, label } => todo!(),
             ast::Stmt::Break { token, label, expr } => todo!(),
             ast::Stmt::Return { token, expr } => self.visit_return(token, expr.as_ref()),
@@ -680,7 +679,6 @@ impl<'a> Analyzer<'a> {
     fn visit_block(
         &mut self,
         line_info: LineInfo,
-        label: Option<&Token>,
         stmts: &'a [ast::Stmt],
     ) -> CompileResult<Context<'a>> {
         let scope = self.create_block_scope(line_info);
@@ -689,26 +687,28 @@ impl<'a> Analyzer<'a> {
         self.cur_scope = Rc::clone(&scope);
         // Saves the (last index + 1) of the last stmt visited
         let mut last_stmt_index = 0;
+        let mut block_ret = Context::from_void();
         // Visit individual statements
         for (i, stmt) in stmts.iter().enumerate() {
-            let ctx = self.visit_stmt(stmt)?;
+            block_ret  = self.visit_stmt(stmt)?;
             last_stmt_index = i + 1;
-            // if ctx.taipe.is_void() {
-            //     continue;
-            // }
-            if ctx.taipe.is_noreturn() {
+            if block_ret.taipe.is_noreturn() {
                 break;
             }
+            if block_ret.taipe.is_void() {
+                continue;
+            }
+            break;
         }
         if last_stmt_index < stmts.len() {
             // We have unreachable code
-            return Err(self.make_err("unreachable code", &&stmts[last_stmt_index..]));
+            self.warnings
+                .push(self.make_warning("unreachable code", &&stmts[last_stmt_index..]));
         }
-        let ctx = Context::from_void();
-        scope.borrow_mut().state = scope::State::Visited(ctx.clone());
+        scope.borrow_mut().state = scope::State::Visited(block_ret.clone());
         // Restore old scope
         self.cur_scope = old_cur_scope;
-        Ok(ctx)
+        Ok(block_ret)
     }
 
     fn create_block_scope(&mut self, line_info: LineInfo) -> Rc<RefCell<scope::Scope<'a>>> {

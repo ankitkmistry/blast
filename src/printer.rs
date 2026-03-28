@@ -598,24 +598,15 @@ impl AstPrinter {
             }
             ast::Stmt::Block {
                 line_info: _,
-                label,
                 stmts,
             } => {
                 write!(self, "::Block")?;
-                if let Some(tok) = label {
-                    self.print_tok("label", tok)?;
-                }
                 self.print_list("stmts", stmts, Self::print_stmt)?;
             }
-            ast::Stmt::Yield { token, label, expr } => {
+            ast::Stmt::Yield { token, expr } => {
                 write!(self, "::Yield")?;
                 self.print_tok("token", token)?;
-                if let Some(tok) = label {
-                    self.print_tok("label", tok)?;
-                }
-                if let Some(expr) = expr {
-                    self.print_expr("expr", expr)?;
-                }
+                self.print_expr("expr", expr)?;
             }
             ast::Stmt::Continue { token, label } => {
                 write!(self, "::Continue")?;
@@ -724,7 +715,11 @@ impl AstPrinter {
 
     fn visit_expr(&mut self, expr: &ast::Expr) -> fmt::Result {
         match expr {
-            ast::Expr::Assign { lhses: lhs, op, rhses: rhs } => {
+            ast::Expr::Assign {
+                lhses: lhs,
+                op,
+                rhses: rhs,
+            } => {
                 write!(self, "::Assign")?;
                 self.print_list("lhs", lhs, Self::print_expr)?;
                 self.print_tok("op", op)?;

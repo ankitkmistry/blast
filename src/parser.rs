@@ -328,7 +328,7 @@ impl Parser {
         };
         let body = if let Some(tok) = self.peek() {
             match tok.kind {
-                LBrace => Some(self.parse_block(false)?),
+                LBrace => Some(self.parse_block()?),
                 Semicolon => {
                     self.get_token()?;
                     None
@@ -367,7 +367,7 @@ impl Parser {
 
     // stmt := if_stmt | while_stmt
     //       | block
-    //       | 'yield' label? expr? ';'
+    //       | 'yield' expr ';'
     //       | 'continue' label? ';'
     //       | 'break' label? expr? ';'
     //       | 'return' expr? ';'
@@ -382,7 +382,7 @@ impl Parser {
                     if let Some(tok) = self.peek_at(1) {
                         match tok.kind {
                             While => self.parse_while_stmt(),
-                            LBrace => self.parse_block(true),
+                            LBrace => self.parse_block(),
                             _ => Err(self.expect_err(&[While, LBrace])),
                         }
                     } else {
@@ -390,19 +390,12 @@ impl Parser {
                     }
                 }
                 While => self.parse_while_stmt(),
-                LBrace => self.parse_block(false),
+                LBrace => self.parse_block(),
                 Yield => {
                     let token = self.get_token()?;
-                    let label = if let Some(tok) = self.peek()
-                        && tok.kind == Label
-                    {
-                        Some(self.get_token()?)
-                    } else {
-                        None
-                    };
-                    let expr = self.rule_optional(Self::parse_expr);
+                    let expr = self.parse_expr()?;
                     self.expect_term()?;
-                    Ok(ast::Stmt::Yield { token, label, expr })
+                    Ok(ast::Stmt::Yield { token, expr })
                 }
                 Continue => {
                     let token = self.get_token()?;
@@ -457,16 +450,8 @@ impl Parser {
         }
     }
 
-    // block ::= (<allow_label> label?) '{' (decl | stmt) '}';
-    fn parse_block(&mut self, allow_label: bool) -> CompileResult<ast::Stmt> {
-        let label = if allow_label
-            && let Some(tok) = self.peek()
-            && tok.kind == Label
-        {
-            Some(self.get_token()?)
-        } else {
-            None
-        };
+    // block ::= '{' (decl | stmt) '}';
+    fn parse_block(&mut self) -> CompileResult<ast::Stmt> {
         let start = self.expect(LBrace)?;
         let mut stmts = Vec::new();
         while let Some(tok) = self.peek()
@@ -480,7 +465,6 @@ impl Parser {
         let end = self.expect(RBrace)?;
         Ok(ast::Stmt::Block {
             line_info: LineInfo::from_range(&start, &end),
-            label,
             stmts,
         })
     }
@@ -489,11 +473,11 @@ impl Parser {
     fn parse_if_stmt(&mut self) -> CompileResult<ast::Stmt> {
         let start = self.expect(If)?;
         let expr = self.parse_expr()?;
-        let then_body = Box::new(self.parse_block(false)?);
+        let then_body = Box::new(self.parse_block()?);
         let else_body = if let Some(tok) = self.peek()
             && tok.kind == Else
         {
-            Some(Box::new(self.parse_block(false)?))
+            Some(Box::new(self.parse_block()?))
         } else {
             None
         };
@@ -517,11 +501,11 @@ impl Parser {
         };
         let start = self.expect(While)?;
         let expr = self.parse_expr()?;
-        let then_body = Box::new(self.parse_block(false)?);
+        let then_body = Box::new(self.parse_block()?);
         let else_body = if let Some(tok) = self.peek()
             && tok.kind == Else
         {
-            Some(Box::new(self.parse_block(false)?))
+            Some(Box::new(self.parse_block()?))
         } else {
             None
         };
@@ -763,12 +747,7 @@ impl Parser {
     }
 
     // term ::= factor (('+'('%'|':')?|'-'('%'|':')?) factor)*;
-    define_binary_op!(
-        parse_term,
-        parse_factor,
-        Plus,
-        Minus,
-    );
+    define_binary_op!(parse_term, parse_factor, Plus, Minus,);
 
     // factor ::= cast (('*'|'/'|'%') cast)*;
     define_binary_op!(parse_factor, parse_cast, Star, Slash, Percent);
