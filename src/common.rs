@@ -43,10 +43,23 @@ impl LineInfo {
         }
     }
 
-    // pub fn from_items(items: &[impl HasLineInfo]) -> Self {
-    //     assert!(items.len() > 0);
-    //     Self::from_range(items.first().unwrap(), items.last().unwrap())
-    // }
+    pub fn begin(&self) -> Self {
+        LineInfo {
+            line_start: self.line_start,
+            line_end: self.line_start,
+            col_start: self.col_start,
+            col_end: self.col_start + 1,
+        }
+    }
+
+    pub fn end(&self) -> Self {
+        LineInfo {
+            line_start: self.line_end,
+            line_end: self.line_end,
+            col_start: self.col_end - 1,
+            col_end: self.col_end,
+        }
+    }
 }
 
 pub trait HasLineInfo {
@@ -174,9 +187,7 @@ pub struct Int {
 
 impl Int {
     pub fn new() -> Self {
-        Self {
-            num: BigInt::ZERO,
-        }
+        Self { num: BigInt::ZERO }
     }
 
     pub fn parse(buf: &[u8], radix: u32) -> Self {
@@ -232,7 +243,7 @@ pub struct Settings {
     // Register size of the architecture in bytes
     pub register_size: usize,
     // Pointer size of the architecture in bytes
-    pub pointer_size:  usize,
+    pub pointer_size: usize,
 }
 
 /// Optimized Levenshtein distance function (O(min(m, n)) space)

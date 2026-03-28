@@ -107,8 +107,7 @@ impl<'a> Analyzer<'a> {
                             for decl in decls {
                                 final_decls.push(decl);
                             }
-                            root.state =
-                                State::Visited(Context::from_module(Rc::downgrade(root_rc)));
+                            root.state = State::Visited(Context::from_module(Rc::clone(root_rc)));
                         }
                         _ => unreachable!("not supposed to happen"),
                     },
@@ -428,7 +427,7 @@ impl<'a> Analyzer<'a> {
                         } else {
                             // Predeclare all declarations (only if not already visited)
                             self.pre_declare_decls(decls)?;
-                            let ctx = Context::from_module(Rc::downgrade(&scope));
+                            let ctx = Context::from_module(Rc::clone(&scope));
                             scope.borrow_mut().state = State::Visited(ctx.clone());
                             ctx
                         };
@@ -519,10 +518,10 @@ impl<'a> Analyzer<'a> {
                         let rhs = Context {
                             is_lvalue: true,
                             taipe: context::Type::Function {
-                                ret: Box::new(ret_type),
+                                ret: Box::new(ret_type.clone()),
                                 params: param_types,
                             },
-                            value: Some(context::Value::Function(Rc::downgrade(&scope))),
+                            value: Some(context::Value::Function(Rc::clone(&scope))),
                         };
                         // Resolve assignment
                         let ctx =
@@ -535,7 +534,46 @@ impl<'a> Analyzer<'a> {
                         // TODO: visit stmts
                         if let Some(body) = body {
                             let ctx = self.visit_stmt(body)?;
-                            dbg!(ctx.to_string());
+                            if ret_type.is_void() {
+                                if !ctx.taipe.is_void() && !ctx.taipe.is_noreturn() {
+                                    return Err(self.make_err(
+                                        format!(
+                                            "expected value of type '{}' or '{}' but got '{}'",
+                                            context::Type::Void.to_string(),
+                                            context::Type::Noreturn.to_string(),
+                                            ctx.taipe.to_string()
+                                        ),
+                                        body,
+                                    ));
+                                }
+                            } else if ret_type.is_noreturn() && !ctx.taipe.is_noreturn() {
+                                return Err(self.make_err(
+                                    format!(
+                                        "invalid function returns value: '{}' function can never return",
+                                        context::Type::Noreturn.to_string(),
+                                    ),
+                                    &scope.borrow(),
+                                ));
+                            } else if !ctx.taipe.is_noreturn() {
+                                if ctx.taipe.is_void() {
+                                    return Err(self.make_err(
+                                        "not all control paths return a value",
+                                        &body.get_line_info().end(),
+                                    ));
+                                }
+                                let lhs = ret_type;
+                                let lhs_line_info = ret
+                                    .as_ref()
+                                    .map(|ret| ret.get_line_info())
+                                    .unwrap_or_else(|| scope.borrow().get_line_info());
+                                let rhs = ctx;
+                                let rhs_line_info = body.get_line_info();
+                                self.resolve_assign(
+                                    Some((lhs, lhs_line_info)),
+                                    None,
+                                    Some((rhs, rhs_line_info)),
+                                )?;
+                            }
                         }
                         //
                         // Restore old scope
@@ -611,15 +649,15 @@ impl<'a> Analyzer<'a> {
                 then_body,
                 else_body,
             } => todo!(),
-            ast::Stmt::Block {
-                line_info,
-                stmts,
-            } => self.visit_block(*line_info, stmts),
-            ast::Stmt::Yield { token, expr } => todo!(),
+            ast::Stmt::Block { line_info, stmts } => self.visit_block(*line_info, stmts),
+            ast::Stmt::Yield { token: _, expr } => Ok(self.visit_expr(expr)?),
             ast::Stmt::Continue { token, label } => todo!(),
             ast::Stmt::Break { token, label, expr } => todo!(),
             ast::Stmt::Return { token, expr } => self.visit_return(token, expr.as_ref()),
-            ast::Stmt::Decl(decl) => todo!(),
+            ast::Stmt::Decl(decl) => {
+                self.visit_decl(decl, false)?;
+                Ok(Context::from_void())
+            }
             ast::Stmt::Expr(expr) => {
                 let _ = self.visit_expr(expr)?;
                 Ok(Context::from_void())
@@ -648,6 +686,15 @@ impl<'a> Analyzer<'a> {
             unreachable!("probably some analyzer bug");
         };
         let ret = *ret;
+        if ret.is_noreturn() {
+            return Err(self.make_err(
+                format!(
+                    "cannot return from a '{}' function",
+                    context::Type::Noreturn.to_string()
+                ),
+                token,
+            ));
+        }
         if let Some(expr) = expr {
             if ret.is_void() {
                 return Err(self
@@ -685,12 +732,55 @@ impl<'a> Analyzer<'a> {
         // Begin new scope
         let old_cur_scope = Rc::clone(&self.cur_scope);
         self.cur_scope = Rc::clone(&scope);
+        // Predeclare function, struct and union declarations
+        for stmt in stmts.iter() {
+            match stmt {
+                ast::Stmt::Decl(decl) => match &**decl {
+                    ast::Decl::Decl {
+                        name: _,
+                        taipe: _,
+                        eq_token: _,
+                        object: Some(object),
+                    } => match object {
+                        ast::Object::ExternModule {
+                            line_info: _,
+                            value: _,
+                        }
+                        | ast::Object::Module {
+                            line_info: _,
+                            decls: _,
+                        } => {
+                            return Err(self.make_err(
+                                "module declarations are not allowed in block scope",
+                                decl,
+                            ));
+                        }
+                        ast::Object::Fun {
+                            line_info: _,
+                            params: _,
+                            ret: _,
+                            body: _,
+                        }
+                        | ast::Object::Compound {
+                            line_info: _,
+                            field: _,
+                        } => {
+                            self.pre_declare_decl(decl)?;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        // Prepare to visit the statements
         // Saves the (last index + 1) of the last stmt visited
         let mut last_stmt_index = 0;
         let mut block_ret = Context::from_void();
         // Visit individual statements
         for (i, stmt) in stmts.iter().enumerate() {
-            block_ret  = self.visit_stmt(stmt)?;
+            block_ret = self.visit_stmt(stmt)?;
             last_stmt_index = i + 1;
             if block_ret.taipe.is_noreturn() {
                 break;
@@ -701,6 +791,10 @@ impl<'a> Analyzer<'a> {
             break;
         }
         if last_stmt_index < stmts.len() {
+            // Check them anyway
+            for stmt in &stmts[last_stmt_index..] {
+                self.visit_stmt(stmt)?;
+            }
             // We have unreachable code
             self.warnings
                 .push(self.make_warning("unreachable code", &&stmts[last_stmt_index..]));
@@ -830,7 +924,7 @@ impl<'a> Analyzer<'a> {
         let ctx = Context {
             is_lvalue: true,
             taipe: context::Type::Typedef,
-            value: Some(context::Value::Type(context::Type::Basic(Rc::downgrade(
+            value: Some(context::Value::Type(context::Type::Basic(Rc::clone(
                 &scope,
             )))),
         };
@@ -841,7 +935,7 @@ impl<'a> Analyzer<'a> {
         // Set the payload
         scope.borrow_mut().payload = Payload::Compound(scope::Compound::new(field));
         // Eval the layout
-        let layout = self.resolve_layout_scope(Rc::clone(&scope))?;
+        let layout = self.resolve_layout_scope(&scope)?;
         // Print the layout
         {
             println!(
@@ -909,9 +1003,6 @@ impl<'a> Analyzer<'a> {
                                 unreachable!("probably some analyzer bug");
                             };
                             let context::Value::Module(module) = value else {
-                                unreachable!("probably some analyzer bug");
-                            };
-                            let Some(module) = module.upgrade() else {
                                 unreachable!("probably some analyzer bug");
                             };
                             self.get_member(&module, &name)?
@@ -1181,9 +1272,6 @@ impl<'a> Analyzer<'a> {
                 };
                 match taipe {
                     context::Type::Basic(scope) => {
-                        let Some(scope) = scope.upgrade() else {
-                            unreachable!("probably some analyzer bug");
-                        };
                         let mut ctx = self.get_member(&scope, &name)?;
                         if keep_const {
                             ctx.taipe = context::Type::Const(Box::new(ctx.taipe));
@@ -1245,9 +1333,6 @@ impl<'a> Analyzer<'a> {
                             unreachable!("probably some analyzer bug");
                         };
                         let context::Value::Module(module) = value else {
-                            unreachable!("probably some analyzer bug");
-                        };
-                        let Some(module) = module.upgrade() else {
                             unreachable!("probably some analyzer bug");
                         };
                         self.get_member(&module, &name)
@@ -2566,9 +2651,7 @@ impl<'a> Analyzer<'a> {
                 alignment: 8,
             },
             context::Type::Const(taipe) => self.resolve_layout_ex(taipe, line_info)?,
-            context::Type::Basic(weak) => self.resolve_layout_scope(
-                weak.upgrade().expect("i dont really know what to do here"),
-            )?,
+            context::Type::Basic(scope) => self.resolve_layout_scope(scope)?,
             context::Type::Function { ret: _, params: _ } | context::Type::Pointer(_) => {
                 // On a low level, a function is nothing but a pointer
                 // to the starting of the code section in memory.
@@ -2615,7 +2698,7 @@ impl<'a> Analyzer<'a> {
 
     fn resolve_layout_scope(
         &mut self,
-        scope: Rc<RefCell<scope::Scope<'a>>>,
+        scope: &Rc<RefCell<scope::Scope<'a>>>,
     ) -> CompileResult<Layout> {
         let payload = scope.borrow().payload.clone();
         scope.borrow_mut().payload = scope::Payload::LayoutResolutionInProg;
@@ -2631,26 +2714,22 @@ impl<'a> Analyzer<'a> {
                 });
                 let layout = match layout {
                     Ok(layout) => layout,
-                    Err(err) => {
-                        return if let CompileError::SemCyclic {
-                            file_path,
-                            line_info,
-                        } = err
-                        {
-                            Err(self
-                                .make_err(
-                                    "memory layout is ambiguous, encountered cyclic references",
-                                    &scope.borrow(),
-                                )
-                                .chain(self.make_note_with_path(
-                                    "cycle occurs here",
-                                    file_path,
-                                    &line_info,
-                                )))
-                        } else {
-                            Err(err)
-                        };
+                    Err(CompileError::SemCyclic {
+                        file_path,
+                        line_info,
+                    }) => {
+                        return Err(self
+                            .make_err(
+                                "memory layout is ambiguous, encountered cyclic references",
+                                &scope.borrow(),
+                            )
+                            .chain(self.make_note_with_path(
+                                "cycle occurs here",
+                                file_path,
+                                &line_info,
+                            )));
                     }
+                    Err(err) => return Err(err),
                 };
                 // Reset the payload
                 scope.borrow_mut().payload = scope::Payload::Compound(scope::Compound {
@@ -2763,20 +2842,16 @@ impl<'a> Analyzer<'a> {
                 let layout = self.resolve_layout_ex(&ctx.taipe, get_line_info_of_field(name));
                 let layout = match layout {
                     Ok(layout) => layout,
-                    Err(err) => {
-                        return if let CompileError::SemCyclic {
-                            file_path: _,
-                            line_info: _,
-                        } = err
-                        {
-                            Err(CompileError::SemCyclic {
-                                file_path: file_path.clone(),
-                                line_info: *line_info,
-                            })
-                        } else {
-                            Err(err)
-                        };
+                    Err(CompileError::SemCyclic {
+                        file_path: _,
+                        line_info: _,
+                    }) => {
+                        return Err(CompileError::SemCyclic {
+                            file_path: file_path.clone(),
+                            line_info: *line_info,
+                        });
                     }
+                    Err(err) => return Err(err),
                 };
                 // Place this field at the specified offset
                 offset_table.insert(
@@ -3288,8 +3363,16 @@ impl<'a> Analyzer<'a> {
             // Check in the current scope and go upwards
             let mut scope = Rc::clone(&self.cur_scope);
             loop {
-                if let Some(ctx) = self.resolve_member(&scope, name, searched_names)? {
-                    return Ok(Some(ctx));
+                match self.resolve_member(&scope, name, searched_names) {
+                    Ok(Some(ctx)) => return Ok(Some(ctx)),
+                    Ok(None) => {}
+                    // It is referencing cyclic, probably user refers something
+                    // from the outer scope. Lets check that.
+                    Err(CompileError::SemCyclic {
+                        file_path: _,
+                        line_info: _,
+                    }) => {}
+                    Err(err) => return Err(err),
                 }
                 let parent_opt = scope.borrow().parent.upgrade();
                 if let Some(parent) = parent_opt.as_ref() {

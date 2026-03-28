@@ -114,8 +114,10 @@ p := &pp;
 ppp := 1;
 
 vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {
+    fun1 :: fun() -> __i64 { fun1 :: fun2; return 0; }
+    fun2 :: fun() -> __i64 { fun2 :: fun1; return 0; }
     p = &ppp;
-    // return lhs + rhs;
+    return lhs;
 }
 
 main :: fun () -> void {

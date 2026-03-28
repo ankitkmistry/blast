@@ -1,9 +1,4 @@
-use core::fmt;
-use std::{
-    cell::RefCell,
-    cmp::Ordering,
-    rc::{Rc, Weak},
-};
+use std::{cell::RefCell, cmp::Ordering, rc::Rc};
 
 use crate::{common::Int, scope};
 
@@ -26,13 +21,7 @@ impl<'a> ToString for Param<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Param<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Param").field("taipe", &self.taipe).finish()
-    }
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Type<'a> {
     /// Value can be:
     /// - Value::Bool => boolean value
@@ -65,7 +54,7 @@ pub enum Type<'a> {
     Const(Box<Type<'a>>),
     /// Value can be:
     /// - TODO: object
-    Basic(Weak<RefCell<scope::Scope<'a>>>),
+    Basic(Rc<RefCell<scope::Scope<'a>>>),
     /// Value can be:
     /// - Value::Function => Function value
     Function {
@@ -219,7 +208,7 @@ impl<'a> PartialEq for Type<'a> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Const(l0), Self::Const(r0)) => l0 == r0,
-            (Self::Basic(l0), Self::Basic(r0)) => Weak::ptr_eq(l0, r0),
+            (Self::Basic(l0), Self::Basic(r0)) => Rc::ptr_eq(l0, r0),
             (
                 Self::Function {
                     ret: l_ret,
@@ -270,8 +259,6 @@ impl<'a> ToString for Type<'a> {
             Type::Float64 => "__f64".to_string(),
             Type::Const(taipe) => format!("const {}", taipe.to_string()),
             Type::Basic(scope) => scope
-                .upgrade()
-                .expect("this should not occur")
                 .borrow()
                 .sym_path
                 .to_string(),
@@ -303,7 +290,7 @@ impl<'a> ToString for Type<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Value<'a> {
     Bool(bool),
     Char(char),
@@ -325,9 +312,9 @@ pub enum Value<'a> {
     // Typedef values
     Type(Type<'a>),
     // Module
-    Module(Weak<RefCell<scope::Scope<'a>>>),
+    Module(Rc<RefCell<scope::Scope<'a>>>),
     // Function
-    Function(Weak<RefCell<scope::Scope<'a>>>),
+    Function(Rc<RefCell<scope::Scope<'a>>>),
 }
 
 impl<'a> Value<'a> {
@@ -654,14 +641,10 @@ impl<'a> ToString for Value<'a> {
             ),
             Value::Type(t) => t.to_string(),
             Value::Module(weak) => weak
-                .upgrade()
-                .expect("what da hell just happened")
                 .borrow()
                 .sym_path
                 .to_string(),
             Value::Function(weak) => weak
-                .upgrade()
-                .expect("what da hell just happened")
                 .borrow()
                 .sym_path
                 .to_string(),
@@ -730,7 +713,7 @@ impl<'a> Context<'a> {
             value: None,
         }
     }
-    pub fn from_module(module: Weak<RefCell<scope::Scope<'a>>>) -> Self {
+    pub fn from_module(module: Rc<RefCell<scope::Scope<'a>>>) -> Self {
         Self {
             is_lvalue: true,
             taipe: Type::Module,
