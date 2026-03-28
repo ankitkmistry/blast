@@ -2834,14 +2834,19 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Type::Fat(_) => {
-                // pointer_size + pointer_size
-                // FIXME: fix this after generalizing fat pointers
+                // Definition of fat pointer type:
+                // |   []T :: struct {
+                // |       count: usize,
+                // |       ptr: *T,
+                // |   }
+                // Size:      pointer_size + pointer_size
+                // Alignment: pointer_size + pointer_size
                 Layout {
                     size: 2 * self.settings.pointer_size,
                     alignment: 2 * self.settings.pointer_size,
                 }
             }
-            context::Type::Tuple(items) => todo!("layout of tuples is not implemented"),
+            context::Type::Tuple(items) => self.resolve_layout_tuple(items, line_info),
             context::Type::VarInt
             | context::Type::Module
             | context::Type::Typedef
@@ -2857,6 +2862,51 @@ impl<'a> Analyzer<'a> {
             }
         };
         Ok(layout)
+    }
+
+    fn resolve_layout_tuple(
+        &mut self,
+        types: &[context::Type<'a>],
+        line_info: LineInfo,
+    ) -> CompileResult<Layout> {
+        fn eval_padding(offset: usize, alignment: usize) -> usize {
+            // Calculate the misalignment
+            let misalignment = offset % alignment;
+            // Add the padding
+            let padding = if misalignment > 0 {
+                alignment - misalignment
+            } else {
+                0
+            };
+            padding
+        }
+        let mut tuple_alignment = 1usize;
+        let mut cur_offset = 0;
+        let offset_start = cur_offset;
+        for taipe in types {
+            // Set the offset of field
+            let layout = self.resolve_layout_ex(taipe, line_info)?;
+            // Advance the offset
+            cur_offset += layout.size;
+            // Add the padding
+            cur_offset += eval_padding(cur_offset, layout.alignment);
+            // Alignment of a struct is the alignment of the most aligned field
+            tuple_alignment = tuple_alignment.max(layout.alignment);
+        }
+        // Add the final padding
+        cur_offset += eval_padding(cur_offset, tuple_alignment);
+        // Calculate the size
+        let mut tuple_size = cur_offset - offset_start;
+        // TODO: think about empty tuples
+        // Reference: https://doc.rust-lang.org/nomicon/exotic-sizes.html#zero-sized-types-zsts
+        // Reference: https://doc.rust-lang.org/nomicon/vec/vec-zsts.html
+        if tuple_size == 0 {
+            tuple_size = tuple_alignment;
+        }
+        Ok(Layout {
+            size: tuple_size,
+            alignment: tuple_alignment,
+        })
     }
 
     fn resolve_layout_scope(
