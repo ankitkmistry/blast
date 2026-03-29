@@ -471,7 +471,10 @@ impl<'a> Analyzer<'a> {
                                 } = decl
                                 {
                                     match object {
-                                        ast::Object::ExternModule { line_info, value } => {
+                                        ast::Object::ExternModule {
+                                            line_info: _,
+                                            value,
+                                        } => {
                                             todo!("extern modules are not supported yet")
                                         }
                                         ast::Object::Module {
@@ -509,7 +512,6 @@ impl<'a> Analyzer<'a> {
                                 return Err(self.make_err("expected 'typedef'", node));
                             };
                         }
-                        // TODO: implement field layout to distinguish between union and struct
                         let ctx = self.visit_compound(scope, field)?;
                         Ok(ctx)
                     }
@@ -678,11 +680,10 @@ impl<'a> Analyzer<'a> {
                                 )?;
                             }
                         }
-                        //
                         // Restore old scope
                         self.cur_scope = old_cur_scope;
-                        // --- FUNCTION CODE END
                         Ok(ctx)
+                        // --- FUNCTION CODE END
                     }
                     ast::Object::Typedef(node) => {
                         colon_compulsory!(eq_token);
@@ -821,7 +822,6 @@ impl<'a> Analyzer<'a> {
                 expr,
             ));
         }
-        // TODO: check then_body_result.taipe == Noreturn, Void, others
         self.mut_current_function_data(|data| {
             if let Some(label) = label {
                 data.loop_stack
@@ -1129,6 +1129,13 @@ impl<'a> Analyzer<'a> {
                     // ---------------------------------
                     // Visit expr
                     let rhs = self.visit_expr(expr)?;
+                    // TODO: The value of the field should be evaluated at compile time
+                    // If no value is provided then default value should be evaluated
+                    if rhs.value.is_none() {
+                        return Err(
+                            self.make_err("value cannot be evaluated at compile time", expr)
+                        );
+                    }
                     // Resolve assignment
                     self.resolve_assign(
                         Some(lhs),
@@ -1159,12 +1166,6 @@ impl<'a> Analyzer<'a> {
                     }
                     _ => {}
                 }
-                // TODO: The value of the field should be evaluated at compile time
-                // If no value is provided then default value should be evaluated
-                //
-                // if ctx.value.is_none() {
-                //     return Err(self.make_err("value cannot be evaluated at compile time", decl));
-                // }
                 // Complete the visit
                 scope.borrow_mut().state = scope::State::Visited(ctx.clone());
                 Ok(scope::Field::Field {
@@ -1196,7 +1197,6 @@ impl<'a> Analyzer<'a> {
         scope.borrow_mut().state = State::Visited(ctx.clone());
         // Visit every field
         let field = self.get_fields(field)?;
-        // TODO: calculate size
         // Set the payload
         scope.borrow_mut().payload = Payload::Compound(scope::Compound::new(field));
         // Eval the layout
