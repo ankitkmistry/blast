@@ -1,51 +1,30 @@
 // 1 0b1 0o147 0x1abcd 1.2 1.23e+23 1.23e-23 0xab.cdp+2
-//
-// PunType :: union {
-//     float: f64;
-//     raw: u64;
-// }
-//
-// exit :: fun (code: i32) -> noreturn;
-//
-// main :: fun () {
-//     h : **const i8 : typeof &f;
-//     io.println("Hello, \\\"\t\' World");
-//     io.println("Hello, World");
-//     io.println("Hello, World");
-// }
-
 // TODO: modifiers
 // comptime
 // extern "C"
 // public
-// public(current)
+// public(scope)
 // mutable
 // static
 
-tup :: (11, 22, 33);
-tup_mem :: tup.2;
-
-floats_count :: 10;
-// floats : [floats_count]__f32;
-floats : [10]__f32;
-
 // Solving struct layouts
-A :: struct {
-    b: B
-}
-B :: struct {
-    c: C
-}
-C :: struct {
-    a: *A
-}
+// A :: struct {
+//     b: B
+// }
+// B :: struct {
+//     c: C
+// }
+// C :: struct {
+//     // a: A,
+//     a: *A,
+// }
 
 // Solving module and typedef bug
-Bax :: FooM.Bar;
-FooM :: module {
-    Foo : typedef : Bax;
-    Bar :: struct {}
-}
+// Bax :: FooM.Bar;
+// FooM :: module {
+//     Foo : typedef : Bax;
+//     Bar :: struct {}
+// }
 
 // Concatenating modules
 std :: module {
@@ -53,65 +32,74 @@ std :: module {
     stdout: std.io.File;
     stderr: std.io.File;
 
+    fs :: module {
+        // Write here something
+    }
+}
+std :: module {
     io :: module {
         // File operations here
         File :: struct {}
     }
 }
-std :: module {
-    fs :: module {
-        // Write here something
-    }
-}
 
-vec2 :: union {
-    struct {
-        x: __f64,
-        y: __f64,
-    },
-    v: [2]__f64,
-}
-
-vec3 :: union {
-    struct {
-        union {
-            x: __f64,
-            r: __f64,
-        },
-        union {
-            y: __f64,
-            g: __f64,
-        },
-        union {
-            z: __f64,
-            b: __f64,
-        },
-    },
-    struct {
-        xy: vec2,
-        _: __f64,
-    },
-    struct {
-        _: __f64,
-        yz: vec2,
-    },
-    v: [3]__f64,
-}
+// Struct and union composition
+// vec2 :: union {
+//     struct {
+//         x: __f64,
+//         y: __f64,
+//     },
+//     v: [2]__f64,
+// }
+// vec3 :: union {
+//     struct {
+//         union {
+//             x: __f64,
+//             r: __f64,
+//         },
+//         union {
+//             y: __f64,
+//             g: __f64,
+//         },
+//         union {
+//             z: __f64,
+//             b: __f64,
+//         },
+//     },
+//     struct {
+//         xy: vec2,
+//         _: __f64,
+//     },
+//     struct {
+//         _: __f64,
+//         yz: vec2,
+//     },
+//     v: [3]__f64,
+// }
 
 // Pointer assignment checking
 // adoda: *const __f32;
 // aboba: *__f32 = adoda;
 
+// trivial comptime evaluation
 number :: 0;
 invert := ~number;
 
+tup :: (11, 22, 33);
+tup_mem :: tup.2;
+
+floats_count : __u64 : 10;
+floats : [floats_count]__f32;
+
+// comptime overflow check
 i :: 7265465651321354631;
 j :: 4654654651321354631;
 // k :: i + j;
 
-pp :: 1;
-p := &pp;
-ppp := 1;
+// Pointers
+// pp :: 1;
+// p := &pp;
+// ppp := 1;
 
 // vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {
 //     fun1 :: fun() -> __i64 { fun1 :: fun2; return 0; }

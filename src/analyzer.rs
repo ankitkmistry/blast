@@ -109,13 +109,36 @@ impl<'a> Analyzer<'a> {
                             for decl in decls {
                                 final_decls.push(decl);
                             }
-                            root.state = State::Visited(Context::from_module(Rc::clone(root_rc)));
+                            root.state = State::Visited(Context::from_module(Rc::clone(&root_rc)));
                         }
                         _ => unreachable!("not supposed to happen"),
                     },
                     _ => unreachable!("not supposed to happen"),
                 },
                 _ => unreachable!("not supposed to happen"),
+            }
+        }
+        // Generate all modules
+        for decl in &final_decls {
+            if let ast::Decl::Decl {
+                name: _,
+                taipe: _,
+                eq_token: _,
+                object: Some(object),
+            } = decl
+            {
+                match object {
+                    ast::Object::ExternModule { line_info, value } => {
+                        todo!("extern modules are not supported yet")
+                    }
+                    ast::Object::Module {
+                        line_info: _,
+                        decls: _,
+                    } => {
+                        self.visit_decl(decl, false)?;
+                    }
+                    _ => {}
+                }
             }
         }
         // Accumulate errors from predeclaring decls
@@ -337,15 +360,14 @@ impl<'a> Analyzer<'a> {
         should_visit_children: bool,
     ) -> CompileResult<Context<'a>> {
         macro_rules! colon_compulsory {
-            ($parser:expr, $token:expr) => {
+            ($token:expr) => {
                 // Check the colon thing
                 let Some(eq_token) = $token else {
                     unreachable!("probably some parser bug");
                 };
                 if eq_token.kind != TokenKind::Colon {
-                    $parser
-                        .saved_errs
-                        .push($parser.make_err("expected ':'", eq_token));
+                    self.saved_errs
+                        .push(self.make_err("expected ':'", eq_token));
                 }
             };
         }
@@ -405,14 +427,14 @@ impl<'a> Analyzer<'a> {
                         line_info: _,
                         value,
                     } => {
-                        colon_compulsory!(self, eq_token);
+                        colon_compulsory!(eq_token);
                         todo!("extern modules are not supported yet")
                     }
                     ast::Object::Module {
                         line_info: _,
                         decls,
                     } => {
-                        colon_compulsory!(self, eq_token);
+                        colon_compulsory!(eq_token);
                         // Visit type
                         if let Some(taipe) = taipe {
                             let taipe = self.visit_type(taipe)?;
@@ -438,6 +460,30 @@ impl<'a> Analyzer<'a> {
                             for decl in decls {
                                 self.visit_decl(decl, true)?;
                             }
+                        } else {
+                            // Visit only modules
+                            for decl in decls {
+                                if let ast::Decl::Decl {
+                                    name: _,
+                                    taipe: _,
+                                    eq_token: _,
+                                    object: Some(object),
+                                } = decl
+                                {
+                                    match object {
+                                        ast::Object::ExternModule { line_info, value } => {
+                                            todo!("extern modules are not supported yet")
+                                        }
+                                        ast::Object::Module {
+                                            line_info: _,
+                                            decls: _,
+                                        } => {
+                                            self.visit_decl(decl, false)?;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
                         // Restore old scope
                         self.cur_scope = old_cur_scope;
@@ -455,7 +501,7 @@ impl<'a> Analyzer<'a> {
                         line_info: _,
                         field,
                     } => {
-                        colon_compulsory!(self, eq_token);
+                        colon_compulsory!(eq_token);
                         // Visit type
                         if let Some(taipe) = taipe {
                             let taipe = self.visit_type(taipe)?;
@@ -473,7 +519,7 @@ impl<'a> Analyzer<'a> {
                         ret,
                         body,
                     } => {
-                        colon_compulsory!(self, eq_token);
+                        colon_compulsory!(eq_token);
                         // Visit type
                         let lhs = if let Some(taipe) = taipe {
                             Some((self.visit_type(taipe)?, taipe.get_line_info()))
@@ -639,7 +685,7 @@ impl<'a> Analyzer<'a> {
                         Ok(ctx)
                     }
                     ast::Object::Typedef(node) => {
-                        colon_compulsory!(self, eq_token);
+                        colon_compulsory!(eq_token);
                         // Visit lhs type
                         if let Some(taipe) = taipe {
                             let taipe = self.visit_type(taipe)?;
@@ -1335,9 +1381,12 @@ impl<'a> Analyzer<'a> {
                     return Err(self.make_err("array length must be specified", node));
                 };
                 let length_ctx = self.visit_expr(expr)?;
-                if !length_ctx.taipe.is_integer() {
+                if !length_ctx.taipe.is_unsigned_integer() {
                     return Err(self
-                        .make_err("argument of index operator should be an integer type", expr)
+                        .make_err(
+                            "argument of index operator should be an unsigned integer type",
+                            expr,
+                        )
                         .chain(self.make_note(
                             format!("but got '{}'", length_ctx.taipe.to_string()),
                             expr,
@@ -1492,6 +1541,7 @@ impl<'a> Analyzer<'a> {
                 match taipe {
                     context::Type::Basic(scope) => {
                         let mut ctx = self.get_member(&scope, &name)?;
+                        assert!(ctx.is_lvalue);
                         if keep_const {
                             ctx.taipe = context::Type::Const(Box::new(ctx.taipe));
                         }
