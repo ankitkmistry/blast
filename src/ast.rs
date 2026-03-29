@@ -55,6 +55,8 @@ pub enum Field {
 pub struct Param {
     pub name: Token,
     pub taipe: Type,
+    pub eq_token: Option<Token>,
+    pub expr: Option<Expr>,
 }
 
 pub enum Stmt {
@@ -280,7 +282,11 @@ impl HasLineInfo for Field {
 
 impl HasLineInfo for Param {
     fn get_line_info(&self) -> LineInfo {
-        LineInfo::from_range(&self.name, &self.taipe)
+        if let Some(expr) = &self.expr {
+            LineInfo::from_range(&self.name, expr)
+        } else {
+            LineInfo::from_range(&self.name, &self.taipe)
+        }
     }
 }
 

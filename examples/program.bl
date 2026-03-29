@@ -113,38 +113,36 @@ pp :: 1;
 p := &pp;
 ppp := 1;
 
-vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {
-    fun1 :: fun() -> __i64 { fun1 :: fun2; return 0; }
-    fun2 :: fun() -> __i64 { fun2 :: fun1; return 0; }
-    p = &ppp;
-    return lhs;
-}
+// vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {
+//     fun1 :: fun() -> __i64 { fun1 :: fun2; return 0; }
+//     fun2 :: fun() -> __i64 { fun2 :: fun1; return 0; }
+//     p = &ppp;
+//     return lhs;
+// }
 
 factorial :: fun (n: __uint) -> __uint {
     if n == 0 {
         return 1;
     } else {
-        // return n * factorial(n - 1);
-        return n * (n - 1);
+        return n * factorial(n - 1);
     }
 }
 
 fib :: fun (n: __uint) -> __uint {
-    a: __uint = 1;
+    a: __uint = 0;
     b: __uint = 1;
-    $hakla while true {
-        $hala while b <= n {
-            // print("{}", a);
-            temp :: a;
-            a = b;
-            b = temp + b;
-            continue $hala;
-            break $haka;
-        }
+    while b <= n {
+        // print("{}", a);
+        temp :: a;
+        a = b;
+        b = temp + b;
     }
     return a;
 }
 
+print :: fun (str: []__char, newline: __bool = true, stderr: __bool = false) -> void {
+}
+
 main :: fun () -> void {
-    return;
+    print("1", newline: false);
 }

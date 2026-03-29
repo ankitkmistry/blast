@@ -561,6 +561,12 @@ impl AstPrinter {
     fn visit_param(&mut self, param: &ast::Param) -> fmt::Result {
         self.print_tok("name", &param.name)?;
         self.print_type("type", &param.taipe)?;
+        if let Some(eq_token) = &param.eq_token {
+            self.print_tok("eq_token", eq_token)?;
+        }
+        if let Some(expr) = &param.expr {
+            self.print_expr("expr", expr)?;
+        }
         Ok(())
     }
 

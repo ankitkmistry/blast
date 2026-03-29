@@ -678,7 +678,7 @@ impl<'a> Context<'a> {
             is_lvalue: false,
             taipe: Type::Array {
                 count: chars.len(),
-                taipe: Box::new(Type::Const(Box::new(Type::Char))),
+                taipe: Box::new(Type::Char),
             },
             value: Some(Value::Array(chars)),
         }

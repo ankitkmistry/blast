@@ -3,7 +3,7 @@ use indexmap::IndexMap;
 use crate::{
     ast,
     common::{HasLineInfo, Layout, LineInfo},
-    context::Context,
+    context::{self, Context},
 };
 use std::{
     cell::RefCell,
@@ -82,7 +82,7 @@ pub enum State<'a> {
 #[derive(Clone)]
 pub enum Payload<'a> {
     Compound(Compound<'a>),
-    Function(Function),
+    Function(Function<'a>),
     Block,
     LayoutResolutionInProg,
     None,
@@ -92,9 +92,40 @@ pub enum Payload<'a> {
 pub struct LoopInfo;
 
 #[derive(Clone)]
-pub struct Function {
+pub struct ParamInfo<'a> {
+    pub taipe: context::Type<'a>,
+    pub default: Option<context::Value<'a>>,
+    pub line_info: LineInfo,
+}
+
+#[derive(Clone)]
+pub struct Function<'a> {
+    pub param_infos: IndexMap<String, ParamInfo<'a>>,
     pub loop_stack: IndexMap<String, LoopInfo>,
     pub ret_line_info: Option<LineInfo>,
+}
+
+impl<'a> Function<'a> {
+    pub fn get_total_param_count(&self) -> usize {
+        self.param_infos.len()
+    }
+    pub fn get_default_param_count(&self) -> usize {
+        self.param_infos
+            .iter()
+            .filter(|(_, param)| param.default.is_some())
+            .count()
+    }
+    pub fn get_min_param_count(&self) -> usize {
+        self.param_infos
+            .iter()
+            .filter(|(_, param)| param.default.is_none())
+            .count()
+    }
+    pub fn has_default_params(&self) -> bool {
+        self.param_infos
+            .iter()
+            .any(|(_, param)| param.default.is_some())
+    }
 }
 
 #[derive(Clone)]

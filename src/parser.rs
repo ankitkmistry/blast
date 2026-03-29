@@ -357,12 +357,30 @@ impl Parser {
         })
     }
 
-    // param ::= identifier ':' type;
+    // param ::= identifier ':' type ((':'|'=') expr)?;
     fn parse_param(&mut self) -> CompileResult<ast::Param> {
         let name = self.expect(Ident)?;
         self.expect(Colon)?;
         let taipe = self.parse_type()?;
-        Ok(ast::Param { name, taipe })
+        if let Some(tok) = self.peek()
+            && (tok.kind == Colon || tok.kind == Equal)
+        {
+            let eq_token = self.get_token()?;
+            let expr = self.parse_expr()?;
+            Ok(ast::Param {
+                name,
+                taipe,
+                eq_token: Some(eq_token),
+                expr: Some(expr),
+            })
+        } else {
+            Ok(ast::Param {
+                name,
+                taipe,
+                eq_token: None,
+                expr: None,
+            })
+        }
     }
 
     // stmt := if_stmt | while_stmt

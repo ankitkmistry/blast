@@ -143,6 +143,12 @@ pub enum CompileError {
 }
 
 impl CompileError {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            CompileError::Errors(errs) => errs.is_empty(),
+            _ => true,
+        }
+    }
     pub fn chain(self, other: CompileError) -> Self {
         let mut vec = Vec::new();
         if let CompileError::Errors(mut errs) = self {
@@ -310,4 +316,8 @@ pub fn fuzzy_search_best(
         }
     }
     results
+}
+
+pub fn get_plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }

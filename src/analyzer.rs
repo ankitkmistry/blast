@@ -14,7 +14,7 @@ use crate::{
     ast,
     common::{
         CompileError, CompileResult, HasLineInfo, Int, Layout, LineInfo, Settings,
-        fuzzy_search_best,
+        fuzzy_search_best, get_plural,
     },
     context::{self, Context},
     lexer::{Token, TokenKind, TokenValue},
@@ -194,7 +194,7 @@ impl<'a> Analyzer<'a> {
 
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
-                "unnamed.{}$",
+                "unnamed{}$",
                 UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
@@ -227,7 +227,7 @@ impl<'a> Analyzer<'a> {
 
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
-                "unnamed.{}$",
+                "unnamed{}$",
                 UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
@@ -283,7 +283,7 @@ impl<'a> Analyzer<'a> {
 
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
-                "unnamed.{}$",
+                "unnamed{}$",
                 UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
@@ -316,7 +316,7 @@ impl<'a> Analyzer<'a> {
 
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
-                "unnamed.{}$",
+                "unnamed{}$",
                 UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
@@ -491,20 +491,73 @@ impl<'a> Analyzer<'a> {
                         // param. The second time we declare the parameter inside the function
                         // scope, once and for all.
                         let mut param_infos = Vec::new();
+                        let mut prev_default_param = None;
                         for param in params {
-                            let taipe = self.visit_type(&param.taipe)?;
-                            param_infos.push((&param.name, taipe));
+                            let lhs = self.visit_type(&param.taipe)?;
+                            let lhs_line_info = param.get_line_info();
+                            let (eq_token, rhs) = if let Some(expr) = &param.expr {
+                                let Some(eq_token) = param.eq_token.as_ref().clone() else {
+                                    unreachable!("probably some parser bug");
+                                };
+                                let rhs = self.visit_expr(expr)?;
+                                let rhs_line_info = expr.get_line_info();
+                                (Some(eq_token), Some((rhs, rhs_line_info)))
+                            } else {
+                                (None, None)
+                            };
+                            let provided_default = rhs.is_some();
+                            if provided_default {
+                                prev_default_param = Some(param.get_line_info());
+                            } else {
+                                if let Some(ref prev_default_param) = prev_default_param {
+                                    return Err(self
+                                        .make_err(
+                                            "non-default parameter is not allowed here",
+                                            param,
+                                        )
+                                        .chain(self.make_note(
+                                            "previous default parameter is here",
+                                            prev_default_param,
+                                        )));
+                                }
+                            }
+                            let ctx =
+                                self.resolve_assign(Some((lhs, lhs_line_info)), eq_token, rhs)?;
+                            // TODO: parameters may not always be initialized at comptime.
+                            // Solve that thing as default value of parameters may be runtime.
+                            // The code for the default value of parameters are inserted at every
+                            // function call.
+                            if provided_default && ctx.value.is_none() {
+                                return Err(self.make_err(
+                                    "value cannot be evaluated at compile time",
+                                    param.expr.as_ref().unwrap(),
+                                ));
+                            }
+                            assert!(ctx.value.is_some() == provided_default);
+                            param_infos.push((
+                                &param.name,
+                                scope::ParamInfo {
+                                    taipe: ctx.taipe,
+                                    default: ctx.value,
+                                    line_info: param.get_line_info(),
+                                },
+                            ));
                         }
+                        let mut param_table = IndexMap::new();
                         let mut param_types = Vec::new();
-                        for (name, taipe) in param_infos {
+                        for (name, param) in param_infos {
+                            // Prepare param_table for function call information
+                            param_table.insert(name.text.clone(), param.clone());
+                            // Prepare param_types for creating function type
                             param_types.push(context::Param {
-                                taipe: taipe.clone(),
+                                taipe: param.taipe.clone(),
                             });
+                            // Generate the param name in the current scope
                             let param_scope =
                                 self.declare_sym_ex(scope::State::VisitInProg, name)?;
                             param_scope.borrow_mut().state = scope::State::Visited(Context {
                                 is_lvalue: true,
-                                taipe,
+                                taipe: param.taipe,
                                 value: None,
                             });
                         }
@@ -531,6 +584,7 @@ impl<'a> Analyzer<'a> {
                         // Mark it visited
                         scope.borrow_mut().state = scope::State::Visited(ctx.clone());
                         scope.borrow_mut().payload = scope::Payload::Function(scope::Function {
+                            param_infos: param_table,
                             loop_stack: IndexMap::new(),
                             ret_line_info: ret.as_ref().map(|ret| ret.get_line_info()),
                         });
@@ -729,7 +783,7 @@ impl<'a> Analyzer<'a> {
             } else {
                 data.loop_stack.insert(
                     format!(
-                        "loop.{}$",
+                        "loop{}$",
                         LOOP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                     ),
                     scope::LoopInfo {},
@@ -837,6 +891,7 @@ impl<'a> Analyzer<'a> {
             unreachable!("probably some analyzer bug");
         };
         let scope::Payload::Function(scope::Function {
+            param_infos: _,
             loop_stack: _,
             ret_line_info,
         }) = function.borrow().payload
@@ -971,7 +1026,7 @@ impl<'a> Analyzer<'a> {
 
     fn create_block_scope(&mut self, line_info: LineInfo) -> Rc<RefCell<scope::Scope<'a>>> {
         let block_name = format!(
-            "block.{}$",
+            "block{}$",
             BLOCK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         );
         let scope = scope::Scope::add_child(
@@ -1513,7 +1568,7 @@ impl<'a> Analyzer<'a> {
                 line_info: _,
                 expr,
                 args,
-            } => todo!(),
+            } => self.visit_call(node, expr, args),
             ast::Expr::Index {
                 line_info: _,
                 expr,
@@ -1683,6 +1738,250 @@ impl<'a> Analyzer<'a> {
                 line_info: _,
                 items,
             } => todo!(),
+        }
+    }
+
+    fn visit_call(
+        &mut self,
+        node: &'a ast::Expr,
+        expr: &'a ast::Expr,
+        args: &'a [ast::Arg],
+    ) -> CompileResult<Context<'a>> {
+        let ctx = self.visit_expr(expr)?;
+        if !ctx.taipe.is_function() {
+            return Err(self.make_err(
+                format!(
+                    "expected function but got value of type '{}'",
+                    ctx.to_string()
+                ),
+                expr,
+            ));
+        }
+        let mut pos_arg_infos = Vec::new();
+        let mut named_arg_infos = IndexMap::new();
+        let mut prev_named_arg = None;
+        for arg in args {
+            let arg_ctx = self.visit_expr(&arg.expr)?;
+            if let Some(ref name) = arg.name {
+                prev_named_arg = Some(name.get_line_info());
+                let result = named_arg_infos.insert(
+                    name.text.clone(),
+                    (arg_ctx, name.get_line_info(), arg.expr.get_line_info()),
+                );
+                // Check for duplicate named arguments
+                if let Some((_, line_info, _)) = result {
+                    return Err(self
+                        .make_err("duplicate named argument", name)
+                        .chain(self.make_note("previous named argument is here", &line_info)));
+                }
+            } else {
+                if let Some(ref prev_named_arg) = prev_named_arg {
+                    return Err(self
+                        .make_err("unnamed argument is not allowed here", arg)
+                        .chain(self.make_note("previous named argument is here", prev_named_arg)));
+                }
+                pos_arg_infos.push((arg_ctx, arg.get_line_info()));
+            }
+        }
+        assert!(pos_arg_infos.len() + named_arg_infos.len() == args.len());
+        self.resolve_call(
+            ctx.clone(),
+            &pos_arg_infos,
+            &named_arg_infos,
+            node.get_line_info(),
+        )
+    }
+
+    fn resolve_call(
+        &mut self,
+        fun_ctx: Context<'a>,
+        pos_arg_infos: &[(Context<'a>, LineInfo)],
+        named_arg_infos: &IndexMap<String, (Context<'a>, LineInfo, LineInfo)>,
+        call_line_info: LineInfo,
+    ) -> CompileResult<Context<'a>> {
+        // For better error messages
+        let mut errs = CompileError::Errors(Vec::new());
+        if let Some(fun_value) = fun_ctx.value {
+            let context::Value::Function(scope) = fun_value else {
+                unreachable!("probably some analyzer bug");
+            };
+            let scope = scope.borrow();
+            let scope::Payload::Function(ref data) = scope.payload else {
+                unreachable!("probably some analyzer bug");
+            };
+            // Check argument count
+            let arg_count = pos_arg_infos.len() + named_arg_infos.len();
+            let total_param_count = data.get_total_param_count();
+            if data.has_default_params() {
+                let min_param_count = data.get_min_param_count();
+                if arg_count < min_param_count || arg_count > total_param_count {
+                    errs = errs.chain(self.make_err(
+                        format!(
+                            "expected '{}' to '{}' argument{} but got '{}'",
+                            min_param_count,
+                            total_param_count,
+                            get_plural(total_param_count),
+                            arg_count
+                        ),
+                        &call_line_info,
+                    ));
+                }
+            } else {
+                if arg_count != total_param_count {
+                    errs = errs.chain(self.make_err(
+                        format!(
+                            "expected '{}' argument{} but got '{}'",
+                            total_param_count,
+                            get_plural(total_param_count),
+                            arg_count
+                        ),
+                        &call_line_info,
+                    ));
+                }
+            }
+            // Get the necessary info about params
+            let params = data.param_infos.clone();
+            let mut args_info = IndexMap::new();
+            // Check positional argument expression types
+            for (i, (arg_ctx, arg_line_info)) in pos_arg_infos.iter().enumerate() {
+                let (param_name, param) = params.get_index(i).unwrap();
+                let lhs = param.taipe.clone();
+                let lhs_line_info = param.line_info;
+                let rhs = arg_ctx.clone();
+                let rhs_line_info = *arg_line_info;
+                let mut ctx = match self.resolve_assign(
+                    Some((lhs, lhs_line_info)),
+                    None,
+                    Some((rhs, rhs_line_info)),
+                ) {
+                    Ok(it) => it,
+                    Err(err) => {
+                        errs = errs.chain(err);
+                        Context {
+                            is_lvalue: true,
+                            taipe: param.taipe.clone(),
+                            value: arg_ctx.value.clone(),
+                        }
+                    }
+                };
+                ctx.is_lvalue = true;
+                args_info.insert(param_name.clone(), (ctx, rhs_line_info));
+            }
+            // Check named argument expression types
+            for (name, (arg_ctx, arg_line_info, arg_expr_info)) in named_arg_infos.iter() {
+                let Some(param) = params.get(name) else {
+                    let searched_names = params
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect::<HashSet<_>>();
+                    return Err(self
+                        .make_err(format!("unknown argument: '{}'", name), arg_line_info)
+                        .chain(self.make_did_you_mean_help(name, &searched_names)));
+                };
+                let lhs = param.taipe.clone();
+                let lhs_line_info = param.line_info;
+                let rhs = arg_ctx.clone();
+                let rhs_line_info = *arg_expr_info;
+                let mut ctx = match self.resolve_assign(
+                    Some((lhs, lhs_line_info)),
+                    None,
+                    Some((rhs, rhs_line_info)),
+                ) {
+                    Ok(it) => it,
+                    Err(err) => {
+                        errs = errs.chain(err);
+                        Context {
+                            is_lvalue: true,
+                            taipe: param.taipe.clone(),
+                            value: arg_ctx.value.clone(),
+                        }
+                    }
+                };
+                ctx.is_lvalue = true;
+                let result = args_info.insert(name.clone(), (ctx, rhs_line_info));
+                // Check possible duplicate named and position argument
+                if let Some((_, line_info)) = result {
+                    errs = errs
+                        .chain(self.make_err("duplicate named argument", arg_line_info))
+                        .chain(self.make_note("previous positional argument is here", &line_info));
+                }
+            }
+            let mut args_info = args_info
+                .iter()
+                .map(|(name, (ctx, _))| (name, ctx.clone()))
+                .collect::<IndexMap<_, _>>();
+            // Check if any value is left out
+            for (name, param) in params.iter() {
+                if !args_info.contains_key(name) {
+                    if let Some(value) = &param.default {
+                        args_info.insert(
+                            name,
+                            Context {
+                                is_lvalue: true,
+                                taipe: param.taipe.clone(),
+                                value: Some(value.clone()),
+                            },
+                        );
+                    } else {
+                        errs = errs
+                            .chain(self.make_err(
+                                format!("value of argument '{}' is not provided", name),
+                                &call_line_info,
+                            ))
+                            .chain(self.make_note("declared here", &param.line_info))
+                    }
+                }
+            }
+            // Return the accumulated errors
+            if !errs.is_empty() {
+                return Err(errs);
+            }
+            // Reorder args_info in the order of params
+            let mut new_args_info = IndexMap::new();
+            for (name, _) in params.iter() {
+                new_args_info.insert(name, args_info[name].clone());
+            }
+            let args_info = new_args_info;
+            // TODO: Use args_info to generate IR
+            println!(
+                "Call to function {}: {}",
+                scope.sym_path.to_string(),
+                fun_ctx.taipe.to_string()
+            );
+            let line_info = call_line_info.begin();
+            println!(
+                "    at {}:{}:{}",
+                self.get_cur_scope().get_src_path(),
+                line_info.line_start,
+                line_info.col_start
+            );
+            for (name, arg_ctx) in args_info.iter() {
+                if let Some(value) = &arg_ctx.value {
+                    println!(
+                        "  Argument => {}: {} = {}",
+                        name,
+                        arg_ctx.to_string(),
+                        value.to_string()
+                    )
+                } else {
+                    println!("  Argument => {}: {}", name, arg_ctx.to_string())
+                }
+            }
+            println!();
+            let context::Type::Function {
+                ret: return_type,
+                params: _,
+            } = fun_ctx.taipe
+            else {
+                unreachable!("probably some analyzer bug")
+            };
+            Ok(Context {
+                is_lvalue: false,
+                taipe: (*return_type).clone(),
+                value: None, // Value may have side effects
+            })
+        } else {
+            todo!()
         }
     }
 
@@ -2846,7 +3145,7 @@ impl<'a> Analyzer<'a> {
                     alignment: 2 * self.settings.pointer_size,
                 }
             }
-            context::Type::Tuple(items) => self.resolve_layout_tuple(items, line_info),
+            context::Type::Tuple(items) => self.resolve_layout_tuple(items, line_info)?,
             context::Type::VarInt
             | context::Type::Module
             | context::Type::Typedef
@@ -3253,12 +3552,12 @@ impl<'a> Analyzer<'a> {
             () => {
                 return Err(self
                     .make_err(
-                        format!("cannot assign to: '{}'", lhs.to_string()),
-                        &lhs_line_info,
+                        format!("cannot assign value of type '{}'", rhs.to_string()),
+                        &rhs_line_info,
                     )
                     .chain(self.make_note(
-                        format!("type of value is '{}'", rhs.to_string()),
-                        &rhs_line_info,
+                        format!("cannot assign to '{}'", lhs.to_string()),
+                        &lhs_line_info,
                     )));
             };
         }
@@ -3737,13 +4036,13 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn transform_varint_to_usize(
-        &self,
-        value: &context::Value<'a>,
-        line_info: &impl HasLineInfo,
-    ) -> CompileResult<context::Value<'a>> {
-        self.transform_varint(&self.type_usize, value, line_info, Some("usize"))
-    }
+    // fn transform_varint_to_usize(
+    //     &self,
+    //     value: &context::Value<'a>,
+    //     line_info: &impl HasLineInfo,
+    // ) -> CompileResult<context::Value<'a>> {
+    //     self.transform_varint(&self.type_usize, value, line_info, Some("usize"))
+    // }
 
     fn transform_varint_to_int(
         &self,
@@ -3880,11 +4179,11 @@ impl<'a> Analyzer<'a> {
         handler(data)
     }
 
-    fn get_current_block(&self) -> Option<Rc<RefCell<scope::Scope<'a>>>> {
-        if self.cur_scope.borrow().is_block() {
-            Some(Rc::clone(&self.cur_scope))
-        } else {
-            self.cur_scope.borrow().get_enclosing_block()
-        }
-    }
+    // fn get_current_block(&self) -> Option<Rc<RefCell<scope::Scope<'a>>>> {
+    //     if self.cur_scope.borrow().is_block() {
+    //         Some(Rc::clone(&self.cur_scope))
+    //     } else {
+    //         self.cur_scope.borrow().get_enclosing_block()
+    //     }
+    // }
 }
