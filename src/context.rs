@@ -409,9 +409,14 @@ pub enum Value<'a> {
     Index(Box<Context<'a>>, Box<Context<'a>>),
     Call(Rc<RefCell<scope::Scope<'a>>>, IndexMap<String, Context<'a>>),
     // Statement instructions
+    Assign(Vec<Context<'a>>, Vec<Context<'a>>),
     IfElse(Box<Context<'a>>, Box<Context<'a>>, Box<Context<'a>>),
     If(Box<Context<'a>>, Box<Context<'a>>),
+    While(Box<Context<'a>>, Box<Context<'a>>),
     Block(Vec<Context<'a>>),
+    Ret(Box<Context<'a>>),
+    Eval(Box<Context<'a>>),
+    RetVoid,
     // Cast instructions
     // from: fX         to: fY
     // from: iX         to: iY

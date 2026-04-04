@@ -7,6 +7,12 @@
 // mutable
 // static
 
+// This is a single line comment
+/* This is a multi
+   line comment */
+/* yes, multi /* line */ comments /* can
+   be nested */ */
+
 // Solving struct layouts
 // A :: struct {
 //     b: B
@@ -102,13 +108,6 @@ j :: 4654654651321354631;
 // p := &pp;
 // ppp := 1;
 
-// vec3_add :: fun (lhs: vec3, rhs: vec3) -> vec3 {
-//     fun1 :: fun() -> __i64 { fun1 :: fun2; return 0; }
-//     fun2 :: fun() -> __i64 { fun2 :: fun1; return 0; }
-//     p = &ppp;
-//     return lhs;
-// }
-
 factorial :: fun (n: __uint) -> __uint {
     if n == 0 {
         return 1;
@@ -123,15 +122,35 @@ fib :: fun (n: __uint) -> __uint {
     while b <= n {
         // print("{}", a);
         temp :: a;
+        1 + 2;
         a = b;
         b = temp + b;
     }
     return a;
 }
 
-print :: fun (str: []__char, newline: __bool = true, stderr: __bool = false) -> void {
+// Advanced variable scoping
+// ai := 5;
+// aba :: fun () -> __int {
+//     ai := 1;
+//     j :: 8;
+//
+//     abo :: fun () -> __int {
+//         // ai = 2 + j;
+//         ai := 2 + j;
+//         return 69;
+//     }
+//
+//     ai = abo();
+//
+//     return ai + j;
+// }
+
+print :: fun (str: []__char, newline: __bool = true, stderr: __bool = false) {
 }
 
-main :: fun () -> void {
+main :: fun () {
     print("1", newline: false);
 }
+
+// This is a comment at the end of a line

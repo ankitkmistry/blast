@@ -29,6 +29,11 @@ pub fn print_error(err: CompileError) {
             line_info,
             msg,
         } => print_diagnostic(DiagKind::Error, &file_path, line_info, &msg),
+        CompileError::LexerNote {
+            file_path,
+            line_info,
+            msg,
+        } => print_diagnostic(DiagKind::Note, &file_path, line_info, &msg),
         CompileError::ParserError {
             file_path,
             line_info,
@@ -355,7 +360,7 @@ fn print_ir_of_scope<'a>(scope: Ref<'_, scope::Scope<'a>>) {
         }
         scope::State::Visited(ctx) => {
             if let context::Value::Reference(_) = ctx.value {
-            } else if let context::Value::Block(_) = ctx.value {
+                // } else if let context::Value::Block(_) = ctx.value {
             } else {
                 print_ir(&scope.sym_path.to_string(), ctx);
                 // println!();
@@ -569,6 +574,15 @@ impl<'a> IrPrinter {
                     self.print_context(arg_name, arg_ctx)?;
                 }
             }
+            context::Value::Assign(lhs_ctxes, rhs_ctxes) => {
+                write!(self, "Assign")?;
+                for (i, ctx) in lhs_ctxes.iter().enumerate() {
+                    self.print_context(&format!("lhs[{}]", i), ctx)?;
+                }
+                for (i, ctx) in rhs_ctxes.iter().enumerate() {
+                    self.print_context(&format!("rhs[{}]", i), ctx)?;
+                }
+            }
             context::Value::IfElse(cond, then_ctx, else_ctx) => {
                 write!(self, "IfElse")?;
                 self.print_context("condition", cond)?;
@@ -580,11 +594,27 @@ impl<'a> IrPrinter {
                 self.print_context("condition", cond)?;
                 self.print_context("then", then_ctx)?;
             }
+            context::Value::While(cond, body) => {
+                write!(self, "While")?;
+                self.print_context("condition", cond)?;
+                self.print_context("body", body)?;
+            }
             context::Value::Block(ctxs) => {
                 write!(self, "Block")?;
                 for (i, ctx) in ctxs.iter().enumerate() {
                     self.print_context(&format!("[{}]", i), ctx)?;
                 }
+            }
+            context::Value::Ret(ctx) => {
+                write!(self, "Ret")?;
+                self.print_context("value", ctx)?;
+            }
+            context::Value::RetVoid => {
+                write!(self, "RetVoid")?;
+            }
+            context::Value::Eval(ctx) => {
+                write!(self, "Eval")?;
+                self.print_context("expr", ctx)?;
             }
             context::Value::Cast(ctx) => {
                 write!(self, "Cast")?;

@@ -81,7 +81,6 @@ pub enum State<'a> {
 pub enum Payload<'a> {
     Compound(Compound<'a>),
     Function(Function<'a>),
-    Block,
     LayoutResolutionInProg,
     None,
 }
@@ -118,9 +117,7 @@ impl<'a> Function<'a> {
             .count()
     }
     pub fn has_default_params(&self) -> bool {
-        self.param_infos
-            .iter()
-            .any(|(_, param)| param.default.is_some())
+        self.param_infos.iter().any(|(_, param)| param.default.is_some())
     }
 }
 
@@ -163,6 +160,20 @@ impl<'a> Compound<'a> {
 
 pub type Map<K, V> = IndexMap<K, V>;
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ScopeKind {
+    Module,
+    Compound,
+    Field,
+    Function,
+    Param,
+    Typedef,
+    Variable,
+    Const,
+    Block,
+    None,
+}
+
 pub struct Scope<'a> {
     /// Weak reference to the parent scope
     pub parent: Weak<RefCell<Scope<'a>>>,
@@ -172,6 +183,8 @@ pub struct Scope<'a> {
     pub file_path: Option<String>,
     /// The symbol path of the scope
     pub sym_path: SymbolPath,
+    /// The kind of the scope
+    pub kind: ScopeKind,
     /// The name of the scope in the form of a token. (to improve error output)
     pub name: String,
     /// The line info of the scope.
@@ -191,6 +204,7 @@ impl<'a> Scope<'a> {
             parent: Weak::new(),
             file_path: Some(file_path.to_owned()),
             sym_path: SymbolPath::new(),
+            kind: ScopeKind::Module,
             name: "".to_string(),
             line_info: node.get_line_info(),
             state: State::NotVisited(ScopeNode::Object(node)),
@@ -201,6 +215,7 @@ impl<'a> Scope<'a> {
 
     pub fn add_child(
         parent: &Rc<RefCell<Scope<'a>>>,
+        kind: ScopeKind,
         name: &str,
         state: State<'a>,
         line_info: &impl HasLineInfo,
@@ -213,6 +228,7 @@ impl<'a> Scope<'a> {
             parent: Rc::downgrade(parent),
             file_path: None,
             sym_path,
+            kind,
             name: name.to_string(),
             line_info: line_info.get_line_info(),
             state,
@@ -224,46 +240,30 @@ impl<'a> Scope<'a> {
         // Finishing up
         let ret = parent.borrow_mut().children.insert(name.to_owned(), child);
         if name != "_" {
-            assert!(
-                ret.is_none(),
-                "redeclaration should be prohibited from analyzer"
-            );
+            assert!(ret.is_none(), "redeclaration should be prohibited from analyzer");
         }
         result
     }
 
+    pub fn is_variable(&self) -> bool {
+        match self.kind {
+            ScopeKind::Variable => true,
+            _ => false,
+        }
+    }
+
     pub fn is_function(&self) -> bool {
-        match &self.state {
-            State::NotVisited(_) => panic!("impossible to know"),
-            State::VisitInProg => {
-                if self.is_block() {
-                    false
-                } else {
-                    panic!("impossible to know")
-                }
-            }
-            State::Visited(ctx) => ctx.taipe.is_function(),
+        match self.kind {
+            ScopeKind::Function => true,
+            _ => false,
         }
     }
 
     pub fn get_enclosing_function(&self) -> Option<Rc<RefCell<Scope<'a>>>> {
         if let Some(parent) = self.parent.upgrade() {
-            match &parent.borrow().state {
-                State::NotVisited(_) => panic!("impossible to know"),
-                State::VisitInProg => {
-                    if self.is_block() {
-                        parent.borrow().get_enclosing_function()
-                    } else {
-                        panic!("impossible to know")
-                    }
-                }
-                State::Visited(ctx) => {
-                    if ctx.taipe.is_function() {
-                        Some(Rc::clone(&parent))
-                    } else {
-                        parent.borrow().get_enclosing_function()
-                    }
-                }
+            match parent.borrow().kind {
+                ScopeKind::Function => Some(Rc::clone(&parent)),
+                _ => parent.borrow().get_enclosing_function(),
             }
         } else {
             None
@@ -271,16 +271,16 @@ impl<'a> Scope<'a> {
     }
 
     pub fn is_block(&self) -> bool {
-        match self.payload {
-            Payload::Block => true,
+        match self.kind {
+            ScopeKind::Block => true,
             _ => false,
         }
     }
 
     pub fn get_enclosing_block(&self) -> Option<Rc<RefCell<Scope<'a>>>> {
         if let Some(parent) = self.parent.upgrade() {
-            match parent.borrow().payload {
-                Payload::Block => Some(Rc::clone(&parent)),
+            match parent.borrow().kind {
+                ScopeKind::Block => Some(Rc::clone(&parent)),
                 _ => None,
             }
         } else {

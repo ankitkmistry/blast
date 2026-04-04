@@ -11,10 +11,10 @@ use num_traits::cast::ToPrimitive;
 
 use crate::{
     ast,
- common::{CompileError, CompileResult, HasLineInfo, Layout, LineInfo, Settings, fuzzy_search_best, get_plural},
- context::{self, Context},
- lexer::{Token, TokenKind, TokenValue},
- printer, scope::{self, HasSrcInfo, Payload, State}
+    common::{CompileError, CompileResult, HasLineInfo, Layout, LineInfo, Settings, fuzzy_search_best, get_plural},
+    context::{self, Context},
+    lexer::{Token, TokenKind, TokenValue},
+    scope::{self, HasSrcInfo, Payload, State},
 };
 
 // TODO: Counters should not be global
@@ -209,17 +209,14 @@ impl<'a> Analyzer<'a> {
 
         Ok(scope::Scope::add_child(
             &self.cur_scope,
+            scope::ScopeKind::None,
             &sym_name,
             scope::State::NotVisited(scope::ScopeNode::Decl(node)),
             name,
         ))
     }
 
-    fn declare_sym_ex(
-        &mut self,
-        state: scope::State<'a>,
-        name: &Token,
-    ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
+    fn declare_param(&mut self, state: scope::State<'a>, name: &Token) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
         // Check for redeclaration
         // Except for '_' declarations
         if name.kind != TokenKind::Underscore
@@ -240,7 +237,13 @@ impl<'a> Analyzer<'a> {
             name.text.clone()
         };
 
-        Ok(scope::Scope::add_child(&self.cur_scope, &sym_name, state, name))
+        Ok(scope::Scope::add_child(
+            &self.cur_scope,
+            scope::ScopeKind::Param,
+            &sym_name,
+            state,
+            name,
+        ))
     }
 
     fn declare_sym_with_value(
@@ -293,6 +296,7 @@ impl<'a> Analyzer<'a> {
 
         Ok(scope::Scope::add_child(
             &self.cur_scope,
+            scope::ScopeKind::None,
             &sym_name,
             scope::State::NotVisited(scope::ScopeNode::Decl(node)),
             name,
@@ -322,6 +326,7 @@ impl<'a> Analyzer<'a> {
 
         Ok(scope::Scope::add_child(
             &self.cur_scope,
+            scope::ScopeKind::Field,
             &sym_name,
             scope::State::NotVisited(scope::ScopeNode::Field(field)),
             field,
@@ -358,20 +363,19 @@ impl<'a> Analyzer<'a> {
                     }
                 };
                 // Set in progress
-                {
-                    let mut scope_ref = scope.borrow_mut();
-                    match &scope_ref.state {
-                        State::NotVisited(_) => {
-                            scope_ref.state = scope::State::VisitInProg;
-                        }
-                        State::VisitInProg => unreachable!("probably some analyzer bug"),
-                        State::Visited(ctx) => {
-                            if !ctx.taipe.is_module() {
-                                return Ok(Context::from_scope(&ctx.taipe, &scope));
-                            }
+                let mut scope_ref = scope.borrow_mut();
+                match &scope_ref.state {
+                    State::NotVisited(_) => {
+                        scope_ref.state = scope::State::VisitInProg;
+                    }
+                    State::VisitInProg => unreachable!("probably some analyzer bug"),
+                    State::Visited(ctx) => {
+                        if !ctx.taipe.is_module() {
+                            return Ok(Context::from_scope(&ctx.taipe, &scope));
                         }
                     }
                 }
+                drop(scope_ref);
                 // Unwrap the object
                 let Some(object) = object else {
                     // Situation
@@ -388,16 +392,25 @@ impl<'a> Analyzer<'a> {
                     }
                     let ctx = self.resolve_assign(Some((type_ctx, taipe.get_line_info())), None, None)?;
                     let result = Context::from_scope(&ctx.taipe, &scope);
+                    scope.borrow_mut().kind = if ctx.taipe.is_typedef() {
+                        scope::ScopeKind::Typedef
+                    } else if ctx.taipe.is_const() {
+                        scope::ScopeKind::Const
+                    } else {
+                        scope::ScopeKind::Variable
+                    };
                     scope.borrow_mut().state = State::Visited(ctx);
                     return Ok(result);
                 };
                 match object {
                     ast::Object::ExternModule { line_info: _, value } => {
                         colon_compulsory!(eq_token);
+                        scope.borrow_mut().kind = scope::ScopeKind::Module;
                         todo!("extern modules are not supported yet")
                     }
                     ast::Object::Module { line_info: _, decls } => {
                         colon_compulsory!(eq_token);
+                        scope.borrow_mut().kind = scope::ScopeKind::Module;
                         // Visit type
                         if let Some(taipe) = taipe {
                             let taipe = self.visit_type(taipe)?;
@@ -458,6 +471,7 @@ impl<'a> Analyzer<'a> {
                     // }
                     ast::Object::Compound { line_info: _, field } => {
                         colon_compulsory!(eq_token);
+                        scope.borrow_mut().kind = scope::ScopeKind::Compound;
                         // Visit type
                         if let Some(taipe) = taipe {
                             let taipe = self.visit_type(taipe)?;
@@ -475,6 +489,7 @@ impl<'a> Analyzer<'a> {
                         body,
                     } => {
                         colon_compulsory!(eq_token);
+                        scope.borrow_mut().kind = scope::ScopeKind::Function;
                         // Visit type
                         let lhs = if let Some(taipe) = taipe {
                             Some((self.visit_type(taipe)?, taipe.get_line_info()))
@@ -539,7 +554,7 @@ impl<'a> Analyzer<'a> {
                             // Prepare param_table for function call information
                             param_table.insert(name.text.clone(), param);
                             // Generate the param name in the current scope
-                            let param_scope = self.declare_sym_ex(scope::State::VisitInProg, name)?;
+                            let param_scope = self.declare_param(scope::State::VisitInProg, name)?;
                             param_scope.borrow_mut().state =
                                 scope::State::Visited(Context::from_scope(&param_type, &param_scope));
                         }
@@ -616,6 +631,7 @@ impl<'a> Analyzer<'a> {
                     }
                     ast::Object::Typedef(node) => {
                         colon_compulsory!(eq_token);
+                        scope.borrow_mut().kind = scope::ScopeKind::Typedef;
                         // Visit lhs type
                         if let Some(taipe) = taipe {
                             let taipe = self.visit_type(taipe)?;
@@ -649,6 +665,13 @@ impl<'a> Analyzer<'a> {
                         let ctx = self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, expr.get_line_info())))?;
                         let result = Context::from_scope(&ctx.taipe, &scope);
                         // Complete the visit
+                        if ctx.taipe.is_typedef() {
+                            scope.borrow_mut().kind = scope::ScopeKind::Typedef;
+                        } else if ctx.taipe.is_const() {
+                            scope.borrow_mut().kind = scope::ScopeKind::Const;
+                        } else {
+                            scope.borrow_mut().kind = scope::ScopeKind::Variable;
+                        }
                         scope.borrow_mut().state = scope::State::Visited(ctx);
                         Ok(result)
                     }
@@ -716,8 +739,12 @@ impl<'a> Analyzer<'a> {
                 Ok(Context::from_void())
             }
             ast::Stmt::Expr(expr) => {
-                let _ = self.visit_expr(expr)?;
-                Ok(Context::from_void())
+                let ctx = self.visit_expr(expr)?;
+                Ok(Context {
+                    is_lvalue: false,
+                    taipe: context::Type::Void,
+                    value: context::Value::Eval(Box::new(ctx)),
+                })
             }
             ast::Stmt::Nop(_) => Ok(Context::from_void()),
         }
@@ -758,9 +785,17 @@ impl<'a> Analyzer<'a> {
             data.loop_stack.pop();
         });
         if then_body_result.taipe.is_noreturn() {
-            Ok(Context::from_noreturn())
+            Ok(Context {
+                is_lvalue: false,
+                taipe: context::Type::Noreturn,
+                value: context::Value::While(Box::new(cond), Box::new(then_body_result)),
+            })
         } else if then_body_result.taipe.is_void() {
-            Ok(Context::from_void())
+            Ok(Context {
+                is_lvalue: false,
+                taipe: context::Type::Void,
+                value: context::Value::While(Box::new(cond), Box::new(then_body_result)),
+            })
         } else {
             Err(self.make_err(
                 format!(
@@ -901,7 +936,12 @@ impl<'a> Analyzer<'a> {
                 )));
             }
             let rhs = self.visit_expr(expr)?;
-            let _ = self.resolve_assign(Some((ret, ret_line_info)), None, Some((rhs, expr.get_line_info())))?;
+            let ctx = self.resolve_assign(Some((ret, ret_line_info)), None, Some((rhs, expr.get_line_info())))?;
+            Ok(Context {
+                is_lvalue: false,
+                taipe: context::Type::Noreturn,
+                value: context::Value::Ret(Box::new(ctx)),
+            })
         } else {
             if !ret.is_void() {
                 return Err(self
@@ -911,8 +951,12 @@ impl<'a> Analyzer<'a> {
                         &ret_line_info,
                     )));
             }
+            Ok(Context {
+                is_lvalue: false,
+                taipe: context::Type::Noreturn,
+                value: context::Value::RetVoid,
+            })
         }
-        Ok(Context::from_noreturn())
     }
 
     fn visit_block(&mut self, line_info: LineInfo, stmts: &'a [ast::Stmt]) -> CompileResult<Context<'a>> {
@@ -1001,8 +1045,13 @@ impl<'a> Analyzer<'a> {
             "block{}$",
             BLOCK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         );
-        let scope = scope::Scope::add_child(&self.cur_scope, &block_name, scope::State::VisitInProg, &line_info);
-        scope.borrow_mut().payload = Payload::Block;
+        let scope = scope::Scope::add_child(
+            &self.cur_scope,
+            scope::ScopeKind::Block,
+            &block_name,
+            scope::State::VisitInProg,
+            &line_info,
+        );
         scope
     }
 
@@ -1355,6 +1404,8 @@ impl<'a> Analyzer<'a> {
                         ));
                     }
                 }
+                let mut lhs_ctxes = Vec::new();
+                let mut rhs_ctxes = Vec::new();
                 for i in 0..rhses.len() {
                     let rhs_node = &rhses[i];
                     let rhs_line_info = rhs_node.get_line_info();
@@ -1366,13 +1417,22 @@ impl<'a> Analyzer<'a> {
                     if !lhs.is_lvalue {
                         return Err(self.make_err("cannot assign to a prvalue (pure rvalue)", &lhs_line_info));
                     }
-                    let _ = self.resolve_assign(Some((lhs.taipe, lhs_line_info)), None, Some((rhs, rhs_line_info)))?;
+                    lhs_ctxes.push(Context {
+                        is_lvalue: lhs.is_lvalue,
+                        taipe: lhs.taipe.clone(),
+                        value: lhs.value,
+                    });
+                    let rhs_ctx = self.resolve_assign(Some((lhs.taipe, lhs_line_info)), None, Some((rhs, rhs_line_info)))?;
+                    rhs_ctxes.push(rhs_ctx);
                 }
-                // TODO: record info for IR
-                Ok(Context::from_void())
+                Ok(Context {
+                    is_lvalue: false,
+                    taipe: context::Type::Void,
+                    value: context::Value::Assign(lhs_ctxes, rhs_ctxes),
+                })
             }
             ast::Expr::Binary { left, op, right } => self.visit_binary(left, op, right),
-            ast::Expr::Cast { expr, taipe } => todo!(),
+            ast::Expr::Cast { expr, taipe } => todo!("implement casting"),
             ast::Expr::Unary { op, expr } => self.visit_unary(op, expr),
             // Postfix dot operator
             //    result = value.name       // name is an identifier
@@ -2791,7 +2851,7 @@ impl<'a> Analyzer<'a> {
                     line_info: scope.borrow().get_line_info(),
                 });
             }
-            Payload::Function(_) | Payload::Block => unreachable!("probably some analyzer bug"),
+            Payload::Function(_) => unreachable!("probably some analyzer bug"),
         }
     }
 
@@ -3238,7 +3298,7 @@ impl<'a> Analyzer<'a> {
 
     fn get_name(&mut self, name: &Token) -> CompileResult<Context<'a>> {
         let mut searched_names = HashSet::new();
-        if let Some(ctx) = self.resolve_name(&name.text, &mut searched_names)? {
+        if let Some(ctx) = self.resolve_name(&name.text, name.get_line_info(), &mut searched_names)? {
             Ok(ctx)
         } else {
             Err(self
@@ -3247,28 +3307,65 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn resolve_name(&mut self, name: &str, searched_names: &mut HashSet<String>) -> CompileResult<Option<Context<'a>>> {
-        {
-            // Check in the current scope and go upwards
-            let mut scope = Rc::clone(&self.cur_scope);
-            loop {
-                match self.resolve_member(&scope, name, searched_names) {
-                    Ok(Some(ctx)) => return Ok(Some(ctx)),
-                    Ok(None) => {}
-                    // It is referencing cyclic, probably user refers something
-                    // from the outer scope. Lets check that.
-                    Err(CompileError::SemCyclic {
-                        file_path: _,
-                        line_info: _,
-                    }) => {}
-                    Err(err) => return Err(err),
+    fn resolve_name(
+        &mut self,
+        name: &str,
+        line_info: LineInfo,
+        searched_names: &mut HashSet<String>,
+    ) -> CompileResult<Option<Context<'a>>> {
+        // Check in the current scope and go upwards
+        let mut scope = Rc::clone(&self.cur_scope);
+        let mut inner_fn: Option<Rc<RefCell<scope::Scope<'a>>>> = None;
+        loop {
+            match self.resolve_member(&scope, name, searched_names) {
+                Ok(Some(ctx)) => {
+                    if let Some(inner_fn) = inner_fn {
+                        if ctx.taipe.is_typedef() {
+                            // Typedef is encoded by Type::Basic so ignore that case
+                            return Ok(Some(ctx));
+                        } else {
+                            let context::Value::Reference(ref scope) = ctx.value else {
+                                unreachable!("probably some bug in resolve_member");
+                            };
+                            let scope = scope.borrow();
+                            if scope.is_variable()
+                                && let Some(outer_fn) = scope.get_enclosing_function()
+                            {
+                                return Err(self
+                                    .make_err(
+                                        "cannot use local variable of outer function from inner function context",
+                                        &line_info,
+                                    )
+                                    .chain(self.make_note("variable is declared here", &scope))
+                                    .chain(self.make_note("inner function is declared here", &inner_fn.borrow()))
+                                    .chain(self.make_note("outer function is declared here", &outer_fn.borrow())));
+                            }
+                            drop(scope);
+                            return Ok(Some(ctx));
+                        }
+                    } else {
+                        return Ok(Some(ctx));
+                    }
                 }
-                let parent_opt = scope.borrow().parent.upgrade();
-                if let Some(parent) = parent_opt.as_ref() {
-                    scope = Rc::clone(parent);
-                } else {
-                    break;
-                }
+                Ok(None) => {}
+                // It is referencing cyclic, probably user refers something
+                // from the outer scope. Lets check that.
+                Err(CompileError::SemCyclic {
+                    file_path: _,
+                    line_info: _,
+                }) => {}
+                Err(err) => return Err(err),
+            }
+            // If the current one is function then be aware of usage of local variables of outer
+            // functions from inner function context
+            if scope.borrow().is_function() {
+                inner_fn = Some(Rc::clone(&scope));
+            }
+            let parent_opt = scope.borrow().parent.upgrade();
+            if let Some(parent) = parent_opt.as_ref() {
+                scope = Rc::clone(parent);
+            } else {
+                break;
             }
         }
         match name {

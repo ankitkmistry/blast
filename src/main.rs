@@ -16,7 +16,7 @@ mod lexer;
 mod parser;
 mod printer;
 mod scope;
-// mod taipe;
+mod cfg;
 
 fn compile_file(file_path: &str) -> CompileResult<()> {
     let matches = command!()

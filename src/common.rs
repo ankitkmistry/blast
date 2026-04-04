@@ -8,7 +8,7 @@ use num_traits::ToPrimitive;
 
 // line_start and line_end is inclusive
 // col_start and col_end is exclusive
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LineInfo {
     pub line_start: usize,
     pub line_end: usize,
@@ -106,8 +106,12 @@ where
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
-    // FileNotFound(String),
     LexerError {
+        file_path: String,
+        line_info: LineInfo,
+        msg: String,
+    },
+    LexerNote {
         file_path: String,
         line_info: LineInfo,
         msg: String,
