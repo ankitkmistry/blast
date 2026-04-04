@@ -1,27 +1,23 @@
 use std::{
     cell::{Ref, RefCell},
-    cmp::Ordering,
     collections::{HashMap, HashSet},
     rc::Rc,
     sync::atomic::AtomicU64,
 };
 
 use indexmap::IndexMap;
-use num_bigint::{BigInt, ToBigInt};
+use num_bigint::ToBigInt;
 use num_traits::cast::ToPrimitive;
 
 use crate::{
     ast,
-    common::{
-        CompileError, CompileResult, HasLineInfo, Int, Layout, LineInfo, Settings,
-        fuzzy_search_best, get_plural,
-    },
-    context::{self, Context},
-    lexer::{Token, TokenKind, TokenValue},
-    scope::{self, HasSrcInfo, Payload, State},
+ common::{CompileError, CompileResult, HasLineInfo, Layout, LineInfo, Settings, fuzzy_search_best, get_plural},
+ context::{self, Context},
+ lexer::{Token, TokenKind, TokenValue},
+ printer, scope::{self, HasSrcInfo, Payload, State}
 };
 
-// TODO: Unique counter should not be global
+// TODO: Counters should not be global
 // It should be a member of scope
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static BLOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -102,14 +98,11 @@ impl<'a> Analyzer<'a> {
             match &root.state {
                 State::NotVisited(scope_node) => match scope_node {
                     scope::ScopeNode::Object(object) => match object {
-                        ast::Object::Module {
-                            line_info: _,
-                            decls,
-                        } => {
+                        ast::Object::Module { line_info: _, decls } => {
                             for decl in decls {
                                 final_decls.push(decl);
                             }
-                            root.state = State::Visited(Context::from_module(Rc::clone(&root_rc)));
+                            root.state = State::Visited(Context::from_module(root_rc));
                         }
                         _ => unreachable!("not supposed to happen"),
                     },
@@ -131,10 +124,7 @@ impl<'a> Analyzer<'a> {
                     ast::Object::ExternModule { line_info, value } => {
                         todo!("extern modules are not supported yet")
                     }
-                    ast::Object::Module {
-                        line_info: _,
-                        decls: _,
-                    } => {
+                    ast::Object::Module { line_info: _, decls: _ } => {
                         self.visit_decl(decl, false)?;
                     }
                     _ => {}
@@ -173,10 +163,7 @@ impl<'a> Analyzer<'a> {
                     self.declare_sym(decl, &name)?
                 }
             }
-            ast::Decl::Using {
-                line_info: _,
-                items: _,
-            } => todo!("import statements are not yet supported"),
+            ast::Decl::Using { line_info: _, items: _ } => todo!("import statements are not yet supported"),
         };
         Ok(())
     }
@@ -199,11 +186,7 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
-    fn declare_sym(
-        &mut self,
-        node: &'a ast::Decl,
-        name: &Token,
-    ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
+    fn declare_sym(&mut self, node: &'a ast::Decl, name: &Token) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
         // Check for redeclaration
         // Except for '_' declarations
         if name.kind != TokenKind::Underscore
@@ -257,12 +240,7 @@ impl<'a> Analyzer<'a> {
             name.text.clone()
         };
 
-        Ok(scope::Scope::add_child(
-            &self.cur_scope,
-            &sym_name,
-            state,
-            name,
-        ))
+        Ok(scope::Scope::add_child(&self.cur_scope, &sym_name, state, name))
     }
 
     fn declare_sym_with_value(
@@ -321,11 +299,7 @@ impl<'a> Analyzer<'a> {
         ))
     }
 
-    fn declare_field(
-        &mut self,
-        field: &'a ast::Field,
-        name: &Token,
-    ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
+    fn declare_field(&mut self, field: &'a ast::Field, name: &Token) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
         // Check for redeclaration
         // Except for '_' declarations
         if name.kind != TokenKind::Underscore
@@ -354,11 +328,7 @@ impl<'a> Analyzer<'a> {
         ))
     }
 
-    fn visit_decl(
-        &mut self,
-        node: &'a ast::Decl,
-        should_visit_children: bool,
-    ) -> CompileResult<Context<'a>> {
+    fn visit_decl(&mut self, node: &'a ast::Decl, should_visit_children: bool) -> CompileResult<Context<'a>> {
         macro_rules! colon_compulsory {
             ($token:expr) => {
                 // Check the colon thing
@@ -366,8 +336,7 @@ impl<'a> Analyzer<'a> {
                     unreachable!("probably some parser bug");
                 };
                 if eq_token.kind != TokenKind::Colon {
-                    self.saved_errs
-                        .push(self.make_err("expected ':'", eq_token));
+                    self.saved_errs.push(self.make_err("expected ':'", eq_token));
                 }
             };
         }
@@ -390,15 +359,15 @@ impl<'a> Analyzer<'a> {
                 };
                 // Set in progress
                 {
-                    let mut scope = scope.borrow_mut();
-                    match &scope.state {
+                    let mut scope_ref = scope.borrow_mut();
+                    match &scope_ref.state {
                         State::NotVisited(_) => {
-                            scope.state = scope::State::VisitInProg;
+                            scope_ref.state = scope::State::VisitInProg;
                         }
                         State::VisitInProg => unreachable!("probably some analyzer bug"),
-                        State::Visited(context) => {
-                            if !context.taipe.is_module() {
-                                return Ok(context.clone());
+                        State::Visited(ctx) => {
+                            if !ctx.taipe.is_module() {
+                                return Ok(Context::from_scope(&ctx.taipe, &scope));
                             }
                         }
                     }
@@ -417,23 +386,17 @@ impl<'a> Analyzer<'a> {
                     if type_ctx.is_const() {
                         return Err(self.make_err("value must be specified", node));
                     }
-                    let ctx =
-                        self.resolve_assign(Some((type_ctx, taipe.get_line_info())), None, None)?;
-                    scope.borrow_mut().state = State::Visited(ctx.clone());
-                    return Ok(ctx);
+                    let ctx = self.resolve_assign(Some((type_ctx, taipe.get_line_info())), None, None)?;
+                    let result = Context::from_scope(&ctx.taipe, &scope);
+                    scope.borrow_mut().state = State::Visited(ctx);
+                    return Ok(result);
                 };
                 match object {
-                    ast::Object::ExternModule {
-                        line_info: _,
-                        value,
-                    } => {
+                    ast::Object::ExternModule { line_info: _, value } => {
                         colon_compulsory!(eq_token);
                         todo!("extern modules are not supported yet")
                     }
-                    ast::Object::Module {
-                        line_info: _,
-                        decls,
-                    } => {
+                    ast::Object::Module { line_info: _, decls } => {
                         colon_compulsory!(eq_token);
                         // Visit type
                         if let Some(taipe) = taipe {
@@ -447,13 +410,12 @@ impl<'a> Analyzer<'a> {
                         self.cur_scope = Rc::clone(&scope);
                         // Mark it evaluated if not already
                         let ctx = if let scope::State::Visited(ctx) = &scope.borrow().state {
-                            ctx.clone()
+                            Context::from_module(&scope)
                         } else {
                             // Predeclare all declarations (only if not already visited)
                             self.pre_declare_decls(decls)?;
-                            let ctx = Context::from_module(Rc::clone(&scope));
-                            scope.borrow_mut().state = State::Visited(ctx.clone());
-                            ctx
+                            scope.borrow_mut().state = State::Visited(Context::from_module(&scope));
+                            Context::from_module(&scope)
                         };
                         if should_visit_children {
                             // Visit every decl
@@ -471,16 +433,10 @@ impl<'a> Analyzer<'a> {
                                 } = decl
                                 {
                                     match object {
-                                        ast::Object::ExternModule {
-                                            line_info: _,
-                                            value,
-                                        } => {
+                                        ast::Object::ExternModule { line_info: _, value } => {
                                             todo!("extern modules are not supported yet")
                                         }
-                                        ast::Object::Module {
-                                            line_info: _,
-                                            decls: _,
-                                        } => {
+                                        ast::Object::Module { line_info: _, decls: _ } => {
                                             self.visit_decl(decl, false)?;
                                         }
                                         _ => {}
@@ -500,10 +456,7 @@ impl<'a> Analyzer<'a> {
                     //     using A;
                     //     bar: i32;
                     // }
-                    ast::Object::Compound {
-                        line_info: _,
-                        field,
-                    } => {
+                    ast::Object::Compound { line_info: _, field } => {
                         colon_compulsory!(eq_token);
                         // Visit type
                         if let Some(taipe) = taipe {
@@ -559,34 +512,18 @@ impl<'a> Analyzer<'a> {
                             } else {
                                 if let Some(ref prev_default_param) = prev_default_param {
                                     return Err(self
-                                        .make_err(
-                                            "non-default parameter is not allowed here",
-                                            param,
-                                        )
-                                        .chain(self.make_note(
-                                            "previous default parameter is here",
-                                            prev_default_param,
-                                        )));
+                                        .make_err("non-default parameter is not allowed here", param)
+                                        .chain(
+                                            self.make_note("previous default parameter is here", prev_default_param),
+                                        ));
                                 }
                             }
-                            let ctx =
-                                self.resolve_assign(Some((lhs, lhs_line_info)), eq_token, rhs)?;
-                            // TODO: parameters may not always be initialized at comptime.
-                            // Solve that thing as default value of parameters may be runtime.
-                            // The code for the default value of parameters are inserted at every
-                            // function call.
-                            if provided_default && ctx.value.is_none() {
-                                return Err(self.make_err(
-                                    "value cannot be evaluated at compile time",
-                                    param.expr.as_ref().unwrap(),
-                                ));
-                            }
-                            assert!(ctx.value.is_some() == provided_default);
+                            let ctx = self.resolve_assign(Some((lhs, lhs_line_info)), eq_token, rhs)?;
                             param_infos.push((
                                 &param.name,
                                 scope::ParamInfo {
                                     taipe: ctx.taipe,
-                                    default: ctx.value,
+                                    default: Some(ctx.value),
                                     line_info: param.get_line_info(),
                                 },
                             ));
@@ -594,20 +531,17 @@ impl<'a> Analyzer<'a> {
                         let mut param_table = IndexMap::new();
                         let mut param_types = Vec::new();
                         for (name, param) in param_infos {
-                            // Prepare param_table for function call information
-                            param_table.insert(name.text.clone(), param.clone());
                             // Prepare param_types for creating function type
+                            let param_type = param.taipe.clone();
                             param_types.push(context::Param {
-                                taipe: param.taipe.clone(),
+                                taipe: param_type.clone(),
                             });
+                            // Prepare param_table for function call information
+                            param_table.insert(name.text.clone(), param);
                             // Generate the param name in the current scope
-                            let param_scope =
-                                self.declare_sym_ex(scope::State::VisitInProg, name)?;
-                            param_scope.borrow_mut().state = scope::State::Visited(Context {
-                                is_lvalue: true,
-                                taipe: param.taipe,
-                                value: None,
-                            });
+                            let param_scope = self.declare_sym_ex(scope::State::VisitInProg, name)?;
+                            param_scope.borrow_mut().state =
+                                scope::State::Visited(Context::from_scope(&param_type, &param_scope));
                         }
                         // Visit the return type
                         let ret_type = if let Some(ret) = ret {
@@ -624,19 +558,18 @@ impl<'a> Analyzer<'a> {
                                 ret: Box::new(ret_type.clone()),
                                 params: param_types,
                             },
-                            value: Some(context::Value::Function(Rc::clone(&scope))),
+                            value: context::Value::Reference(Rc::clone(&scope)),
                         };
                         // Resolve assignment
-                        let ctx =
-                            self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, *line_info)))?;
+                        let ctx = self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, *line_info)))?;
+                        let result = Context::from_scope(&ctx.taipe, &scope);
                         // Mark it visited
-                        scope.borrow_mut().state = scope::State::Visited(ctx.clone());
+                        scope.borrow_mut().state = scope::State::Visited(ctx);
                         scope.borrow_mut().payload = scope::Payload::Function(scope::Function {
                             param_infos: param_table,
                             loop_stack: IndexMap::new(),
                             ret_line_info: ret.as_ref().map(|ret| ret.get_line_info()),
                         });
-                        // TODO: visit stmts
                         if let Some(body) = body {
                             let ctx = self.visit_stmt(body)?;
                             if ret_type.is_void() {
@@ -673,16 +606,12 @@ impl<'a> Analyzer<'a> {
                                     .unwrap_or_else(|| scope.borrow().get_line_info());
                                 let rhs = ctx;
                                 let rhs_line_info = body.get_line_info();
-                                self.resolve_assign(
-                                    Some((lhs, lhs_line_info)),
-                                    None,
-                                    Some((rhs, rhs_line_info)),
-                                )?;
+                                self.resolve_assign(Some((lhs, lhs_line_info)), None, Some((rhs, rhs_line_info)))?;
                             }
                         }
                         // Restore old scope
                         self.cur_scope = old_cur_scope;
-                        Ok(ctx)
+                        Ok(result)
                         // --- FUNCTION CODE END
                     }
                     ast::Object::Typedef(node) => {
@@ -704,8 +633,8 @@ impl<'a> Analyzer<'a> {
                         }
                         // Complete the visit
                         let ctx = Context::from_type(taipe);
-                        scope.borrow_mut().state = scope::State::Visited(ctx.clone());
-                        Ok(ctx)
+                        scope.borrow_mut().state = scope::State::Visited(ctx);
+                        Ok(Context::from_scope(&context::Type::Typedef, &scope))
                     }
                     ast::Object::Expr(expr) => {
                         // Visit type
@@ -717,22 +646,15 @@ impl<'a> Analyzer<'a> {
                         // Visit expr
                         let rhs = self.visit_var(name, expr)?;
                         // Resolve assignment
-                        let mut ctx = self.resolve_assign(
-                            lhs,
-                            eq_token.as_ref(),
-                            Some((rhs, expr.get_line_info())),
-                        )?;
-                        ctx.is_lvalue = true;
+                        let ctx = self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, expr.get_line_info())))?;
+                        let result = Context::from_scope(&ctx.taipe, &scope);
                         // Complete the visit
-                        scope.borrow_mut().state = scope::State::Visited(ctx.clone());
-                        Ok(ctx)
+                        scope.borrow_mut().state = scope::State::Visited(ctx);
+                        Ok(result)
                     }
                 }
             }
-            ast::Decl::Using {
-                line_info: _,
-                items: _,
-            } => {
+            ast::Decl::Using { line_info: _, items: _ } => {
                 todo!("import statements are not supported yet")
             }
         }
@@ -756,9 +678,7 @@ impl<'a> Analyzer<'a> {
             ast::Stmt::Yield { token: _, expr } => Ok(self.visit_expr(expr)?),
             ast::Stmt::Continue { token, label } => self.use_current_function_data(|data| {
                 if data.loop_stack.is_empty() {
-                    return Err(
-                        self.make_err(format!("'{}' can be used only in a loop", token.text), node)
-                    );
+                    return Err(self.make_err(format!("'{}' can be used only in a loop", token.text), node));
                 }
                 if let Some(label) = label {
                     if !data.loop_stack.contains_key(&label.text) {
@@ -775,9 +695,7 @@ impl<'a> Analyzer<'a> {
             }),
             ast::Stmt::Break { token, label } => self.use_current_function_data(|data| {
                 if data.loop_stack.is_empty() {
-                    return Err(
-                        self.make_err(format!("'{}' can be used only in a loop", token.text), node)
-                    );
+                    return Err(self.make_err(format!("'{}' can be used only in a loop", token.text), node));
                 }
                 if let Some(label) = label {
                     if !data.loop_stack.contains_key(&label.text) {
@@ -824,8 +742,7 @@ impl<'a> Analyzer<'a> {
         }
         self.mut_current_function_data(|data| {
             if let Some(label) = label {
-                data.loop_stack
-                    .insert(label.text.clone(), scope::LoopInfo {});
+                data.loop_stack.insert(label.text.clone(), scope::LoopInfo {});
             } else {
                 data.loop_stack.insert(
                     format!(
@@ -877,25 +794,35 @@ impl<'a> Analyzer<'a> {
         if let Some(else_body) = else_body {
             let else_body_result = self.visit_stmt(else_body)?;
             if then_body_result.taipe.is_noreturn() {
-                Ok(else_body_result)
+                Ok(Context {
+                    is_lvalue: else_body_result.is_lvalue,
+                    taipe: else_body_result.taipe.clone(),
+                    value: context::Value::IfElse(
+                        Box::new(cond),
+                        Box::new(then_body_result),
+                        Box::new(else_body_result),
+                    ),
+                })
+            } else if else_body_result.taipe.is_noreturn() {
+                Ok(Context {
+                    is_lvalue: then_body_result.is_lvalue,
+                    taipe: then_body_result.taipe.clone(),
+                    value: context::Value::IfElse(
+                        Box::new(cond),
+                        Box::new(then_body_result),
+                        Box::new(else_body_result),
+                    ),
+                })
             } else if then_body_result.taipe == else_body_result.taipe {
                 // TODO: allow mixing of compatible values
                 Ok(Context {
                     is_lvalue: then_body_result.is_lvalue && else_body_result.is_lvalue,
-                    taipe: then_body_result.taipe,
-                    value: if let Some(cond_value) = cond.value {
-                        // comptime: evaluate if statement
-                        let context::Value::Bool(cond_value) = cond_value else {
-                            unreachable!("probably some analyzer bug");
-                        };
-                        if cond_value {
-                            then_body_result.value
-                        } else {
-                            else_body_result.value
-                        }
-                    } else {
-                        None
-                    },
+                    taipe: then_body_result.taipe.clone(),
+                    value: context::Value::IfElse(
+                        Box::new(cond),
+                        Box::new(then_body_result),
+                        Box::new(else_body_result),
+                    ),
                 })
             } else {
                 return Err(self.make_err(
@@ -909,9 +836,17 @@ impl<'a> Analyzer<'a> {
             }
         } else {
             if then_body_result.taipe.is_noreturn() {
-                Ok(Context::from_noreturn())
+                Ok(Context {
+                    is_lvalue: false,
+                    taipe: context::Type::Noreturn,
+                    value: context::Value::If(Box::new(cond), Box::new(then_body_result)),
+                })
             } else if then_body_result.taipe.is_void() {
-                Ok(Context::from_void())
+                Ok(Context {
+                    is_lvalue: false,
+                    taipe: context::Type::Void,
+                    value: context::Value::If(Box::new(cond), Box::new(then_body_result)),
+                })
             } else {
                 Err(self.make_err(
                     format!(
@@ -925,16 +860,19 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn visit_return(
-        &mut self,
-        token: &Token,
-        expr: Option<&'a ast::Expr>,
-    ) -> CompileResult<Context<'a>> {
+    fn visit_return(&mut self, token: &Token, expr: Option<&'a ast::Expr>) -> CompileResult<Context<'a>> {
         let Some(function) = self.get_current_function() else {
             return Err(self.make_err("'return' is allowed in functions only", token));
         };
-        let scope::State::Visited(ctx) = function.borrow().state.clone() else {
-            unreachable!("probably some analyzer bug");
+        // Get the return type of the function
+        let ret = {
+            let scope::State::Visited(ref ctx) = function.borrow().state else {
+                unreachable!("probably some analyzer bug");
+            };
+            let context::Type::Function { ref ret, params: _ } = ctx.taipe else {
+                unreachable!("probably some analyzer bug");
+            };
+            ret.clone()
         };
         let scope::Payload::Function(scope::Function {
             param_infos: _,
@@ -945,9 +883,6 @@ impl<'a> Analyzer<'a> {
             unreachable!("probably some analyzer bug");
         };
         let ret_line_info = ret_line_info.unwrap_or_else(|| function.borrow().get_line_info());
-        let context::Type::Function { ret, params: _ } = ctx.taipe else {
-            unreachable!("probably some analyzer bug");
-        };
         let ret = *ret;
         if ret.is_noreturn() {
             return Err(self.make_err(
@@ -960,19 +895,13 @@ impl<'a> Analyzer<'a> {
         }
         if let Some(expr) = expr {
             if ret.is_void() {
-                return Err(self
-                    .make_err("invalid expression", expr)
-                    .chain(self.make_note(
-                        format!("function expects return type '{}'", ret.to_string()),
-                        &ret_line_info,
-                    )));
+                return Err(self.make_err("invalid expression", expr).chain(self.make_note(
+                    format!("function expects return type '{}'", ret.to_string()),
+                    &ret_line_info,
+                )));
             }
             let rhs = self.visit_expr(expr)?;
-            let _ = self.resolve_assign(
-                Some((ret, ret_line_info)),
-                None,
-                Some((rhs, expr.get_line_info())),
-            )?;
+            let _ = self.resolve_assign(Some((ret, ret_line_info)), None, Some((rhs, expr.get_line_info())))?;
         } else {
             if !ret.is_void() {
                 return Err(self
@@ -986,11 +915,7 @@ impl<'a> Analyzer<'a> {
         Ok(Context::from_noreturn())
     }
 
-    fn visit_block(
-        &mut self,
-        line_info: LineInfo,
-        stmts: &'a [ast::Stmt],
-    ) -> CompileResult<Context<'a>> {
+    fn visit_block(&mut self, line_info: LineInfo, stmts: &'a [ast::Stmt]) -> CompileResult<Context<'a>> {
         let scope = self.create_block_scope(line_info);
         // Begin new scope
         let old_cur_scope = Rc::clone(&self.cur_scope);
@@ -1005,18 +930,9 @@ impl<'a> Analyzer<'a> {
                         eq_token: _,
                         object: Some(object),
                     } => match object {
-                        ast::Object::ExternModule {
-                            line_info: _,
-                            value: _,
-                        }
-                        | ast::Object::Module {
-                            line_info: _,
-                            decls: _,
-                        } => {
-                            return Err(self.make_err(
-                                "module declarations are not allowed in block scope",
-                                decl,
-                            ));
+                        ast::Object::ExternModule { line_info: _, value: _ }
+                        | ast::Object::Module { line_info: _, decls: _ } => {
+                            return Err(self.make_err("module declarations are not allowed in block scope", decl));
                         }
                         ast::Object::Fun {
                             line_info: _,
@@ -1024,10 +940,7 @@ impl<'a> Analyzer<'a> {
                             ret: _,
                             body: _,
                         }
-                        | ast::Object::Compound {
-                            line_info: _,
-                            field: _,
-                        } => {
+                        | ast::Object::Compound { line_info: _, field: _ } => {
                             self.pre_declare_decl(decl)?;
                         }
                         _ => {}
@@ -1040,15 +953,20 @@ impl<'a> Analyzer<'a> {
         // Prepare to visit the statements
         // Saves the (last index + 1) of the last stmt visited
         let mut last_stmt_index = 0;
-        let mut block_ret = Context::from_void();
+        let mut is_lvalue = false;
+        let mut block_ret_type = context::Type::Void;
+        let mut items = Vec::new();
         // Visit individual statements
         for (i, stmt) in stmts.iter().enumerate() {
-            block_ret = self.visit_stmt(stmt)?;
+            let ctx = self.visit_stmt(stmt)?;
+            is_lvalue = ctx.is_lvalue;
+            block_ret_type = ctx.taipe.clone();
+            items.push(ctx);
             last_stmt_index = i + 1;
-            if block_ret.taipe.is_noreturn() {
+            if block_ret_type.is_noreturn() {
                 break;
             }
-            if block_ret.taipe.is_void() {
+            if block_ret_type.is_void() {
                 continue;
             }
             break;
@@ -1062,12 +980,20 @@ impl<'a> Analyzer<'a> {
             self.warnings
                 .push(self.make_warning("unreachable code", &&stmts[last_stmt_index..]));
         }
-        // Blocks cannot return concrete values because a block may have potential side effects
-        block_ret.value = None;
-        scope.borrow_mut().state = scope::State::Visited(block_ret.clone());
+        let ctx = Context {
+            is_lvalue,
+            taipe: block_ret_type.clone(),
+            value: context::Value::Block(items),
+        };
+        let result = Context {
+            is_lvalue,
+            taipe: block_ret_type,
+            value: context::Value::Reference(Rc::clone(&scope)),
+        };
+        scope.borrow_mut().state = scope::State::Visited(ctx);
         // Restore old scope
         self.cur_scope = old_cur_scope;
-        Ok(block_ret)
+        Ok(result)
     }
 
     fn create_block_scope(&mut self, line_info: LineInfo) -> Rc<RefCell<scope::Scope<'a>>> {
@@ -1075,12 +1001,7 @@ impl<'a> Analyzer<'a> {
             "block{}$",
             BLOCK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         );
-        let scope = scope::Scope::add_child(
-            &self.cur_scope,
-            &block_name,
-            scope::State::VisitInProg,
-            &line_info,
-        );
+        let scope = scope::Scope::add_child(&self.cur_scope, &block_name, scope::State::VisitInProg, &line_info);
         scope.borrow_mut().payload = Payload::Block;
         scope
     }
@@ -1089,13 +1010,13 @@ impl<'a> Analyzer<'a> {
         self.get_fields_ex(field, false)
     }
 
-    fn get_fields_ex(
-        &mut self,
-        field: &'a ast::Field,
-        is_alone: bool,
-    ) -> CompileResult<scope::Field<'a>> {
+    fn get_fields_ex(&mut self, field: &'a ast::Field, is_alone: bool) -> CompileResult<scope::Field<'a>> {
         match field {
-            ast::Field::Compound { token, fields } => {
+            ast::Field::Compound {
+                line_info: _,
+                token,
+                fields,
+            } => {
                 if is_alone {
                     return Err(self.make_err("inner scope shadows outer scope", token));
                 }
@@ -1131,17 +1052,8 @@ impl<'a> Analyzer<'a> {
                     let rhs = self.visit_expr(expr)?;
                     // TODO: The value of the field should be evaluated at compile time
                     // If no value is provided then default value should be evaluated
-                    if rhs.value.is_none() {
-                        return Err(
-                            self.make_err("value cannot be evaluated at compile time", expr)
-                        );
-                    }
                     // Resolve assignment
-                    self.resolve_assign(
-                        Some(lhs),
-                        eq_token.as_ref(),
-                        Some((rhs, expr.get_line_info())),
-                    )?
+                    self.resolve_assign(Some(lhs), eq_token.as_ref(), Some((rhs, expr.get_line_info())))?
                 } else {
                     // Situation
                     // ---------------------------------
@@ -1157,22 +1069,21 @@ impl<'a> Analyzer<'a> {
                     | context::Type::Typedef
                     | context::Type::Noreturn => {
                         return Err(self.make_err(
-                            format!(
-                                "'{}' cannot be used as a type of a field",
-                                ctx.taipe.to_string()
-                            ),
+                            format!("'{}' cannot be used as a type of a field", ctx.taipe.to_string()),
                             taipe,
                         ));
                     }
                     _ => {}
                 }
+                let field_type = ctx.taipe.clone();
                 // Complete the visit
-                scope.borrow_mut().state = scope::State::Visited(ctx.clone());
+                scope.borrow_mut().state = scope::State::Visited(ctx);
                 Ok(scope::Field::Field {
                     file_path: scope.borrow().get_src_path(),
                     line_info: name.get_line_info(),
                     name: scope.borrow().name.clone(),
-                    ctx,
+                    taipe: field_type,
+                    scope: Rc::clone(&scope),
                 })
             }
         }
@@ -1190,11 +1101,14 @@ impl<'a> Analyzer<'a> {
         let ctx = Context {
             is_lvalue: true,
             taipe: context::Type::Typedef,
-            value: Some(context::Value::Type(context::Type::Basic(Rc::clone(
-                &scope,
-            )))),
+            value: context::Value::Imm(context::Imm::Type(context::Type::Basic(Rc::clone(&scope)))),
         };
-        scope.borrow_mut().state = State::Visited(ctx.clone());
+        let result = Context {
+            is_lvalue: true,
+            taipe: context::Type::Typedef,
+            value: context::Value::Imm(context::Imm::Type(context::Type::Basic(Rc::clone(&scope)))),
+        };
+        scope.borrow_mut().state = State::Visited(ctx);
         // Visit every field
         let field = self.get_fields(field)?;
         // Set the payload
@@ -1203,11 +1117,7 @@ impl<'a> Analyzer<'a> {
         let layout = self.resolve_layout_scope(&scope)?;
         // Print the layout
         {
-            println!(
-                "Memory layout of {}: {:?}",
-                ctx.clone().value.unwrap().to_string(),
-                layout
-            );
+            println!("Memory layout of {}: {:?}", scope.borrow().sym_path.to_string(), layout);
             let scope::Payload::Compound(ref compound) = scope.borrow().payload else {
                 unreachable!("not supposed to happen")
             };
@@ -1220,14 +1130,10 @@ impl<'a> Analyzer<'a> {
         }
         // Restore old scope
         self.cur_scope = old_cur_scope;
-        Ok(ctx)
+        Ok(result)
     }
 
-    fn visit_var(
-        &mut self,
-        name: &crate::lexer::Token,
-        expr: &'a ast::Expr,
-    ) -> CompileResult<Context<'a>> {
+    fn visit_var(&mut self, name: &crate::lexer::Token, expr: &'a ast::Expr) -> CompileResult<Context<'a>> {
         match self.visit_expr(expr) {
             Ok(mut ctx) => {
                 if ctx.taipe.is_module() {
@@ -1237,19 +1143,9 @@ impl<'a> Analyzer<'a> {
                     Ok(ctx)
                 }
             }
-            Err(CompileError::SemCyclic {
-                file_path,
-                line_info,
-            }) => Err(self
-                .make_err(
-                    "inference is ambiguous, encountered cyclic references",
-                    name,
-                )
-                .chain(self.make_note_with_path(
-                    "another one declared here",
-                    file_path,
-                    &line_info,
-                ))),
+            Err(CompileError::SemCyclic { file_path, line_info }) => Err(self
+                .make_err("inference is ambiguous, encountered cyclic references", name)
+                .chain(self.make_note_with_path("another one declared here", file_path, &line_info))),
             Err(err) => Err(err),
         }
     }
@@ -1264,10 +1160,7 @@ impl<'a> Analyzer<'a> {
                     let name = &items[index];
                     ctx = match ctx.taipe.remove_const() {
                         context::Type::Module => {
-                            let Some(value) = ctx.value else {
-                                unreachable!("probably some analyzer bug");
-                            };
-                            let context::Value::Module(module) = value else {
+                            let context::Value::Reference(module) = ctx.value else {
                                 unreachable!("probably some analyzer bug");
                             };
                             self.get_member(&module, &name)?
@@ -1284,16 +1177,13 @@ impl<'a> Analyzer<'a> {
                     index += 1;
                 }
                 if !ctx.taipe.is_typedef() {
-                    return Err(self.make_err(
-                        format!("expression is not a type: '{}'", ctx.to_string()),
-                        node,
-                    ));
+                    return Err(self.make_err(format!("expression is not a type: '{}'", ctx.to_string()), node));
                 }
                 // Post checks
-                let Some(taipe) = ctx.value else {
+                let context::Value::Imm(taipe) = ctx.value else {
                     unreachable!("not supposed to happen");
                 };
-                let context::Value::Type(taipe) = taipe else {
+                let context::Imm::Type(taipe) = taipe else {
                     unreachable!("not supposed to happen");
                 };
                 Ok(taipe)
@@ -1308,17 +1198,14 @@ impl<'a> Analyzer<'a> {
                     let taipe = self.visit_type(&param)?;
                     match &taipe {
                         context::Type::Module | context::Type::Void => {
-                            return Err(self.make_err(
-                                format!("'{}' cannot be a parameter type", taipe.to_string()),
-                                param,
-                            ));
+                            return Err(
+                                self.make_err(format!("'{}' cannot be a parameter type", taipe.to_string()), param)
+                            );
                         }
                         context::Type::Typedef => {
                             // TODO: Think about this
                             // FIXME: This parameter has to be comptime
-                            return Err(
-                                self.make_err("'typedef' cannot be a parameter type", param)
-                            );
+                            return Err(self.make_err("'typedef' cannot be a parameter type", param));
                         }
                         _ => {}
                     }
@@ -1356,10 +1243,7 @@ impl<'a> Analyzer<'a> {
                     }
                 }
             }
-            ast::Type::Pointer {
-                token: _,
-                taipe: node,
-            } => {
+            ast::Type::Pointer { token: _, taipe: node } => {
                 let taipe = self.visit_type(node)?;
                 match &taipe {
                     context::Type::Module => {
@@ -1383,19 +1267,13 @@ impl<'a> Analyzer<'a> {
                 let length_ctx = self.visit_expr(expr)?;
                 if !length_ctx.taipe.is_unsigned_integer() {
                     return Err(self
-                        .make_err(
-                            "argument of index operator should be an unsigned integer type",
-                            expr,
-                        )
-                        .chain(self.make_note(
-                            format!("but got '{}'", length_ctx.taipe.to_string()),
-                            expr,
-                        )));
+                        .make_err("argument of index operator should be an unsigned integer type", expr)
+                        .chain(self.make_note(format!("but got '{}'", length_ctx.taipe.to_string()), expr)));
                 }
-                let Some(length) = length_ctx.value else {
+                let context::Value::Imm(length) = length_ctx.value else {
                     return Err(self.make_err("value cannot be evaluated at compile time", expr));
                 };
-                let length = self.transform_value_to_usize(&length, expr)?;
+                let length = self.transform_imm_to_usize(&length, expr)?;
                 let Some(length) = length.to_usize() else {
                     return Err(self.make_err(
                         format!("'usize' cannot hold this value: '{}'", length.to_string()),
@@ -1414,10 +1292,7 @@ impl<'a> Analyzer<'a> {
                 let taipe = self.visit_type(node)?;
                 match &taipe {
                     context::Type::Module | context::Type::Typedef => {
-                        return Err(self.make_err(
-                            format!("fat pointer to '{}' is invalid", taipe.to_string()),
-                            node,
-                        ));
+                        return Err(self.make_err(format!("fat pointer to '{}' is invalid", taipe.to_string()), node));
                     }
                     _ => Ok(context::Type::Fat(Box::new(taipe))),
                 }
@@ -1435,10 +1310,7 @@ impl<'a> Analyzer<'a> {
                     let taipe = self.visit_type(node)?;
                     match &taipe {
                         context::Type::Module | context::Type::Typedef | context::Type::Void => {
-                            return Err(self.make_err(
-                                format!("'{}' cannot be a tuple item", taipe.to_string()),
-                                node,
-                            ));
+                            return Err(self.make_err(format!("'{}' cannot be a tuple item", taipe.to_string()), node));
                         }
                         _ => vec.push(taipe),
                     }
@@ -1454,11 +1326,7 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn validate_fun_ret_type(
-        &mut self,
-        taipe: &context::Type<'a>,
-        line_info: &impl HasLineInfo,
-    ) -> CompileResult<()> {
+    fn validate_fun_ret_type(&mut self, taipe: &context::Type<'a>, line_info: &impl HasLineInfo) -> CompileResult<()> {
         match taipe {
             context::Type::Module => {
                 return Err(self.make_err("'module' cannot be a return type", line_info));
@@ -1496,15 +1364,11 @@ impl<'a> Analyzer<'a> {
                     let lhs = self.visit_expr(lhs_node)?;
                     // do lvalue checking
                     if !lhs.is_lvalue {
-                        return Err(self
-                            .make_err("cannot assign to a prvalue (pure rvalue)", &lhs_line_info));
+                        return Err(self.make_err("cannot assign to a prvalue (pure rvalue)", &lhs_line_info));
                     }
-                    let _ = self.resolve_assign(
-                        Some((lhs.taipe, lhs_line_info)),
-                        None,
-                        Some((rhs, rhs_line_info)),
-                    )?;
+                    let _ = self.resolve_assign(Some((lhs.taipe, lhs_line_info)), None, Some((rhs, rhs_line_info)))?;
                 }
+                // TODO: record info for IR
                 Ok(Context::from_void())
             }
             ast::Expr::Binary { left, op, right } => self.visit_binary(left, op, right),
@@ -1554,10 +1418,7 @@ impl<'a> Analyzer<'a> {
                     context::Type::Fat(_) => todo!(),
                     context::Type::Tuple(items) => {
                         if name.kind != TokenKind::IntLit {
-                            return Err(self.make_err(
-                                format!("expected {}", TokenKind::IntLit.get_repr()),
-                                name,
-                            ));
+                            return Err(self.make_err(format!("expected {}", TokenKind::IntLit.get_repr()), name));
                         }
                         let Some(index) = name.value.clone() else {
                             unreachable!("probably some lexer bug");
@@ -1568,50 +1429,38 @@ impl<'a> Analyzer<'a> {
                         // comptime: bounds checking
                         if index.num >= items.len().to_bigint().unwrap() {
                             return Err(self.make_err(
-                                format!(
-                                    "index out of bounds, tuple length: {}, index: '{}'",
-                                    items.len(),
-                                    index
-                                ),
+                                format!("index out of bounds, tuple length: {}, index: '{}'", items.len(), index),
                                 name,
                             ));
                         }
-                        // comptime: array indexing
-                        // TODO: check usize for target system
-                        let index = self.varint2usize(index, name.get_line_info())?;
                         // Get the type
-                        let mut taipe = items[index].clone();
+                        let mut taipe = items[index.to_usize().expect("dont know what to do in this case")].clone();
                         if keep_const {
                             taipe = taipe.add_const();
                         }
-                        // comptime: get value of tuple at specified index
-                        let value = ctx.value.map(|tuple| {
-                            let context::Value::Tuple(tuple) = tuple else {
-                                unreachable!("probably some analyzer bug");
-                            };
-                            tuple[index].clone()
-                        });
+                        // comptime: array indexing
+                        let index = Context {
+                            is_lvalue: true,
+                            taipe: self.type_usize.clone(),
+                            value: context::Value::Imm(
+                                self.transform_varint_to_usize(&context::Imm::VarInt(index), name)?,
+                            ),
+                        };
                         Ok(Context {
                             is_lvalue: false,
                             taipe,
-                            value,
+                            value: context::Value::Index(Box::new(ctx), Box::new(index)),
                         })
                     }
                     context::Type::Module => {
-                        let Some(value) = ctx.value else {
-                            unreachable!("probably some analyzer bug");
-                        };
-                        let context::Value::Module(module) = value else {
+                        let context::Value::Reference(module) = ctx.value else {
                             unreachable!("probably some analyzer bug");
                         };
                         self.get_member(&module, &name)
                     }
                     // TODO: implement this after struct functions
                     // context::Type::Typedef => todo!(),
-                    _ => Err(self.make_err(
-                        format!("cannot use '.' operator on '{}'", ctx.taipe.to_string()),
-                        expr,
-                    )),
+                    _ => Err(self.make_err(format!("cannot use '.' operator on '{}'", ctx.taipe.to_string()), expr)),
                 }
             }
             ast::Expr::Call {
@@ -1626,9 +1475,7 @@ impl<'a> Analyzer<'a> {
             } => {
                 if items.len() != 1 {
                     // TODO: to be changed
-                    return Err(
-                        self.make_err("only 1 argument is allowed in index operator", items)
-                    );
+                    return Err(self.make_err("only 1 argument is allowed in index operator", items));
                 }
                 let ctx = self.visit_expr(expr)?;
                 let index_node = &items[0];
@@ -1636,85 +1483,22 @@ impl<'a> Analyzer<'a> {
                 if !index.taipe.is_integer() {
                     return Err(self
                         .make_err("argument of index operator should be an integer type", node)
-                        .chain(self.make_note(
-                            format!("but got '{}'", index.taipe.to_string()),
-                            index_node,
-                        )));
+                        .chain(self.make_note(format!("but got '{}'", index.taipe.to_string()), index_node)));
                 }
                 match ctx.taipe.remove_const() {
-                    context::Type::Array { count, taipe } => {
-                        let mut value: Option<context::Value<'a>> = None;
-                        if let Some(index) = index.value {
-                            let context::Value::VarInt(index) = index else {
-                                unreachable!("probably some analyzer bug");
-                            };
-                            // comptime: bounds checking
-                            if index.num < BigInt::ZERO || index.num >= count.to_bigint().unwrap() {
-                                return Err(self.make_err(
-                                    format!(
-                                        "index out of bounds, array length: {}, index: '{}'",
-                                        count, index
-                                    ),
-                                    index_node,
-                                ));
-                            }
-                            // comptime: array indexing
-                            // TODO: check usize for target system
-                            let index = self.varint2usize(index, index_node.get_line_info())?;
-                            if let Some(array) = ctx.value {
-                                let context::Value::Array(array) = array else {
-                                    unreachable!("probably some analyzer bug");
-                                };
-                                value = Some(array[index].clone());
-                            }
-                        }
-                        Ok(Context {
-                            is_lvalue: false,
-                            taipe: *taipe,
-                            value,
-                        })
-                    }
-                    context::Type::Fat(taipe) => {
-                        let mut value: Option<context::Value<'a>> = None;
-                        if let Some(array) = ctx.value
-                            && let Some(index) = index.value
-                        {
-                            let context::Value::Array(array) = array else {
-                                unreachable!("probably some analyzer bug");
-                            };
-                            let context::Value::VarInt(index) = index else {
-                                unreachable!("probably some analyzer bug");
-                            };
-                            // comptime: bounds checking
-                            if index.num < BigInt::ZERO
-                                || index.num >= array.len().to_bigint().unwrap()
-                            {
-                                return Err(self.make_err(
-                                    format!(
-                                        "index out of bounds, array length: {}, index: '{}'",
-                                        array.len(),
-                                        index
-                                    ),
-                                    index_node,
-                                ));
-                            }
-                            // comptime: array indexing
-                            // TODO: check usize for target system
-                            let index = self.varint2usize(index, index_node.get_line_info())?;
-                            value = Some(array[index].clone());
-                        }
-                        Ok(Context {
-                            is_lvalue: false,
-                            taipe: *taipe,
-                            value,
-                        })
-                    }
+                    context::Type::Array { count: _, taipe } => Ok(Context {
+                        is_lvalue: false,
+                        taipe: *taipe,
+                        value: context::Value::Index(Box::new(ctx), Box::new(index)),
+                    }),
+                    context::Type::Fat(taipe) => Ok(Context {
+                        is_lvalue: false,
+                        taipe: *taipe,
+                        value: context::Value::Index(Box::new(ctx), Box::new(index)),
+                    }),
                     _ => {
                         return Err(self.make_err(
-                            format!(
-                                "cannot use index operator on type '{}'",
-                                ctx.taipe.to_string()
-                            ),
+                            format!("cannot use index operator on type '{}'", ctx.taipe.to_string()),
                             expr,
                         ));
                     }
@@ -1743,51 +1527,42 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: context::Type::VarInt,
-                        value: Some(context::Value::VarInt(tok_val.clone())),
+                        value: context::Value::Imm(context::Imm::VarInt(tok_val.clone())),
                     })
                 }
                 // TODO: get value from token
                 TokenKind::FloatLit => Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Float64,
-                    value: None,
+                    value: context::Value::Imm(context::Imm::Float64(0.0)),
                 }),
                 TokenKind::Ident => self.get_name(&token),
                 _ => unreachable!("probably some parser bug"),
             },
             ast::Expr::Paren { line_info: _, expr } => self.visit_expr(expr),
-            ast::Expr::Tuple {
-                line_info: _,
-                exprs,
-            } => {
+            ast::Expr::Tuple { line_info: _, exprs } => {
                 let mut types = Vec::new();
                 let mut values = Vec::new();
                 for expr in exprs {
-                    let ctx = self.visit_expr(expr)?;
-                    types.push(ctx.taipe);
-                    if let Some(value) = ctx.value {
-                        values.push(value);
+                    let mut ctx = self.visit_expr(expr)?;
+                    if ctx.taipe.is_varint() {
+                        ctx.taipe = self.type_int.clone();
+                        let context::Value::Imm(value) = ctx.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        ctx.value = context::Value::Imm(self.transform_varint_to_int(&value, expr)?);
                     }
+                    types.push(ctx.taipe);
+                    values.push(ctx.value);
                 }
-                if types.len() == values.len() {
-                    Ok(Context {
-                        is_lvalue: false,
-                        taipe: context::Type::Tuple(types),
-                        value: Some(context::Value::Tuple(values)),
-                    })
-                } else {
-                    Ok(Context {
-                        is_lvalue: false,
-                        taipe: context::Type::Tuple(types),
-                        value: None,
-                    })
-                }
+                Ok(Context {
+                    is_lvalue: false,
+                    taipe: context::Type::Tuple(types),
+                    value: context::Value::Tuple(values),
+                })
             }
             // TODO: implement this
-            ast::Expr::ArrayLit {
-                line_info: _,
-                items,
-            } => todo!(),
+            ast::Expr::ArrayLit { line_info: _, items } => todo!(),
         }
     }
 
@@ -1800,10 +1575,7 @@ impl<'a> Analyzer<'a> {
         let ctx = self.visit_expr(expr)?;
         if !ctx.taipe.is_function() {
             return Err(self.make_err(
-                format!(
-                    "expected function but got value of type '{}'",
-                    ctx.to_string()
-                ),
+                format!("expected function but got value of type '{}'", ctx.to_string()),
                 expr,
             ));
         }
@@ -1834,28 +1606,20 @@ impl<'a> Analyzer<'a> {
             }
         }
         assert!(pos_arg_infos.len() + named_arg_infos.len() == args.len());
-        self.resolve_call(
-            ctx.clone(),
-            &pos_arg_infos,
-            &named_arg_infos,
-            node.get_line_info(),
-        )
+        self.resolve_call(ctx, pos_arg_infos, named_arg_infos, node.get_line_info())
     }
 
     fn resolve_call(
         &mut self,
         fun_ctx: Context<'a>,
-        pos_arg_infos: &[(Context<'a>, LineInfo)],
-        named_arg_infos: &IndexMap<String, (Context<'a>, LineInfo, LineInfo)>,
+        pos_arg_infos: Vec<(Context<'a>, LineInfo)>,
+        named_arg_infos: IndexMap<String, (Context<'a>, LineInfo, LineInfo)>,
         call_line_info: LineInfo,
     ) -> CompileResult<Context<'a>> {
         // For better error messages
         let mut errs = CompileError::Errors(Vec::new());
-        if let Some(fun_value) = fun_ctx.value {
-            let context::Value::Function(scope) = fun_value else {
-                unreachable!("probably some analyzer bug");
-            };
-            let scope = scope.borrow();
+        if let context::Value::Reference(scope_rc) = fun_ctx.value {
+            let scope = scope_rc.borrow();
             let scope::Payload::Function(ref data) = scope.payload else {
                 unreachable!("probably some analyzer bug");
             };
@@ -1890,27 +1654,23 @@ impl<'a> Analyzer<'a> {
                 }
             }
             // Get the necessary info about params
-            let params = data.param_infos.clone();
+            let params = &data.param_infos;
             let mut args_info = IndexMap::new();
             // Check positional argument expression types
-            for (i, (arg_ctx, arg_line_info)) in pos_arg_infos.iter().enumerate() {
+            for (i, (arg_ctx, arg_line_info)) in pos_arg_infos.into_iter().enumerate() {
                 let (param_name, param) = params.get_index(i).unwrap();
                 let lhs = param.taipe.clone();
                 let lhs_line_info = param.line_info;
-                let rhs = arg_ctx.clone();
-                let rhs_line_info = *arg_line_info;
-                let mut ctx = match self.resolve_assign(
-                    Some((lhs, lhs_line_info)),
-                    None,
-                    Some((rhs, rhs_line_info)),
-                ) {
+                let rhs = arg_ctx;
+                let rhs_line_info = arg_line_info;
+                let mut ctx = match self.resolve_assign(Some((lhs, lhs_line_info)), None, Some((rhs, rhs_line_info))) {
                     Ok(it) => it,
                     Err(err) => {
                         errs = errs.chain(err);
                         Context {
                             is_lvalue: true,
                             taipe: param.taipe.clone(),
-                            value: arg_ctx.value.clone(),
+                            value: context::Value::from_nil(),
                         }
                     }
                 };
@@ -1918,32 +1678,25 @@ impl<'a> Analyzer<'a> {
                 args_info.insert(param_name.clone(), (ctx, rhs_line_info));
             }
             // Check named argument expression types
-            for (name, (arg_ctx, arg_line_info, arg_expr_info)) in named_arg_infos.iter() {
-                let Some(param) = params.get(name) else {
-                    let searched_names = params
-                        .iter()
-                        .map(|(name, _)| name.clone())
-                        .collect::<HashSet<_>>();
+            for (name, (arg_ctx, arg_line_info, arg_expr_info)) in named_arg_infos {
+                let Some(param) = params.get(&name) else {
+                    let searched_names = params.iter().map(|(name, _)| name.clone()).collect::<HashSet<_>>();
                     return Err(self
-                        .make_err(format!("unknown argument: '{}'", name), arg_line_info)
-                        .chain(self.make_did_you_mean_help(name, &searched_names)));
+                        .make_err(format!("unknown argument: '{}'", name), &arg_line_info)
+                        .chain(self.make_did_you_mean_help(&name, &searched_names)));
                 };
                 let lhs = param.taipe.clone();
                 let lhs_line_info = param.line_info;
-                let rhs = arg_ctx.clone();
-                let rhs_line_info = *arg_expr_info;
-                let mut ctx = match self.resolve_assign(
-                    Some((lhs, lhs_line_info)),
-                    None,
-                    Some((rhs, rhs_line_info)),
-                ) {
+                let rhs = arg_ctx;
+                let rhs_line_info = arg_expr_info;
+                let mut ctx = match self.resolve_assign(Some((lhs, lhs_line_info)), None, Some((rhs, rhs_line_info))) {
                     Ok(it) => it,
                     Err(err) => {
                         errs = errs.chain(err);
                         Context {
                             is_lvalue: true,
                             taipe: param.taipe.clone(),
-                            value: arg_ctx.value.clone(),
+                            value: context::Value::from_nil(),
                         }
                     }
                 };
@@ -1952,32 +1705,31 @@ impl<'a> Analyzer<'a> {
                 // Check possible duplicate named and position argument
                 if let Some((_, line_info)) = result {
                     errs = errs
-                        .chain(self.make_err("duplicate named argument", arg_line_info))
+                        .chain(self.make_err("duplicate named argument", &arg_line_info))
                         .chain(self.make_note("previous positional argument is here", &line_info));
                 }
             }
             let mut args_info = args_info
-                .iter()
-                .map(|(name, (ctx, _))| (name, ctx.clone()))
+                .into_iter()
+                .map(|(name, (ctx, _))| (name, ctx))
                 .collect::<IndexMap<_, _>>();
             // Check if any value is left out
             for (name, param) in params.iter() {
                 if !args_info.contains_key(name) {
                     if let Some(value) = &param.default {
                         args_info.insert(
-                            name,
+                            name.clone(),
                             Context {
                                 is_lvalue: true,
                                 taipe: param.taipe.clone(),
-                                value: Some(value.clone()),
+                                value: value.clone(),
                             },
                         );
                     } else {
                         errs = errs
-                            .chain(self.make_err(
-                                format!("value of argument '{}' is not provided", name),
-                                &call_line_info,
-                            ))
+                            .chain(
+                                self.make_err(format!("value of argument '{}' is not provided", name), &call_line_info),
+                            )
                             .chain(self.make_note("declared here", &param.line_info))
                     }
                 }
@@ -1986,13 +1738,6 @@ impl<'a> Analyzer<'a> {
             if !errs.is_empty() {
                 return Err(errs);
             }
-            // Reorder args_info in the order of params
-            let mut new_args_info = IndexMap::new();
-            for (name, _) in params.iter() {
-                new_args_info.insert(name, args_info[name].clone());
-            }
-            let args_info = new_args_info;
-            // TODO: Use args_info to generate IR
             println!(
                 "Call to function {}: {}",
                 scope.sym_path.to_string(),
@@ -2006,16 +1751,7 @@ impl<'a> Analyzer<'a> {
                 line_info.col_start
             );
             for (name, arg_ctx) in args_info.iter() {
-                if let Some(value) = &arg_ctx.value {
-                    println!(
-                        "  Argument => {}: {} = {}",
-                        name,
-                        arg_ctx.to_string(),
-                        value.to_string()
-                    )
-                } else {
-                    println!("  Argument => {}: {}", name, arg_ctx.to_string())
-                }
+                println!("  Argument => {}: {}", name, arg_ctx.to_string())
             }
             println!();
             let context::Type::Function {
@@ -2025,10 +1761,11 @@ impl<'a> Analyzer<'a> {
             else {
                 unreachable!("probably some analyzer bug")
             };
+            drop(scope);
             Ok(Context {
                 is_lvalue: false,
                 taipe: (*return_type).clone(),
-                value: None, // Value may have side effects
+                value: context::Value::Call(scope_rc, args_info),
             })
         } else {
             todo!()
@@ -2067,20 +1804,22 @@ impl<'a> Analyzer<'a> {
             if lhs.taipe.is_varint() && rhs.taipe.is_varint() {
                 lhs.taipe = analyzer.type_int.clone();
                 rhs.taipe = analyzer.type_int.clone();
-                if let Some(ref mut lhs_value) = lhs.value
-                    && let Some(ref mut rhs_value) = rhs.value
-                {
-                    *lhs_value = analyzer.transform_varint_to_int(&lhs_value, left)?;
-                    *rhs_value = analyzer.transform_varint_to_int(&rhs_value, right)?;
-                }
+                let context::Value::Imm(ref lhs_value) = lhs.value else {
+                    unreachable!("probably some analyzer bug");
+                };
+                let context::Value::Imm(ref rhs_value) = rhs.value else {
+                    unreachable!("probably some analyzer bug");
+                };
+                lhs.value = context::Value::Imm(analyzer.transform_varint_to_int(lhs_value, left)?);
+                rhs.value = context::Value::Imm(analyzer.transform_varint_to_int(rhs_value, right)?);
                 Ok(())
             } else if lhs.taipe.is_varint() {
                 if rhs.taipe.is_integer() || rhs.taipe.is_float() {
+                    let context::Value::Imm(ref lhs_value) = lhs.value else {
+                        unreachable!("probably some analyzer bug");
+                    };
                     // Convert varint to respective type if it is worth it
-                    if let Some(ref mut lhs_value) = lhs.value {
-                        *lhs_value =
-                            analyzer.transform_varint(&rhs.taipe, &lhs_value, left, None)?;
-                    }
+                    lhs.value = context::Value::Imm(analyzer.transform_varint(&rhs.taipe, lhs_value, left, None)?);
                     lhs.taipe = rhs.taipe.clone();
                     return Ok(());
                 }
@@ -2094,15 +1833,10 @@ impl<'a> Analyzer<'a> {
         resolve_value_promotion_ex(self, lhs, left, rhs, right, true)
     }
 
-    fn visit_binary(
-        &mut self,
-        left: &'a ast::Expr,
-        op: &Token,
-        right: &'a ast::Expr,
-    ) -> CompileResult<Context<'a>> {
+    fn visit_binary(&mut self, left: &'a ast::Expr, op: &Token, right: &'a ast::Expr) -> CompileResult<Context<'a>> {
         let line_info = LineInfo::from_range(left, right);
-        let lhs = self.visit_expr(left)?;
-        let rhs = self.visit_expr(right)?;
+        let mut lhs = self.visit_expr(left)?;
+        let mut rhs = self.visit_expr(right)?;
 
         macro_rules! return_err {
             () => {
@@ -2137,7 +1871,6 @@ impl<'a> Analyzer<'a> {
             // value1, value2 and result can be:
             //  * value1: bool      value2: bool      -> result: bool
             // note: value may be const or non-const
-            // TODO: implement short circuiting
             TokenKind::And => {
                 if !lhs.taipe.is_bool() || !rhs.taipe.is_bool() {
                     return_err!();
@@ -2145,19 +1878,7 @@ impl<'a> Analyzer<'a> {
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Bool,
-                    value: if let Some(lhs_value) = lhs.value
-                        && let Some(rhs_value) = rhs.value
-                    {
-                        let context::Value::Bool(lhs_value) = lhs_value else {
-                            unreachable!("probably some analyzer bug");
-                        };
-                        let context::Value::Bool(rhs_value) = rhs_value else {
-                            unreachable!("probably some analyzer bug");
-                        };
-                        Some(context::Value::Bool(lhs_value && rhs_value))
-                    } else {
-                        None
-                    },
+                    value: context::Value::LogicAnd(Box::new(lhs), Box::new(rhs)),
                 })
             }
             // Binary logical and operator
@@ -2167,7 +1888,6 @@ impl<'a> Analyzer<'a> {
             // value1, value2 and result can be:
             //  * value1: bool      value2: bool      -> result: bool
             // note: value may be const or non-const
-            // TODO: implement short circuiting
             TokenKind::Or => {
                 if !lhs.taipe.is_bool() || !rhs.taipe.is_bool() {
                     return_err!();
@@ -2175,19 +1895,7 @@ impl<'a> Analyzer<'a> {
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Bool,
-                    value: if let Some(lhs_value) = lhs.value
-                        && let Some(rhs_value) = rhs.value
-                    {
-                        let context::Value::Bool(lhs_value) = lhs_value else {
-                            unreachable!("probably some analyzer bug");
-                        };
-                        let context::Value::Bool(rhs_value) = rhs_value else {
-                            unreachable!("probably some analyzer bug");
-                        };
-                        Some(context::Value::Bool(lhs_value || rhs_value))
-                    } else {
-                        None
-                    },
+                    value: context::Value::LogicOr(Box::new(lhs), Box::new(rhs)),
                 })
             }
             // Binary relational operators
@@ -2223,16 +1931,14 @@ impl<'a> Analyzer<'a> {
             | TokenKind::NotEq
             | TokenKind::GreaterEq
             | TokenKind::RAngle => {
-                let mut lhs = lhs.clone();
-                let mut rhs = rhs.clone();
                 self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                 if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
                     return_err!();
                 }
-                let mut value: Option<context::Value<'a>> = None;
-                match lhs.taipe.remove_const() {
+                let value = match lhs.taipe.remove_const() {
                     context::Type::Bool
                     | context::Type::Char
+                    | context::Type::Pointer(_)
                     | context::Type::Int8
                     | context::Type::Int16
                     | context::Type::Int32
@@ -2245,59 +1951,31 @@ impl<'a> Analyzer<'a> {
                     | context::Type::Uint128
                     | context::Type::Float32
                     | context::Type::Float64 => {
-                        if let Some(ref lhs_value) = lhs.value
-                            && let Some(ref rhs_value) = rhs.value
-                        {
-                            let ord = lhs_value.compare(rhs_value);
-                            // Refer to: https://doc.rust-lang.org/std/cmp/trait.PartialOrd.html
-                            value = Some(context::Value::Bool(match op.kind {
-                                TokenKind::EqEq => match ord {
-                                    Some(Ordering::Equal) => true,
-                                    _ => false,
-                                },
-                                TokenKind::LAngle => match ord {
-                                    Some(Ordering::Less) => true,
-                                    _ => false,
-                                },
-                                TokenKind::RAngle => match ord {
-                                    Some(Ordering::Greater) => true,
-                                    _ => false,
-                                },
-                                TokenKind::LessEq => match ord {
-                                    Some(Ordering::Less) | Some(Ordering::Equal) => true,
-                                    _ => false,
-                                },
-                                TokenKind::GreaterEq => match ord {
-                                    Some(Ordering::Greater) | Some(Ordering::Equal) => true,
-                                    _ => false,
-                                },
-                                TokenKind::NotEq => match ord {
-                                    Some(Ordering::Equal) => false,
-                                    _ => true,
-                                },
-                                _ => unreachable!("probably some analyzer bug"),
-                            }));
+                        // Refer to: https://doc.rust-lang.org/std/cmp/trait.PartialOrd.html
+                        match op.kind {
+                            TokenKind::EqEq => context::Value::Eq(Box::new(lhs), Box::new(rhs)),
+                            TokenKind::LAngle => context::Value::Lt(Box::new(lhs), Box::new(rhs)),
+                            TokenKind::RAngle => context::Value::Gt(Box::new(lhs), Box::new(rhs)),
+                            TokenKind::LessEq => context::Value::Le(Box::new(lhs), Box::new(rhs)),
+                            TokenKind::GreaterEq => context::Value::Ge(Box::new(lhs), Box::new(rhs)),
+                            TokenKind::NotEq => context::Value::Ne(Box::new(lhs), Box::new(rhs)),
+                            _ => unreachable!("probably some analyzer bug"),
                         }
                     }
                     context::Type::Typedef => {
-                        let Some(lhs_value) = lhs.value else {
+                        let context::Value::Imm(lhs_value) = lhs.value else {
                             unreachable!("probably some analyzer bug");
                         };
-                        let context::Value::Type(lhs_type) = lhs_value else {
+                        let context::Imm::Type(lhs_type) = lhs_value else {
                             unreachable!("probably some analyzer bug");
                         };
-                        let Some(rhs_value) = rhs.value else {
+                        let context::Value::Imm(rhs_value) = rhs.value else {
                             unreachable!("probably some analyzer bug");
                         };
-                        let context::Value::Type(rhs_type) = rhs_value else {
+                        let context::Imm::Type(rhs_type) = rhs_value else {
                             unreachable!("probably some analyzer bug");
                         };
-                        value = Some(context::Value::Bool(lhs_type == rhs_type));
-                    }
-                    context::Type::Pointer(_) => {
-                        if let Some(_lhs_value) = lhs.value {
-                            todo!("pointer comparison is not implemented for compile time")
-                        }
+                        context::Value::from_bool(lhs_type == rhs_type)
                     }
                     // context::Type::Basic(weak) => todo!(),
                     // context::Type::Array { count, taipe } => todo!(),
@@ -2306,7 +1984,7 @@ impl<'a> Analyzer<'a> {
                     _ => {
                         return_err!();
                     }
-                }
+                };
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Bool,
@@ -2328,22 +2006,14 @@ impl<'a> Analyzer<'a> {
             // note: value may be const or non-const
             TokenKind::Ampersand => {
                 if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
-                    let mut lhs = lhs.clone();
-                    let mut rhs = rhs.clone();
                     self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                     if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
                         return_err!();
                     }
                     Ok(Context {
                         is_lvalue: false,
-                        taipe: lhs.taipe.add_const(),
-                        value: if let Some(lhs_value) = lhs.value.clone()
-                            && let Some(rhs_value) = rhs.value.clone()
-                        {
-                            Some(lhs_value.bit_and(rhs_value))
-                        } else {
-                            None
-                        },
+                        taipe: lhs.taipe.clone().add_const(),
+                        value: context::Value::BitAnd(Box::new(lhs), Box::new(rhs)),
                     })
                 } else {
                     return_err!();
@@ -2364,22 +2034,14 @@ impl<'a> Analyzer<'a> {
             // note: value may be const or non-const
             TokenKind::Caret => {
                 if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
-                    let mut lhs = lhs.clone();
-                    let mut rhs = rhs.clone();
                     self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                     if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
                         return_err!();
                     }
                     Ok(Context {
                         is_lvalue: false,
-                        taipe: lhs.taipe.add_const(),
-                        value: if let Some(lhs_value) = lhs.value.clone()
-                            && let Some(rhs_value) = rhs.value.clone()
-                        {
-                            Some(lhs_value.bit_xor(rhs_value))
-                        } else {
-                            None
-                        },
+                        taipe: lhs.taipe.clone().add_const(),
+                        value: context::Value::BitXor(Box::new(lhs), Box::new(rhs)),
                     })
                 } else {
                     return_err!();
@@ -2400,22 +2062,14 @@ impl<'a> Analyzer<'a> {
             // note: value may be const or non-const
             TokenKind::Pipe => {
                 if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
-                    let mut lhs = lhs.clone();
-                    let mut rhs = rhs.clone();
                     self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                     if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
                         return_err!();
                     }
                     Ok(Context {
                         is_lvalue: false,
-                        taipe: lhs.taipe.add_const(),
-                        value: if let Some(lhs_value) = lhs.value.clone()
-                            && let Some(rhs_value) = rhs.value.clone()
-                        {
-                            Some(lhs_value.bit_or(rhs_value))
-                        } else {
-                            None
-                        },
+                        taipe: lhs.taipe.clone().add_const(),
+                        value: context::Value::BitOr(Box::new(lhs), Box::new(rhs)),
                     })
                 } else {
                     return_err!();
@@ -2440,37 +2094,30 @@ impl<'a> Analyzer<'a> {
                 if lhs.taipe.is_integer() {
                     if !rhs.taipe.is_varint() && !rhs.taipe.is_unsigned_integer() {
                         return Err(self.make_err(
-                            format!(
-                                "expected unsigned integer but got '{}'",
-                                rhs.taipe.to_string()
-                            ),
+                            format!("expected unsigned integer but got '{}'", rhs.taipe.to_string()),
                             right,
                         ));
                     }
-                    let mut lhs = lhs.clone();
-                    let mut rhs = rhs.clone();
                     // convert varint -> int
                     if lhs.taipe.is_varint() {
+                        let context::Value::Imm(ref lhs_value) = lhs.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
                         lhs.taipe = self.type_int.clone();
-                        if let Some(ref mut value) = lhs.value {
-                            *value = self.transform_varint_to_int(value, right)?;
-                        }
+                        lhs.value = context::Value::Imm(self.transform_varint_to_int(lhs_value, right)?);
                     }
-                    dbg!(rhs.to_string());
-                    rhs.taipe = context::Type::Uint32;
-                    if let Some(ref mut value) = rhs.value {
-                        *value = self.transform_value(&rhs.taipe, value, right, None)?;
+                    // implicit cast to u32
+                    if rhs.taipe.is_varint() {
+                        let context::Value::Imm(ref rhs_value) = rhs.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        rhs.taipe = context::Type::Uint32;
+                        rhs.value = context::Value::Imm(self.transform_varint(&rhs.taipe, rhs_value, right, None)?);
                     }
                     Ok(Context {
                         is_lvalue: false,
-                        taipe: lhs.taipe.add_const(),
-                        value: if let Some(lhs_value) = lhs.value.clone()
-                            && let Some(rhs_value) = rhs.value.clone()
-                        {
-                            Some(lhs_value.shl(rhs_value))
-                        } else {
-                            None
-                        },
+                        taipe: lhs.taipe.clone().add_const(),
+                        value: context::Value::Shl(Box::new(lhs), Box::new(rhs)),
                     })
                 } else {
                     return_err!();
@@ -2496,37 +2143,30 @@ impl<'a> Analyzer<'a> {
                 if lhs.taipe.is_integer() {
                     if !rhs.taipe.is_varint() && !rhs.taipe.is_unsigned_integer() {
                         return Err(self.make_err(
-                            format!(
-                                "expected unsigned integer but got '{}'",
-                                rhs.taipe.to_string()
-                            ),
+                            format!("expected unsigned integer but got '{}'", rhs.taipe.to_string()),
                             right,
                         ));
                     }
-                    let mut lhs = lhs.clone();
-                    let mut rhs = rhs.clone();
                     // convert varint -> int
                     if lhs.taipe.is_varint() {
+                        let context::Value::Imm(ref lhs_value) = lhs.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
                         lhs.taipe = self.type_int.clone();
-                        if let Some(ref mut value) = lhs.value {
-                            *value = self.transform_varint_to_int(value, right)?;
-                        }
+                        lhs.value = context::Value::Imm(self.transform_varint_to_int(lhs_value, right)?);
                     }
-                    dbg!(rhs.to_string());
-                    rhs.taipe = context::Type::Uint32;
-                    if let Some(ref mut value) = rhs.value {
-                        *value = self.transform_value(&rhs.taipe, value, right, None)?;
+                    // implicit cast to u32
+                    if rhs.taipe.is_varint() {
+                        let context::Value::Imm(ref rhs_value) = rhs.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        rhs.taipe = context::Type::Uint32;
+                        rhs.value = context::Value::Imm(self.transform_varint(&rhs.taipe, rhs_value, right, None)?);
                     }
                     Ok(Context {
                         is_lvalue: false,
-                        taipe: lhs.taipe.add_const(),
-                        value: if let Some(lhs_value) = lhs.value.clone()
-                            && let Some(rhs_value) = rhs.value.clone()
-                        {
-                            Some(lhs_value.shr(rhs_value))
-                        } else {
-                            None
-                        },
+                        taipe: lhs.taipe.clone().add_const(),
+                        value: context::Value::Shr(Box::new(lhs), Box::new(rhs)),
                     })
                 } else {
                     return_err!();
@@ -2549,11 +2189,8 @@ impl<'a> Analyzer<'a> {
             //  * value1: fX        value2: {integer} -> result: fX
             // note: value may be const or non-const
             TokenKind::Plus => {
-                if (lhs.taipe.is_integer() || lhs.taipe.is_float())
-                    && (rhs.taipe.is_integer() || rhs.taipe.is_float())
+                if (lhs.taipe.is_integer() || lhs.taipe.is_float()) && (rhs.taipe.is_integer() || rhs.taipe.is_float())
                 {
-                    let mut lhs = lhs.clone();
-                    let mut rhs = rhs.clone();
                     self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                     if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
                         return_err!();
@@ -2561,16 +2198,7 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.remove_const(),
-                        value: if let Some(lhs_value) = lhs.value.clone()
-                            && let Some(rhs_value) = rhs.value.clone()
-                        {
-                            let Some(result) = lhs_value.add(rhs_value) else {
-                                return_err!(integer_overflow);
-                            };
-                            Some(result)
-                        } else {
-                            None
-                        },
+                        value: context::Value::Add(Box::new(lhs), Box::new(rhs)),
                     })
                 } else {
                     return_err!();
@@ -2593,11 +2221,8 @@ impl<'a> Analyzer<'a> {
             //  * value1: fX        value2: {integer} -> result: fX
             // note: value may be const or non-const
             TokenKind::Minus => {
-                if (lhs.taipe.is_integer() || lhs.taipe.is_float())
-                    && (rhs.taipe.is_integer() || rhs.taipe.is_float())
+                if (lhs.taipe.is_integer() || lhs.taipe.is_float()) && (rhs.taipe.is_integer() || rhs.taipe.is_float())
                 {
-                    let mut lhs = lhs.clone();
-                    let mut rhs = rhs.clone();
                     self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                     if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
                         return_err!();
@@ -2605,16 +2230,7 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.remove_const(),
-                        value: if let Some(lhs_value) = lhs.value.clone()
-                            && let Some(rhs_value) = rhs.value.clone()
-                        {
-                            let Some(result) = lhs_value.sub(rhs_value) else {
-                                return_err!(integer_overflow);
-                            };
-                            Some(result)
-                        } else {
-                            None
-                        },
+                        value: context::Value::Sub(Box::new(lhs), Box::new(rhs)),
                     })
                 } else {
                     return_err!();
@@ -2637,28 +2253,16 @@ impl<'a> Analyzer<'a> {
             //  * value1: fX        value2: {integer} -> result: fX
             // note: value may be const or non-const
             TokenKind::Star => {
-                if (lhs.taipe.is_integer() || lhs.taipe.is_float())
-                    && (rhs.taipe.is_integer() || rhs.taipe.is_float())
+                if (lhs.taipe.is_integer() || lhs.taipe.is_float()) && (rhs.taipe.is_integer() || rhs.taipe.is_float())
                 {
-                    let mut lhs = lhs.clone();
-                    let mut rhs = rhs.clone();
                     self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                     if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
                         return_err!();
                     }
                     Ok(Context {
                         is_lvalue: false,
-                        taipe: lhs.taipe.add_const(),
-                        value: if let Some(lhs_value) = lhs.value.clone()
-                            && let Some(rhs_value) = rhs.value.clone()
-                        {
-                            let Some(result) = lhs_value.mul(rhs_value) else {
-                                return_err!(integer_overflow);
-                            };
-                            Some(result)
-                        } else {
-                            None
-                        },
+                        taipe: lhs.taipe.clone().add_const(),
+                        value: context::Value::Mul(Box::new(lhs), Box::new(rhs)),
                     })
                 } else {
                     return_err!();
@@ -2681,28 +2285,16 @@ impl<'a> Analyzer<'a> {
             //  * value1: fX        value2: {integer} -> result: fX
             // note: value may be const or non-const
             TokenKind::Slash => {
-                if (lhs.taipe.is_integer() || lhs.taipe.is_float())
-                    && (rhs.taipe.is_integer() || rhs.taipe.is_float())
+                if (lhs.taipe.is_integer() || lhs.taipe.is_float()) && (rhs.taipe.is_integer() || rhs.taipe.is_float())
                 {
-                    let mut lhs = lhs.clone();
-                    let mut rhs = rhs.clone();
                     self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                     if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
                         return_err!();
                     }
                     Ok(Context {
                         is_lvalue: false,
-                        taipe: lhs.taipe.add_const(),
-                        value: if let Some(lhs_value) = lhs.value.clone()
-                            && let Some(rhs_value) = rhs.value.clone()
-                        {
-                            let Some(result) = lhs_value.div(rhs_value) else {
-                                return_err!(integer_overflow);
-                            };
-                            Some(result)
-                        } else {
-                            None
-                        },
+                        taipe: lhs.taipe.clone().add_const(),
+                        value: context::Value::Div(Box::new(lhs), Box::new(rhs)),
                     })
                 } else {
                     return_err!();
@@ -2723,25 +2315,14 @@ impl<'a> Analyzer<'a> {
             // note: value may be const or non-const
             TokenKind::Percent => {
                 if lhs.taipe.is_integer() && rhs.taipe.is_integer() {
-                    let mut lhs = lhs.clone();
-                    let mut rhs = rhs.clone();
                     self.resolve_value_promotion(&mut lhs, left, &mut rhs, right)?;
                     if lhs.taipe.remove_const() != rhs.taipe.remove_const() {
                         return_err!();
                     }
                     Ok(Context {
                         is_lvalue: false,
-                        taipe: lhs.taipe.add_const(),
-                        value: if let Some(lhs_value) = lhs.value.clone()
-                            && let Some(rhs_value) = rhs.value.clone()
-                        {
-                            let Some(result) = lhs_value.modulo(rhs_value) else {
-                                return_err!(integer_overflow);
-                            };
-                            Some(result)
-                        } else {
-                            None
-                        },
+                        taipe: lhs.taipe.clone().add_const(),
+                        value: context::Value::Rem(Box::new(lhs), Box::new(rhs)),
                     })
                 } else {
                     return_err!();
@@ -2769,11 +2350,17 @@ impl<'a> Analyzer<'a> {
                 context::Type::VarInt => Ok(Context {
                     is_lvalue: false,
                     taipe: self.type_int.clone(),
-                    value: if let Some(value) = ctx.value {
-                        Some(self.transform_varint_to_int(&value, expr)?.negate())
-                    } else {
-                        None
+                    value: {
+                        let context::Value::Imm(value) = ctx.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        context::Value::Imm(self.transform_varint_to_int(&value, expr)?.negate())
                     },
+                    // value: if let Some(value) = ctx.value {
+                    //     Some(self.transform_varint_to_int(&value, expr)?.negate())
+                    // } else {
+                    //     None
+                    // },
                 }),
                 context::Type::Int8
                 | context::Type::Int16
@@ -2783,8 +2370,8 @@ impl<'a> Analyzer<'a> {
                 | context::Type::Float32
                 | context::Type::Float64 => Ok(Context {
                     is_lvalue: false,
-                    taipe: ctx.taipe,
-                    value: ctx.value.map(|value| value.negate()),
+                    taipe: ctx.taipe.clone().remove_const(),
+                    value: context::Value::Negate(Box::new(ctx)),
                 }),
                 context::Type::Uint8
                 | context::Type::Uint16
@@ -2801,10 +2388,7 @@ impl<'a> Analyzer<'a> {
                 }
                 _ => {
                     return Err(self.make_err(
-                        format!(
-                            "cannot apply '-' operator on type '{}'",
-                            ctx.taipe.to_string()
-                        ),
+                        format!("cannot apply '-' operator on type '{}'", ctx.taipe.to_string()),
                         expr,
                     ));
                 }
@@ -2822,10 +2406,11 @@ impl<'a> Analyzer<'a> {
                 context::Type::VarInt => Ok(Context {
                     is_lvalue: false,
                     taipe: self.type_int.clone(),
-                    value: if let Some(value) = ctx.value {
-                        Some(self.transform_varint_to_int(&value, expr)?.flip_bits())
-                    } else {
-                        None
+                    value: {
+                        let context::Value::Imm(value) = ctx.value else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        context::Value::Imm(self.transform_varint_to_int(&value, expr)?.flip_bits())
                     },
                 }),
                 context::Type::Int8
@@ -2839,15 +2424,12 @@ impl<'a> Analyzer<'a> {
                 | context::Type::Uint64
                 | context::Type::Uint128 => Ok(Context {
                     is_lvalue: false,
-                    taipe: ctx.taipe,
-                    value: ctx.value.map(|value| value.flip_bits()),
+                    taipe: ctx.taipe.clone().remove_const(),
+                    value: context::Value::FlipBits(Box::new(ctx)),
                 }),
                 _ => {
                     return Err(self.make_err(
-                        format!(
-                            "cannot apply '~' operator on type '{}'",
-                            ctx.taipe.to_string()
-                        ),
+                        format!("cannot apply '~' operator on type '{}'", ctx.taipe.to_string()),
                         expr,
                     ));
                 }
@@ -2865,13 +2447,10 @@ impl<'a> Analyzer<'a> {
                 context::Type::Pointer(taipe) => Ok(Context {
                     is_lvalue: true,
                     taipe: *taipe,
-                    value: None,
+                    value: context::Value::Deref(Box::new(ctx)),
                 }),
                 _ => {
-                    return Err(self.make_err(
-                        format!("cannot dereference type '{}'", ctx.taipe.to_string()),
-                        expr,
-                    ));
+                    return Err(self.make_err(format!("cannot dereference type '{}'", ctx.taipe.to_string()), expr));
                 }
             },
             // Unary address of operator
@@ -2904,32 +2483,19 @@ impl<'a> Analyzer<'a> {
                 }
                 if !is_addressable(&ctx.taipe) {
                     return Err(self.make_err(
-                        format!(
-                            "cannot take address of value of type '{}'",
-                            ctx.taipe.to_string()
-                        ),
+                        format!("cannot take address of value of type '{}'", ctx.taipe.to_string()),
                         expr,
                     ));
                 }
                 if !ctx.is_lvalue {
-                    return Err(
-                        self.make_err("cannot take address of a prvalue (pure rvalue)", expr)
-                    );
+                    return Err(self.make_err("cannot take address of a prvalue (pure rvalue)", expr));
                 }
-                match ctx.taipe.remove_const() {
-                    context::Type::VarInt => Ok(Context {
-                        is_lvalue: false,
-                        taipe: context::Type::Pointer(Box::new(context::Type::Const(Box::new(
-                            self.type_int.clone(),
-                        )))),
-                        value: None,
-                    }),
-                    _ => Ok(Context {
-                        is_lvalue: false,
-                        taipe: context::Type::Pointer(Box::new(ctx.taipe)),
-                        value: None,
-                    }),
-                }
+                assert!(!ctx.taipe.is_varint());
+                Ok(Context {
+                    is_lvalue: false,
+                    taipe: context::Type::Pointer(Box::new(ctx.taipe.clone())),
+                    value: context::Value::AddrOf(Box::new(ctx)),
+                })
             }
             // Unary sizeof operator
             //    result = sizeof(value)
@@ -2949,27 +2515,22 @@ impl<'a> Analyzer<'a> {
                     match taipe {
                         context::Type::VarInt => false,
                         context::Type::Const(taipe) => is_sizeof_permitted(taipe),
-                        context::Type::Module | context::Type::Void | context::Type::Noreturn => {
-                            false
-                        }
+                        context::Type::Module | context::Type::Void | context::Type::Noreturn => false,
                         _ => true,
                     }
                 }
                 if !is_sizeof_permitted(&ctx.taipe) {
                     return Err(self.make_err(
-                        format!(
-                            "cannot take sizeof value of type '{}'",
-                            ctx.taipe.to_string()
-                        ),
+                        format!("cannot take sizeof value of type '{}'", ctx.taipe.to_string()),
                         expr,
                     ));
                 }
                 let taipe = match ctx.taipe {
                     context::Type::Typedef => {
-                        let Some(value) = ctx.value else {
+                        let context::Value::Imm(value) = ctx.value else {
                             unreachable!("probably some analyzer bug");
                         };
-                        let context::Value::Type(taipe) = value else {
+                        let context::Imm::Type(taipe) = value else {
                             unreachable!("probably some analyzer bug");
                         };
                         taipe
@@ -2997,27 +2558,22 @@ impl<'a> Analyzer<'a> {
                     match taipe {
                         context::Type::VarInt => false,
                         context::Type::Const(taipe) => is_alignof_permitted(taipe),
-                        context::Type::Module | context::Type::Void | context::Type::Noreturn => {
-                            false
-                        }
+                        context::Type::Module | context::Type::Void | context::Type::Noreturn => false,
                         _ => true,
                     }
                 }
                 if !is_alignof_permitted(&ctx.taipe) {
                     return Err(self.make_err(
-                        format!(
-                            "cannot take alignof value of type '{}'",
-                            ctx.taipe.to_string()
-                        ),
+                        format!("cannot take alignof value of type '{}'", ctx.taipe.to_string()),
                         expr,
                     ));
                 }
                 let taipe = match ctx.taipe {
                     context::Type::Typedef => {
-                        let Some(value) = ctx.value else {
+                        let context::Value::Imm(value) = ctx.value else {
                             unreachable!("probably some analyzer bug");
                         };
-                        let context::Value::Type(taipe) = value else {
+                        let context::Imm::Type(taipe) = value else {
                             unreachable!("probably some analyzer bug");
                         };
                         taipe
@@ -3052,10 +2608,7 @@ impl<'a> Analyzer<'a> {
                 }
                 if is_typeof_permitted(&ctx.taipe) {
                     return Err(self.make_err(
-                        format!(
-                            "cannot use typeof operator on type '{}'",
-                            ctx.taipe.to_string()
-                        ),
+                        format!("cannot use typeof operator on type '{}'", ctx.taipe.to_string()),
                         expr,
                     ));
                 }
@@ -3073,95 +2626,49 @@ impl<'a> Analyzer<'a> {
                 // comptime: perform logical not
                 if !ctx.taipe.is_bool() {
                     return Err(self.make_err(
-                        format!(
-                            "cannot use not operator on type '{}'",
-                            ctx.taipe.to_string()
-                        ),
+                        format!("cannot use not operator on type '{}'", ctx.taipe.to_string()),
                         expr,
                     ));
                 }
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Bool,
-                    value: ctx.value.map(|value| match value {
-                        context::Value::Bool(b) => context::Value::Bool(!b),
-                        _ => unreachable!("probably some analyzer bug"),
-                    }),
+                    value: context::Value::Not(Box::new(ctx)),
                 })
             }
             _ => unreachable!("probably some parser bug"),
         }
     }
 
-    fn get_sizeof(
-        &mut self,
-        taipe: &context::Type<'a>,
-        line_info: &impl HasLineInfo,
-    ) -> CompileResult<usize> {
+    fn get_sizeof(&mut self, taipe: &context::Type<'a>, line_info: &impl HasLineInfo) -> CompileResult<usize> {
         Ok(self.resolve_layout(taipe, line_info)?.size)
     }
 
-    fn get_alignof(
-        &mut self,
-        taipe: &context::Type<'a>,
-        line_info: &impl HasLineInfo,
-    ) -> CompileResult<usize> {
+    fn get_alignof(&mut self, taipe: &context::Type<'a>, line_info: &impl HasLineInfo) -> CompileResult<usize> {
         Ok(self.resolve_layout(taipe, line_info)?.alignment)
     }
 
-    fn resolve_layout(
-        &mut self,
-        taipe: &context::Type<'a>,
-        line_info: &impl HasLineInfo,
-    ) -> CompileResult<Layout> {
+    fn resolve_layout(&mut self, taipe: &context::Type<'a>, line_info: &impl HasLineInfo) -> CompileResult<Layout> {
         // (usize, usize) -> (size, alignment)
         // size (in bytes) -> always a multiple of alignment
         // alignment (in bytes) -> always a power of 2
         self.resolve_layout_ex(taipe, line_info.get_line_info())
     }
 
-    fn resolve_layout_ex(
-        &mut self,
-        taipe: &context::Type<'a>,
-        line_info: LineInfo,
-    ) -> CompileResult<Layout> {
+    fn resolve_layout_ex(&mut self, taipe: &context::Type<'a>, line_info: LineInfo) -> CompileResult<Layout> {
         let layout = match taipe {
-            context::Type::Bool => Layout {
-                size: 1,
-                alignment: 1,
-            },
-            context::Type::Char => Layout {
-                size: 1,
-                alignment: 1,
-            },
-            context::Type::Int8 | context::Type::Uint8 => Layout {
-                size: 1,
-                alignment: 1,
-            },
-            context::Type::Int16 | context::Type::Uint16 => Layout {
-                size: 2,
-                alignment: 2,
-            },
-            context::Type::Int32 | context::Type::Uint32 => Layout {
-                size: 4,
-                alignment: 4,
-            },
-            context::Type::Int64 | context::Type::Uint64 => Layout {
-                size: 8,
-                alignment: 8,
-            },
+            context::Type::Bool => Layout { size: 1, alignment: 1 },
+            context::Type::Char => Layout { size: 1, alignment: 1 },
+            context::Type::Int8 | context::Type::Uint8 => Layout { size: 1, alignment: 1 },
+            context::Type::Int16 | context::Type::Uint16 => Layout { size: 2, alignment: 2 },
+            context::Type::Int32 | context::Type::Uint32 => Layout { size: 4, alignment: 4 },
+            context::Type::Int64 | context::Type::Uint64 => Layout { size: 8, alignment: 8 },
             context::Type::Int128 | context::Type::Uint128 => Layout {
                 size: 16,
                 alignment: 16,
             },
-            context::Type::Float32 => Layout {
-                size: 4,
-                alignment: 4,
-            },
-            context::Type::Float64 => Layout {
-                size: 8,
-                alignment: 8,
-            },
+            context::Type::Float32 => Layout { size: 4, alignment: 4 },
+            context::Type::Float64 => Layout { size: 8, alignment: 8 },
             context::Type::Const(taipe) => self.resolve_layout_ex(taipe, line_info)?,
             context::Type::Basic(scope) => self.resolve_layout_scope(scope)?,
             context::Type::Function { ret: _, params: _ } | context::Type::Pointer(_) => {
@@ -3202,10 +2709,7 @@ impl<'a> Analyzer<'a> {
             | context::Type::Void
             | context::Type::Noreturn => {
                 return Err(self.make_err(
-                    format!(
-                        "type has no memory layout, problem type is '{}'",
-                        taipe.to_string()
-                    ),
+                    format!("type has no memory layout, problem type is '{}'", taipe.to_string()),
                     &line_info,
                 ));
             }
@@ -3213,20 +2717,12 @@ impl<'a> Analyzer<'a> {
         Ok(layout)
     }
 
-    fn resolve_layout_tuple(
-        &mut self,
-        types: &[context::Type<'a>],
-        line_info: LineInfo,
-    ) -> CompileResult<Layout> {
+    fn resolve_layout_tuple(&mut self, types: &[context::Type<'a>], line_info: LineInfo) -> CompileResult<Layout> {
         fn eval_padding(offset: usize, alignment: usize) -> usize {
             // Calculate the misalignment
             let misalignment = offset % alignment;
             // Add the padding
-            let padding = if misalignment > 0 {
-                alignment - misalignment
-            } else {
-                0
-            };
+            let padding = if misalignment > 0 { alignment - misalignment } else { 0 };
             padding
         }
         let mut tuple_alignment = 1usize;
@@ -3246,9 +2742,7 @@ impl<'a> Analyzer<'a> {
         cur_offset += eval_padding(cur_offset, tuple_alignment);
         // Calculate the size
         let mut tuple_size = cur_offset - offset_start;
-        // TODO: think about empty tuples
-        // Reference: https://doc.rust-lang.org/nomicon/exotic-sizes.html#zero-sized-types-zsts
-        // Reference: https://doc.rust-lang.org/nomicon/vec/vec-zsts.html
+        // Empty tuples are not entirely empty they have size of 1 byte
         if tuple_size == 0 {
             tuple_size = tuple_alignment;
         }
@@ -3258,38 +2752,28 @@ impl<'a> Analyzer<'a> {
         })
     }
 
-    fn resolve_layout_scope(
-        &mut self,
-        scope: &Rc<RefCell<scope::Scope<'a>>>,
-    ) -> CompileResult<Layout> {
-        let payload = scope.borrow().payload.clone();
-        scope.borrow_mut().payload = scope::Payload::LayoutResolutionInProg;
-        match payload {
+    fn resolve_layout_scope(&mut self, scope: &Rc<RefCell<scope::Scope<'a>>>) -> CompileResult<Layout> {
+        let scope_ref = scope.borrow();
+        match &scope_ref.payload {
             Payload::Compound(compound) => {
+                let compound = compound.clone();
+                drop(scope_ref);
+                scope.borrow_mut().payload = scope::Payload::LayoutResolutionInProg;
                 let mut offsets = HashMap::<String, scope::FieldData>::new();
                 // Resolve layout info for the struct or union or field
                 let layout = self.resolve_layout_field(&compound.field, 0, &mut offsets, &|name| {
                     // Give child line info when requested
-                    scope.borrow().children[&name.to_string()]
-                        .borrow()
-                        .get_line_info()
+                    scope.borrow().children[&name.to_string()].borrow().get_line_info()
                 });
                 let layout = match layout {
                     Ok(layout) => layout,
-                    Err(CompileError::SemCyclic {
-                        file_path,
-                        line_info,
-                    }) => {
+                    Err(CompileError::SemCyclic { file_path, line_info }) => {
                         return Err(self
                             .make_err(
                                 "memory layout is ambiguous, encountered cyclic references",
                                 &scope.borrow(),
                             )
-                            .chain(self.make_note_with_path(
-                                "cycle occurs here",
-                                file_path,
-                                &line_info,
-                            )));
+                            .chain(self.make_note_with_path("cycle occurs here", file_path, &line_info)));
                     }
                     Err(err) => return Err(err),
                 };
@@ -3325,11 +2809,7 @@ impl<'a> Analyzer<'a> {
             // Calculate the misalignment
             let misalignment = offset % alignment;
             // Add the padding
-            let padding = if misalignment > 0 {
-                alignment - misalignment
-            } else {
-                0
-            };
+            let padding = if misalignment > 0 { alignment - misalignment } else { 0 };
             padding
         }
 
@@ -3339,12 +2819,7 @@ impl<'a> Analyzer<'a> {
                 let offset_start = cur_offset;
                 for field in fields {
                     // Set the offset of field
-                    let layout = self.resolve_layout_field(
-                        field,
-                        cur_offset,
-                        offset_table,
-                        get_line_info_of_field,
-                    )?;
+                    let layout = self.resolve_layout_field(field, cur_offset, offset_table, get_line_info_of_field)?;
                     // Advance the offset
                     cur_offset += layout.size;
                     // Add the padding
@@ -3356,9 +2831,7 @@ impl<'a> Analyzer<'a> {
                 cur_offset += eval_padding(cur_offset, struct_alignment);
                 // Calculate the size
                 let mut struct_size = cur_offset - offset_start;
-                // TODO: think about empty structs
-                // Reference: https://doc.rust-lang.org/nomicon/exotic-sizes.html#zero-sized-types-zsts
-                // Reference: https://doc.rust-lang.org/nomicon/vec/vec-zsts.html
+                // Empty structs are not entirely empty they have size of 1 byte
                 if struct_size == 0 {
                     struct_size = struct_alignment;
                 }
@@ -3373,20 +2846,13 @@ impl<'a> Analyzer<'a> {
                 // Calculate
                 for field in fields.iter() {
                     // Set the offset of field
-                    let layout = self.resolve_layout_field(
-                        field,
-                        cur_offset,
-                        offset_table,
-                        get_line_info_of_field,
-                    )?;
+                    let layout = self.resolve_layout_field(field, cur_offset, offset_table, get_line_info_of_field)?;
                     // Size of a union is the size of the largest field
                     union_size = union_size.max(layout.size);
                     // Alignment of a union is the alignment of the most aligned field
                     union_alignment = union_alignment.max(layout.alignment);
                 }
-                // TODO: think about empty unions
-                // Reference: https://doc.rust-lang.org/nomicon/exotic-sizes.html#zero-sized-types-zsts
-                // Reference: https://doc.rust-lang.org/nomicon/vec/vec-zsts.html
+                // Empty structs are not entirely empty they have size of 1 byte
                 if union_size == 0 {
                     union_size = union_alignment;
                 }
@@ -3399,9 +2865,10 @@ impl<'a> Analyzer<'a> {
                 file_path,
                 line_info,
                 name,
-                ctx,
+                taipe,
+                scope: _,
             } => {
-                let layout = self.resolve_layout_ex(&ctx.taipe, get_line_info_of_field(name));
+                let layout = self.resolve_layout_ex(&taipe, get_line_info_of_field(name));
                 let layout = match layout {
                     Ok(layout) => layout,
                     Err(CompileError::SemCyclic {
@@ -3452,17 +2919,18 @@ impl<'a> Analyzer<'a> {
         {
             if let Some((ref lhs_type, _)) = lhs {
                 if lhs_type.is_integer() && !lhs_type.is_varint() {
+                    let context::Value::Imm(rhs_value) = rhs_value else {
+                        unreachable!("probably some analyzer bug");
+                    };
                     *rhs_type = lhs_type.clone();
-                    if let Some(rhs_value) = rhs_value {
-                        *rhs_value =
-                            self.transform_varint(lhs_type, rhs_value, &rhs_line_info, None)?;
-                    }
+                    *rhs_value = self.transform_varint(lhs_type, rhs_value, &rhs_line_info, None)?;
                 }
             } else {
+                let context::Value::Imm(rhs_value) = rhs_value else {
+                    unreachable!("probably some analyzer bug");
+                };
                 *rhs_type = self.type_int.clone();
-                if let Some(rhs_value) = rhs_value {
-                    *rhs_value = self.transform_varint_to_int(rhs_value, &rhs_line_info)?;
-                }
+                *rhs_value = self.transform_varint_to_int(rhs_value, &rhs_line_info)?;
             }
         }
         match (lhs, rhs) {
@@ -3472,7 +2940,7 @@ impl<'a> Analyzer<'a> {
             // name :: value;
             // name := value;
             // ---------------------------------
-            (None, Some((rhs, rhs_line_info))) => {
+            (None, Some((rhs, _rhs_line_info))) => {
                 let Some(eq_token) = eq_token else {
                     unreachable!("probably some analyzer bug");
                 };
@@ -3481,19 +2949,11 @@ impl<'a> Analyzer<'a> {
                     // ---------------------------------
                     // name :: value;
                     // ---------------------------------
-                    TokenKind::Colon => {
-                        if rhs.value.is_none() && self.get_current_function().is_none() {
-                            return Err(self.make_err(
-                                "value cannot be evaluated at compile time",
-                                &rhs_line_info,
-                            ));
-                        }
-                        Ok(Context {
-                            is_lvalue: false,
-                            taipe: rhs.taipe.add_const(),
-                            value: rhs.value,
-                        })
-                    }
+                    TokenKind::Colon => Ok(Context {
+                        is_lvalue: false,
+                        taipe: rhs.taipe.add_const(),
+                        value: rhs.value,
+                    }),
                     // Situation
                     // ---------------------------------
                     // name := value;
@@ -3523,7 +2983,8 @@ impl<'a> Analyzer<'a> {
                 Ok(Context {
                     is_lvalue: false,
                     taipe: lhs,
-                    value: None,
+                    // TODO: check for default values
+                    value: context::Value::from_nil(),
                 })
             }
             // Situation
@@ -3542,12 +3003,6 @@ impl<'a> Analyzer<'a> {
                         // ---------------------------------
                         TokenKind::Colon => {
                             allow_assign_to_const = true;
-                            if rhs.value.is_none() {
-                                return Err(self.make_err(
-                                    "value cannot be evaluated at compile time",
-                                    &rhs_line_info,
-                                ));
-                            }
                         }
                         // Situation
                         // ---------------------------------
@@ -3564,14 +3019,7 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 // Type checking and implicit casting
-                self.resolve_implicit_cast(
-                    lhs,
-                    lhs_line_info,
-                    rhs,
-                    rhs_line_info,
-                    true,
-                    allow_assign_to_const,
-                )
+                self.resolve_implicit_cast(lhs, lhs_line_info, rhs, rhs_line_info, allow_assign_to_const)
             }
         }
     }
@@ -3582,7 +3030,6 @@ impl<'a> Analyzer<'a> {
         lhs_line_info: LineInfo,
         mut rhs: Context<'a>,
         rhs_line_info: LineInfo,
-        allow_assign_from_const: bool,
         allow_assign_to_const: bool,
     ) -> CompileResult<Context<'a>> {
         macro_rules! return_err_const {
@@ -3592,10 +3039,7 @@ impl<'a> Analyzer<'a> {
                         format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
                         &lhs_line_info,
                     )
-                    .chain(self.make_note(
-                        format!("type of value is '{}'", rhs.to_string()),
-                        &rhs_line_info,
-                    )));
+                    .chain(self.make_note(format!("type of value is '{}'", rhs.to_string()), &rhs_line_info)));
             };
         }
         macro_rules! return_err {
@@ -3605,24 +3049,19 @@ impl<'a> Analyzer<'a> {
                         format!("cannot assign value of type '{}'", rhs.to_string()),
                         &rhs_line_info,
                     )
-                    .chain(self.make_note(
-                        format!("cannot assign to '{}'", lhs.to_string()),
-                        &lhs_line_info,
-                    )));
+                    .chain(self.make_note(format!("cannot assign to '{}'", lhs.to_string()), &lhs_line_info)));
             };
         }
-        // if allow_assign_from_const {
-        //     // const qualifier in rhs does not matter at all during assignment
-        //     // as values are always copied (except for pointers of course)
-        //     rhs.taipe = rhs.taipe.remove_const();
-        // }
-        // if allow_assign_to_const {
-        //     // If this is a first assignment to a constant
-        //     // Behave as if the constant has no const qualifier to its type
-        //     lhs = lhs.remove_const();
-        // }
+        // const qualifier in rhs does not matter at all during assignment
+        // as values are always copied (except for pointers of course)
+        rhs.taipe = rhs.taipe.remove_const();
+        if allow_assign_to_const {
+            // If this is a first assignment to a constant
+            // Behave as if the constant has no const qualifier to its type
+            lhs = lhs.remove_const();
+        }
         // Type checking and Implicit conversions
-        match (&lhs, &rhs.taipe) {
+        let value = match (&lhs, &rhs.taipe) {
             // Implicit integer conversions
             (context::Type::Int128, context::Type::Int64)
             | (context::Type::Int128, context::Type::Int32)
@@ -3643,136 +3082,50 @@ impl<'a> Analyzer<'a> {
             | (context::Type::Uint64, context::Type::Uint8)
             | (context::Type::Uint32, context::Type::Uint16)
             | (context::Type::Uint32, context::Type::Uint8)
-            | (context::Type::Uint16, context::Type::Uint8) => {
-                if let Some(ref mut rhs_value) = rhs.value {
-                    *rhs_value = self.transform_value(&lhs, rhs_value, &rhs_line_info, None)?;
-                }
-            }
-            // (context::Type::Int, context::Type::Float32) => {
-            //     if let Some(value) = &rhs.value {
-            //         let context::Value::Float32(value) = value else {
-            //             unreachable!("probably some analyzer bug");
-            //         };
-            //         rhs.value = Some(context::Value::Int(Int::from_f32(*value)));
-            //     }
-            //     // TODO: record info for generating IR
-            // }
-            // (context::Type::Int, context::Type::Float64) => {
-            //     if let Some(value) = &rhs.value {
-            //         let context::Value::Float64(value) = value else {
-            //             unreachable!("probably some analyzer bug");
-            //         };
-            //         rhs.value = Some(context::Value::Int(Int::from_f64(*value)));
-            //     }
-            //     // TODO: record info for generating IR
-            // }
+            | (context::Type::Uint16, context::Type::Uint8) => context::Value::Cast(Box::new(rhs)),
             (context::Type::Float32, context::Type::VarInt) => {
-                if let Some(value) = &rhs.value {
-                    let context::Value::VarInt(value) = value else {
-                        unreachable!("probably some analyzer bug");
-                    };
-                    let Some(value) = value.to_f32() else {
-                        return Err(self.make_err(
-                            format!("'f32' cannot hold this value: '{}'", value),
-                            &rhs_line_info,
-                        ));
-                    };
-                    rhs.value = Some(context::Value::Float32(value));
-                }
-                // TODO: record info for generating IR
+                let context::Value::Imm(value) = rhs.value else {
+                    unreachable!("probably some analyzer bug")
+                };
+                let context::Imm::VarInt(value) = value else {
+                    unreachable!("probably some analyzer bug");
+                };
+                let Some(value) = value.to_f32() else {
+                    return Err(self.make_err(format!("'f32' cannot hold this value: '{}'", value), &rhs_line_info));
+                };
+                context::Value::Imm(context::Imm::Float32(value))
             }
             (context::Type::Float64, context::Type::VarInt) => {
-                if let Some(value) = &rhs.value {
-                    let context::Value::VarInt(value) = value else {
-                        unreachable!("probably some analyzer bug");
-                    };
-                    let Some(value) = value.to_f64() else {
-                        return Err(self.make_err(
-                            format!("'f64' cannot hold this value: '{}'", value),
-                            &rhs_line_info,
-                        ));
-                    };
-                    rhs.value = Some(context::Value::Float64(value));
-                }
-                // TODO: record info for generating IR
+                let context::Value::Imm(value) = rhs.value else {
+                    unreachable!("probably some analyzer bug")
+                };
+                let context::Imm::VarInt(value) = value else {
+                    unreachable!("probably some analyzer bug");
+                };
+                let Some(value) = value.to_f64() else {
+                    return Err(self.make_err(format!("'f64' cannot hold this value: '{}'", value), &rhs_line_info));
+                };
+                context::Value::Imm(context::Imm::Float64(value))
             }
-            (context::Type::Float32, context::Type::Float64) => {
-                if let Some(value) = &rhs.value {
-                    let context::Value::Float64(value) = value else {
-                        unreachable!("probably some analyzer bug");
-                    };
-                    rhs.value = Some(context::Value::Float32(*value as f32));
-                }
-                // TODO: record info for generating IR
-            }
-            (context::Type::Const(lhs_const), context::Type::Const(rhs_const)) => {
+            (context::Type::Float32, context::Type::Float64) => context::Value::Cast(Box::new(rhs)),
+            (context::Type::Const(_), _) => {
                 if !allow_assign_to_const {
                     return_err_const!();
                 }
-                let lhs = (**lhs_const).clone();
-                let rhs = Context {
-                    is_lvalue: false,
-                    taipe: (**rhs_const).clone(),
-                    value: rhs.value.clone(),
-                };
-                if let Err(_) =
-                    self.resolve_implicit_cast(lhs, lhs_line_info, rhs, rhs_line_info, false, true)
-                {
-                    return_err!();
-                };
-            }
-            (context::Type::Const(lhs_const), _) => {
-                if !allow_assign_to_const {
-                    return_err_const!();
-                }
-                if let Err(_) = self.resolve_implicit_cast(
-                    (**lhs_const).clone(),
-                    lhs_line_info,
-                    rhs.clone(),
-                    rhs_line_info,
-                    false,
-                    false,
-                ) {
-                    return_err!();
-                };
-            }
-            (lhs, context::Type::Const(rhs_const)) => {
-                if !allow_assign_from_const {
-                    return_err!();
-                }
-                let rhs = Context {
-                    is_lvalue: false,
-                    taipe: (**rhs_const).clone(),
-                    value: rhs.value.clone(),
-                };
-                if let Err(_) = self.resolve_implicit_cast(
-                    lhs.clone(),
-                    lhs_line_info,
-                    rhs,
-                    rhs_line_info,
-                    false,
-                    allow_assign_to_const,
-                ) {
-                    return_err!();
-                };
+                unreachable!("not supposed to happen")
             }
             (context::Type::Pointer(lhs_ptr), context::Type::Pointer(rhs_ptr)) => {
                 //       *T = *T       (Valid)
                 // *const T = *T       (Valid)
                 //       *T = *const T (Invalid)
                 // *const T = *const T (Valid)
-                assert!(rhs.value.is_none());
-                let lhs = (**lhs_ptr).clone();
-                let rhs = Context {
-                    is_lvalue: false,
-                    taipe: (**rhs_ptr).clone(),
-                    value: rhs.value.clone(),
-                };
-                if let Err(_) =
-                    self.resolve_implicit_cast(lhs, lhs_line_info, rhs, rhs_line_info, false, true)
-                {
+                if !lhs_ptr.is_const() && rhs_ptr.is_const() {
                     return_err!();
-                };
+                }
+                if lhs_ptr.remove_const() != rhs_ptr.remove_const() {
+                    return_err!();
+                }
+                rhs.value
             }
             (
                 context::Type::Fat(lhs_type),
@@ -3782,27 +3135,25 @@ impl<'a> Analyzer<'a> {
                 },
             ) => {
                 // array type can be coerced to a fat pointer
-                // TODO: record length information (for generating IR)
                 if lhs_type != rhs_type {
                     return_err!();
                 }
+                context::Value::Cast(Box::new(rhs))
             }
             (context::Type::Noreturn, _) => {
-                return Err(self.make_err(
-                    format!("cannot assign to: '{}'", lhs.to_string()),
-                    &lhs_line_info,
-                ));
+                return Err(self.make_err(format!("cannot assign to: '{}'", lhs.to_string()), &lhs_line_info));
             }
             (_, context::Type::Noreturn) => {
                 // noreturn type can be coerced to any type
-                rhs.value = None;
+                context::Value::from_nil()
             }
-            (lhs, rhs) => {
-                if lhs != rhs {
+            (lhs, rhs_type) => {
+                if lhs != rhs_type {
                     return_err!();
                 }
+                rhs.value
             }
-        }
+        };
         if allow_assign_to_const {
             // Now add the constant qualifier to the type
             lhs = lhs.add_const();
@@ -3810,15 +3161,11 @@ impl<'a> Analyzer<'a> {
         Ok(Context {
             is_lvalue: false,
             taipe: lhs,
-            value: rhs.value,
+            value,
         })
     }
 
-    fn get_member(
-        &mut self,
-        scope: &Rc<RefCell<scope::Scope<'a>>>,
-        name: &Token,
-    ) -> CompileResult<Context<'a>> {
+    fn get_member(&mut self, scope: &Rc<RefCell<scope::Scope<'a>>>, name: &Token) -> CompileResult<Context<'a>> {
         let mut searched_names = HashSet::new();
         if let Some(ctx) = self.resolve_member(&scope, &name.text, &mut searched_names)? {
             Ok(ctx)
@@ -3851,7 +3198,17 @@ impl<'a> Analyzer<'a> {
                         line_info: child.borrow().get_line_info(),
                     });
                 }
-                scope::State::Visited(ctx) => return Ok(Some(ctx.clone())),
+                scope::State::Visited(ctx) => {
+                    if ctx.taipe.is_typedef() {
+                        return Ok(Some(Context {
+                            is_lvalue: true,
+                            taipe: context::Type::Typedef,
+                            value: context::Value::Imm(context::Imm::Type(context::Type::Basic(Rc::clone(child)))),
+                        }));
+                    } else {
+                        return Ok(Some(Context::from_scope(&ctx.taipe, child)));
+                    }
+                }
             };
             // Begin new scope
             let old_cur_scope = Rc::clone(&self.cur_scope);
@@ -3881,10 +3238,7 @@ impl<'a> Analyzer<'a> {
 
     fn get_name(&mut self, name: &Token) -> CompileResult<Context<'a>> {
         let mut searched_names = HashSet::new();
-        if let Some(mut ctx) = self.resolve_name(&name.text, &mut searched_names)? {
-            if !ctx.taipe.is_const() {
-                ctx.value = None;
-            }
+        if let Some(ctx) = self.resolve_name(&name.text, &mut searched_names)? {
             Ok(ctx)
         } else {
             Err(self
@@ -3893,11 +3247,7 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn resolve_name(
-        &mut self,
-        name: &str,
-        searched_names: &mut HashSet<String>,
-    ) -> CompileResult<Option<Context<'a>>> {
+    fn resolve_name(&mut self, name: &str, searched_names: &mut HashSet<String>) -> CompileResult<Option<Context<'a>>> {
         {
             // Check in the current scope and go upwards
             let mut scope = Rc::clone(&self.cur_scope);
@@ -3944,129 +3294,85 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn transform_value(
+    fn transform_imm(
         &self,
         lhs: &context::Type<'a>,
-        rhs: &context::Value<'a>,
+        rhs: &context::Imm<'a>,
         line_info: &impl HasLineInfo,
         type_name: Option<&str>,
-    ) -> CompileResult<context::Value<'a>> {
+    ) -> CompileResult<context::Imm<'a>> {
         match (lhs, rhs) {
-            (context::Type::Const(lhs), _) => self.transform_value(lhs, rhs, line_info, type_name),
-            (_, context::Value::VarInt(_)) => {
-                Ok(self.transform_varint(lhs, rhs, line_info, type_name)?)
-            }
+            (context::Type::Const(lhs), _) => self.transform_imm(lhs, rhs, line_info, type_name),
+            (_, context::Imm::VarInt(_)) => Ok(self.transform_varint(lhs, rhs, line_info, type_name)?),
             // Trivial conversions
-            (context::Type::Int128, context::Value::Int128(_)) => Ok(rhs.clone()),
-            (context::Type::Int64, context::Value::Int64(_)) => Ok(rhs.clone()),
-            (context::Type::Int32, context::Value::Int32(_)) => Ok(rhs.clone()),
-            (context::Type::Int16, context::Value::Int16(_)) => Ok(rhs.clone()),
-            (context::Type::Int8, context::Value::Int8(_)) => Ok(rhs.clone()),
-            (context::Type::Uint128, context::Value::Uint128(_)) => Ok(rhs.clone()),
-            (context::Type::Uint64, context::Value::Uint64(_)) => Ok(rhs.clone()),
-            (context::Type::Uint32, context::Value::Uint32(_)) => Ok(rhs.clone()),
-            (context::Type::Uint16, context::Value::Uint16(_)) => Ok(rhs.clone()),
-            (context::Type::Uint8, context::Value::Uint8(_)) => Ok(rhs.clone()),
+            (context::Type::Int128, context::Imm::Int128(_)) => Ok(rhs.clone()),
+            (context::Type::Int64, context::Imm::Int64(_)) => Ok(rhs.clone()),
+            (context::Type::Int32, context::Imm::Int32(_)) => Ok(rhs.clone()),
+            (context::Type::Int16, context::Imm::Int16(_)) => Ok(rhs.clone()),
+            (context::Type::Int8, context::Imm::Int8(_)) => Ok(rhs.clone()),
+            (context::Type::Uint128, context::Imm::Uint128(_)) => Ok(rhs.clone()),
+            (context::Type::Uint64, context::Imm::Uint64(_)) => Ok(rhs.clone()),
+            (context::Type::Uint32, context::Imm::Uint32(_)) => Ok(rhs.clone()),
+            (context::Type::Uint16, context::Imm::Uint16(_)) => Ok(rhs.clone()),
+            (context::Type::Uint8, context::Imm::Uint8(_)) => Ok(rhs.clone()),
             // Implicit signed integer conversions
-            (context::Type::Int128, context::Value::Int64(value)) => {
-                Ok(context::Value::Int128((*value).into()))
-            }
-            (context::Type::Int128, context::Value::Int32(value)) => {
-                Ok(context::Value::Int128((*value).into()))
-            }
-            (context::Type::Int128, context::Value::Int16(value)) => {
-                Ok(context::Value::Int128((*value).into()))
-            }
-            (context::Type::Int128, context::Value::Int8(value)) => {
-                Ok(context::Value::Int128((*value).into()))
-            }
-            (context::Type::Int64, context::Value::Int32(value)) => {
-                Ok(context::Value::Int64((*value).into()))
-            }
-            (context::Type::Int64, context::Value::Int16(value)) => {
-                Ok(context::Value::Int64((*value).into()))
-            }
-            (context::Type::Int64, context::Value::Int8(value)) => {
-                Ok(context::Value::Int64((*value).into()))
-            }
-            (context::Type::Int32, context::Value::Int16(value)) => {
-                Ok(context::Value::Int32((*value).into()))
-            }
-            (context::Type::Int32, context::Value::Int8(value)) => {
-                Ok(context::Value::Int32((*value).into()))
-            }
-            (context::Type::Int16, context::Value::Int8(value)) => {
-                Ok(context::Value::Int16((*value).into()))
-            }
+            (context::Type::Int128, context::Imm::Int64(value)) => Ok(context::Imm::Int128((*value).into())),
+            (context::Type::Int128, context::Imm::Int32(value)) => Ok(context::Imm::Int128((*value).into())),
+            (context::Type::Int128, context::Imm::Int16(value)) => Ok(context::Imm::Int128((*value).into())),
+            (context::Type::Int128, context::Imm::Int8(value)) => Ok(context::Imm::Int128((*value).into())),
+            (context::Type::Int64, context::Imm::Int32(value)) => Ok(context::Imm::Int64((*value).into())),
+            (context::Type::Int64, context::Imm::Int16(value)) => Ok(context::Imm::Int64((*value).into())),
+            (context::Type::Int64, context::Imm::Int8(value)) => Ok(context::Imm::Int64((*value).into())),
+            (context::Type::Int32, context::Imm::Int16(value)) => Ok(context::Imm::Int32((*value).into())),
+            (context::Type::Int32, context::Imm::Int8(value)) => Ok(context::Imm::Int32((*value).into())),
+            (context::Type::Int16, context::Imm::Int8(value)) => Ok(context::Imm::Int16((*value).into())),
             // Implicit unsigned integer conversions
-            (context::Type::Uint128, context::Value::Uint64(value)) => {
-                Ok(context::Value::Uint128((*value).into()))
-            }
-            (context::Type::Uint128, context::Value::Uint32(value)) => {
-                Ok(context::Value::Uint128((*value).into()))
-            }
-            (context::Type::Uint128, context::Value::Uint16(value)) => {
-                Ok(context::Value::Uint128((*value).into()))
-            }
-            (context::Type::Uint128, context::Value::Uint8(value)) => {
-                Ok(context::Value::Uint128((*value).into()))
-            }
-            (context::Type::Uint64, context::Value::Uint32(value)) => {
-                Ok(context::Value::Uint64((*value).into()))
-            }
-            (context::Type::Uint64, context::Value::Uint16(value)) => {
-                Ok(context::Value::Uint64((*value).into()))
-            }
-            (context::Type::Uint64, context::Value::Uint8(value)) => {
-                Ok(context::Value::Uint64((*value).into()))
-            }
-            (context::Type::Uint32, context::Value::Uint16(value)) => {
-                Ok(context::Value::Uint32((*value).into()))
-            }
-            (context::Type::Uint32, context::Value::Uint8(value)) => {
-                Ok(context::Value::Uint32((*value).into()))
-            }
-            (context::Type::Uint16, context::Value::Uint8(value)) => {
-                Ok(context::Value::Uint16((*value).into()))
-            }
+            (context::Type::Uint128, context::Imm::Uint64(value)) => Ok(context::Imm::Uint128((*value).into())),
+            (context::Type::Uint128, context::Imm::Uint32(value)) => Ok(context::Imm::Uint128((*value).into())),
+            (context::Type::Uint128, context::Imm::Uint16(value)) => Ok(context::Imm::Uint128((*value).into())),
+            (context::Type::Uint128, context::Imm::Uint8(value)) => Ok(context::Imm::Uint128((*value).into())),
+            (context::Type::Uint64, context::Imm::Uint32(value)) => Ok(context::Imm::Uint64((*value).into())),
+            (context::Type::Uint64, context::Imm::Uint16(value)) => Ok(context::Imm::Uint64((*value).into())),
+            (context::Type::Uint64, context::Imm::Uint8(value)) => Ok(context::Imm::Uint64((*value).into())),
+            (context::Type::Uint32, context::Imm::Uint16(value)) => Ok(context::Imm::Uint32((*value).into())),
+            (context::Type::Uint32, context::Imm::Uint8(value)) => Ok(context::Imm::Uint32((*value).into())),
+            (context::Type::Uint16, context::Imm::Uint8(value)) => Ok(context::Imm::Uint16((*value).into())),
             _ => panic!("invalid type for value conversion"),
         }
     }
 
-    fn transform_value_to_usize(
+    fn transform_imm_to_usize(
         &self,
-        value: &context::Value<'a>,
+        value: &context::Imm<'a>,
         line_info: &impl HasLineInfo,
-    ) -> CompileResult<context::Value<'a>> {
-        self.transform_value(&self.type_usize, value, line_info, Some("usize"))
+    ) -> CompileResult<context::Imm<'a>> {
+        self.transform_imm(&self.type_usize, value, line_info, Some("usize"))
     }
 
     fn transform_varint(
         &self,
         lhs: &context::Type<'a>,
-        rhs: &context::Value<'a>,
+        rhs: &context::Imm<'a>,
         line_info: &impl HasLineInfo,
         type_name: Option<&str>,
-    ) -> CompileResult<context::Value<'a>> {
+    ) -> CompileResult<context::Imm<'a>> {
         match rhs {
-            context::Value::VarInt(num) => {
+            context::Imm::VarInt(num) => {
                 let num = &num.num;
                 let opt = match lhs {
-                    context::Type::Int8 => num.to_i8().map(|num| context::Value::Int8(num)),
-                    context::Type::Int16 => num.to_i16().map(|num| context::Value::Int16(num)),
-                    context::Type::Int32 => num.to_i32().map(|num| context::Value::Int32(num)),
-                    context::Type::Int64 => num.to_i64().map(|num| context::Value::Int64(num)),
-                    context::Type::Int128 => num.to_i128().map(|num| context::Value::Int128(num)),
-                    context::Type::Uint8 => num.to_u8().map(|num| context::Value::Uint8(num)),
-                    context::Type::Uint16 => num.to_u16().map(|num| context::Value::Uint16(num)),
-                    context::Type::Uint32 => num.to_u32().map(|num| context::Value::Uint32(num)),
-                    context::Type::Uint64 => num.to_u64().map(|num| context::Value::Uint64(num)),
-                    context::Type::Uint128 => num.to_u128().map(|num| context::Value::Uint128(num)),
-                    context::Type::Float32 => num.to_f32().map(|num| context::Value::Float32(num)),
-                    context::Type::Float64 => num.to_f64().map(|num| context::Value::Float64(num)),
-                    context::Type::Const(lhs) => {
-                        Some(self.transform_varint(lhs, rhs, line_info, type_name)?)
-                    }
+                    context::Type::Int8 => num.to_i8().map(|num| context::Imm::Int8(num)),
+                    context::Type::Int16 => num.to_i16().map(|num| context::Imm::Int16(num)),
+                    context::Type::Int32 => num.to_i32().map(|num| context::Imm::Int32(num)),
+                    context::Type::Int64 => num.to_i64().map(|num| context::Imm::Int64(num)),
+                    context::Type::Int128 => num.to_i128().map(|num| context::Imm::Int128(num)),
+                    context::Type::Uint8 => num.to_u8().map(|num| context::Imm::Uint8(num)),
+                    context::Type::Uint16 => num.to_u16().map(|num| context::Imm::Uint16(num)),
+                    context::Type::Uint32 => num.to_u32().map(|num| context::Imm::Uint32(num)),
+                    context::Type::Uint64 => num.to_u64().map(|num| context::Imm::Uint64(num)),
+                    context::Type::Uint128 => num.to_u128().map(|num| context::Imm::Uint128(num)),
+                    context::Type::Float32 => num.to_f32().map(|num| context::Imm::Float32(num)),
+                    context::Type::Float64 => num.to_f64().map(|num| context::Imm::Float64(num)),
+                    context::Type::Const(lhs) => Some(self.transform_varint(lhs, rhs, line_info, type_name)?),
                     _ => panic!("invalid type for varint conversion"),
                 };
                 if let Some(num) = opt {
@@ -4086,55 +3392,41 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    // fn transform_varint_to_usize(
-    //     &self,
-    //     value: &context::Value<'a>,
-    //     line_info: &impl HasLineInfo,
-    // ) -> CompileResult<context::Value<'a>> {
-    //     self.transform_varint(&self.type_usize, value, line_info, Some("usize"))
-    // }
+    fn transform_varint_to_usize(
+        &self,
+        value: &context::Imm<'a>,
+        line_info: &impl HasLineInfo,
+    ) -> CompileResult<context::Imm<'a>> {
+        self.transform_varint(&self.type_usize, value, line_info, Some("usize"))
+    }
 
     fn transform_varint_to_int(
         &self,
-        value: &context::Value<'a>,
+        value: &context::Imm<'a>,
         line_info: &impl HasLineInfo,
-    ) -> CompileResult<context::Value<'a>> {
+    ) -> CompileResult<context::Imm<'a>> {
         self.transform_varint(&self.type_int, value, line_info, Some("int"))
     }
 
     fn usize2usize(&self, val: usize, line_info: &impl HasLineInfo) -> CompileResult<Context<'a>> {
         let opt = match self.type_usize {
-            context::Type::Uint8 => val.to_u8().map(|val| context::Value::Uint8(val)),
-            context::Type::Uint16 => val.to_u16().map(|val| context::Value::Uint16(val)),
-            context::Type::Uint32 => val.to_u32().map(|val| context::Value::Uint32(val)),
-            context::Type::Uint64 => val.to_u64().map(|val| context::Value::Uint64(val)),
-            context::Type::Uint128 => val.to_u128().map(|val| context::Value::Uint128(val)),
+            context::Type::Uint8 => val.to_u8().map(|val| context::Value::Imm(context::Imm::Uint8(val))),
+            context::Type::Uint16 => val.to_u16().map(|val| context::Value::Imm(context::Imm::Uint16(val))),
+            context::Type::Uint32 => val.to_u32().map(|val| context::Value::Imm(context::Imm::Uint32(val))),
+            context::Type::Uint64 => val.to_u64().map(|val| context::Value::Imm(context::Imm::Uint64(val))),
+            context::Type::Uint128 => val.to_u128().map(|val| context::Value::Imm(context::Imm::Uint128(val))),
             _ => panic!("invalid type for Analyzer::type_usize"),
         };
         let value = if let Some(num) = opt {
             num
         } else {
-            return Err(self.make_err(
-                format!("'usize' cannot hold this value: '{}'", val),
-                line_info,
-            ));
+            return Err(self.make_err(format!("'usize' cannot hold this value: '{}'", val), line_info));
         };
         Ok(Context {
             is_lvalue: false,
             taipe: self.type_usize.clone(),
-            value: Some(value),
+            value: value,
         })
-    }
-
-    fn varint2usize(&self, num: Int, line_info: LineInfo) -> CompileResult<usize> {
-        if let Some(num) = num.to_usize() {
-            Ok(num)
-        } else {
-            Err(self.make_err(
-                format!("'usize' cannot hold this value: '{}'", num),
-                &line_info,
-            ))
-        }
     }
 
     fn make_did_you_mean_help(&self, name: &str, searched_names: &HashSet<String>) -> CompileError {
@@ -4190,9 +3482,7 @@ impl<'a> Analyzer<'a> {
     }
 
     fn make_help(&self, msg: impl ToString) -> CompileError {
-        CompileError::SemHelp {
-            msg: msg.to_string(),
-        }
+        CompileError::SemHelp { msg: msg.to_string() }
     }
 
     fn get_cur_scope(&self) -> Ref<'_, scope::Scope<'a>> {

@@ -70,6 +70,8 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
         printer::print_error(common::CompileError::Errors(sem_result.warnings));
     }
     printer::print_scopes(&sem_result.roots);
+    println!();
+    printer::print_ir_of_all_scopes(&sem_result.roots);
     Ok(())
 }
 

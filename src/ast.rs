@@ -41,6 +41,7 @@ pub enum Object {
 
 pub enum Field {
     Compound {
+        line_info: LineInfo,
         token: Token,
         fields: Vec<Field>,
     },
@@ -195,14 +196,8 @@ pub enum Expr {
 impl Object {
     pub fn is_module(&self) -> bool {
         match self {
-            Object::ExternModule {
-                line_info: _,
-                value: _,
-            } => true,
-            Object::Module {
-                line_info: _,
-                decls: _,
-            } => true,
+            Object::ExternModule { line_info: _, value: _ } => true,
+            Object::Module { line_info: _, decls: _ } => true,
             _ => false,
         }
     }
@@ -225,10 +220,7 @@ impl HasLineInfo for Decl {
                     name.get_line_info()
                 }
             }
-            Decl::Using {
-                line_info,
-                items: _,
-            } => *line_info,
+            Decl::Using { line_info, items: _ } => *line_info,
         }
     }
 }
@@ -236,24 +228,15 @@ impl HasLineInfo for Decl {
 impl HasLineInfo for Object {
     fn get_line_info(&self) -> LineInfo {
         match self {
-            Object::ExternModule {
-                line_info,
-                value: _,
-            } => *line_info,
-            Object::Module {
-                line_info,
-                decls: _,
-            } => *line_info,
+            Object::ExternModule { line_info, value: _ } => *line_info,
+            Object::Module { line_info, decls: _ } => *line_info,
             Object::Fun {
                 line_info,
                 params: _,
                 ret: _,
                 body: _,
             } => *line_info,
-            Object::Compound {
-                line_info,
-                field: _,
-            } => *line_info,
+            Object::Compound { line_info, field: _ } => *line_info,
             Object::Typedef(taipe) => taipe.get_line_info(),
             Object::Expr(expr) => expr.get_line_info(),
         }
@@ -263,7 +246,11 @@ impl HasLineInfo for Object {
 impl HasLineInfo for Field {
     fn get_line_info(&self) -> LineInfo {
         match self {
-            Field::Compound { token, fields } => LineInfo::from_range(token, fields),
+            Field::Compound {
+                line_info,
+                token: _,
+                fields: _,
+            } => *line_info,
             Field::Decl {
                 name,
                 taipe,
@@ -305,10 +292,7 @@ impl HasLineInfo for Stmt {
                 expr: _,
                 then_body: _,
             } => *line_info,
-            Stmt::Block {
-                line_info,
-                stmts: _,
-            } => *line_info,
+            Stmt::Block { line_info, stmts: _ } => *line_info,
             Stmt::Yield { token, expr } => LineInfo::from_range(token, expr),
             Stmt::Continue { token, label } => {
                 if let Some(l) = label {
@@ -354,18 +338,9 @@ impl HasLineInfo for Type {
                 taipe: _,
                 expr: _,
             } => *line_info,
-            Type::Fat {
-                line_info,
-                taipe: _,
-            } => *line_info,
-            Type::Paren {
-                line_info,
-                taipe: _,
-            } => *line_info,
-            Type::Tuple {
-                line_info,
-                types: _,
-            } => *line_info,
+            Type::Fat { line_info, taipe: _ } => *line_info,
+            Type::Paren { line_info, taipe: _ } => *line_info,
+            Type::Tuple { line_info, types: _ } => *line_info,
             Type::Literal(token) => token.get_line_info(),
         }
     }
@@ -405,14 +380,8 @@ impl HasLineInfo for Expr {
             } => *line_info,
             Expr::Literal(token) => token.get_line_info(),
             Expr::Paren { line_info, expr: _ } => *line_info,
-            Expr::Tuple {
-                line_info,
-                exprs: _,
-            } => *line_info,
-            Expr::ArrayLit {
-                line_info,
-                items: _,
-            } => *line_info,
+            Expr::Tuple { line_info, exprs: _ } => *line_info,
+            Expr::ArrayLit { line_info, items: _ } => *line_info,
         }
     }
 }

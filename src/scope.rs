@@ -52,7 +52,7 @@ impl SymbolPath {
     // }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum ScopeNode<'a> {
     Decl(&'a ast::Decl),
     Field(&'a ast::Field),
@@ -69,7 +69,6 @@ impl<'a> HasLineInfo for ScopeNode<'a> {
     }
 }
 
-#[derive(Clone)]
 pub enum State<'a> {
     /// Scope is not visited yet
     NotVisited(ScopeNode<'a>),
@@ -79,7 +78,6 @@ pub enum State<'a> {
     Visited(Context<'a>),
 }
 
-#[derive(Clone)]
 pub enum Payload<'a> {
     Compound(Compound<'a>),
     Function(Function<'a>),
@@ -91,14 +89,12 @@ pub enum Payload<'a> {
 #[derive(Clone)]
 pub struct LoopInfo;
 
-#[derive(Clone)]
 pub struct ParamInfo<'a> {
     pub taipe: context::Type<'a>,
     pub default: Option<context::Value<'a>>,
     pub line_info: LineInfo,
 }
 
-#[derive(Clone)]
 pub struct Function<'a> {
     pub param_infos: IndexMap<String, ParamInfo<'a>>,
     pub loop_stack: IndexMap<String, LoopInfo>,
@@ -136,7 +132,8 @@ pub enum Field<'a> {
         file_path: String,
         line_info: LineInfo,
         name: String,
-        ctx: Context<'a>,
+        taipe: context::Type<'a>,
+        scope: Rc<RefCell<Scope<'a>>>,
     },
 }
 
@@ -166,7 +163,6 @@ impl<'a> Compound<'a> {
 
 pub type Map<K, V> = IndexMap<K, V>;
 
-#[derive(Clone)]
 pub struct Scope<'a> {
     /// Weak reference to the parent scope
     pub parent: Weak<RefCell<Scope<'a>>>,

@@ -195,10 +195,7 @@ impl Parser {
                         self.expect_term()?;
                         Ok(ast::Object::Expr(expr))
                     } else {
-                        Err(self.expect_err_more(
-                            &["<expression>"],
-                            &[Module, Struct, Union, Fun, Typedef],
-                        ))
+                        Err(self.expect_err_more(&["<expression>"], &[Module, Struct, Union, Fun, Typedef]))
                     }
                 }
             }
@@ -245,6 +242,7 @@ impl Parser {
         Ok(ast::Object::Compound {
             line_info: LineInfo::from_range(&start, &end),
             field: ast::Field::Compound {
+                line_info: LineInfo::from_range(&start, &end),
                 token: start,
                 fields,
             },
@@ -257,10 +255,10 @@ impl Parser {
         self.expect(LBrace)?;
         let fields = self.parse_field_list();
         let end = self.expect(RBrace)?;
-        // TODO: distinguish pls
         Ok(ast::Object::Compound {
             line_info: LineInfo::from_range(&start, &end),
             field: ast::Field::Compound {
+                line_info: LineInfo::from_range(&start, &end),
                 token: start,
                 fields,
             },
@@ -302,8 +300,12 @@ impl Parser {
                     let token = self.get_token()?;
                     self.expect(LBrace)?;
                     let fields = self.parse_field_list();
-                    self.expect(RBrace)?;
-                    Ok(ast::Field::Compound { token, fields })
+                    let end = self.expect(RBrace)?;
+                    Ok(ast::Field::Compound {
+                        line_info: LineInfo::from_range(&token, &end),
+                        token,
+                        fields,
+                    })
                 }
                 _ => Err(self.expect_err(&[Ident, Underscore, Struct, Union])),
             }
@@ -641,14 +643,10 @@ impl Parser {
                     })
                 }
                 Void | Noreturn | Typedef => Ok(ast::Type::Literal(self.get_token()?)),
-                _ => Err(self.expect_err(&[
-                    Ident, Fun, Const, Star, LBrack, LParen, Void, Noreturn, Typedef,
-                ])),
+                _ => Err(self.expect_err(&[Ident, Fun, Const, Star, LBrack, LParen, Void, Noreturn, Typedef])),
             }
         } else {
-            Err(self.expect_err(&[
-                Ident, Fun, Const, Star, LBrack, LParen, Void, Noreturn, Typedef,
-            ]))
+            Err(self.expect_err(&[Ident, Fun, Const, Star, LBrack, LParen, Void, Noreturn, Typedef]))
         }
     }
 
@@ -680,18 +678,12 @@ impl Parser {
     fn parse_assignment(&mut self) -> CompileResult<ast::Expr> {
         let lhs = self.parse_logical_list();
         if lhs.is_empty() {
-            return Err(self.make_error(
-                &self.peek().unwrap(), // TODO: unwrap should be changed
-                "expected left hand side of an assignment",
-            ));
+            return Err(self.make_error_peek("expected left hand size of an assignment"));
         }
         let op = self.expect(Equal)?;
         let rhs = self.parse_logical_list();
         if rhs.is_empty() {
-            return Err(self.make_error(
-                &self.peek().unwrap(), // TODO: unwrap should be changed
-                "expected left hand side of an assignment",
-            ));
+            return Err(self.make_error_peek("expected right hand size of an assignment"));
         }
         Ok(ast::Expr::Assign {
             lhses: lhs,
@@ -878,9 +870,7 @@ impl Parser {
     fn parse_primary(&mut self) -> CompileResult<ast::Expr> {
         if let Some(tok) = self.peek() {
             match tok.kind {
-                True | False | StringLit | IntLit | FloatLit | Ident => {
-                    Ok(ast::Expr::Literal(self.get_token()?))
-                }
+                True | False | StringLit | IntLit | FloatLit | Ident => Ok(ast::Expr::Literal(self.get_token()?)),
                 LParen => {
                     if let Some(tok) = self.peek_at(1)
                         && tok.kind == RParen
@@ -913,14 +903,12 @@ impl Parser {
                     })
                 }
                 _ => Err(self.expect_err(&[
-                    True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While, Break,
-                    Continue, Return,
+                    True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While, Break, Continue, Return,
                 ])),
             }
         } else {
             Err(self.expect_err(&[
-                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While, Break,
-                Continue, Return,
+                True, False, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, If, While, Break, Continue, Return,
             ]))
         }
     }
@@ -1145,6 +1133,15 @@ impl Parser {
         CompileError::ParserError {
             file_path: self.file_path.clone(),
             line_info: object.get_line_info(),
+            msg: msg.to_string(),
+        }
+    }
+
+    fn make_error_peek(&self, msg: impl ToString) -> CompileError {
+        let line_info = self.get_holy_line_info(self.peek().map(|tok| tok.get_line_info()));
+        CompileError::ParserError {
+            file_path: self.file_path.clone(),
+            line_info: line_info,
             msg: msg.to_string(),
         }
     }
