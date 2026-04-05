@@ -537,13 +537,6 @@ impl Lexer {
 
     fn make_int_tok_with_suffix(&mut self, num_start: usize, suffix_start: usize, radix: u32) -> CompileResult<Token> {
         let buf = self.text[num_start..suffix_start].bytes().collect::<Vec<_>>();
-        let mut iter = self.text.chars();
-        let signed = iter.nth(suffix_start).unwrap() == 'i';
-        let size = iter
-            .take(self.index - suffix_start - 1)
-            .collect::<String>()
-            .parse::<u32>()
-            .unwrap();
         Ok(self.make_token_with_val(TokenKind::IntLit, Some(TokenValue::Int(Int::parse(&buf, radix)))))
     }
 

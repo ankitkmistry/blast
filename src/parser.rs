@@ -702,12 +702,12 @@ impl Parser {
     fn parse_assignment(&mut self) -> CompileResult<ast::Expr> {
         let lhs = self.parse_logical_list();
         if lhs.is_empty() {
-            return Err(self.make_error_peek("expected left hand size of an assignment"));
+            return Err(self.make_error_peek("expected left hand side of an assignment"));
         }
         let op = self.expect(Equal)?;
         let rhs = self.parse_logical_list();
         if rhs.is_empty() {
-            return Err(self.make_error_peek("expected right hand size of an assignment"));
+            return Err(self.make_error_peek("expected right hand side of an assignment"));
         }
         Ok(ast::Expr::Assign {
             lhses: lhs,

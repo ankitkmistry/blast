@@ -108,13 +108,6 @@ impl<'a> Type<'a> {
             taipe => taipe,
         }
     }
-    pub fn remove_pointer(&self) -> Self {
-        match self.clone() {
-            Type::Pointer(taipe) => *taipe,
-            taipe => taipe,
-        }
-    }
-
     pub fn is_bool(&self) -> bool {
         match self {
             Type::Bool => true,
@@ -433,12 +426,12 @@ impl<'a> Value<'a> {
     pub fn from_bool(b: bool) -> Self {
         Self::Imm(Imm::Bool(b))
     }
-    pub fn is_imm(&self) -> bool {
-        match self {
-            Value::Imm(_) => true,
-            _ => false,
-        }
-    }
+    // pub fn is_imm(&self) -> bool {
+    //     match self {
+    //         Value::Imm(_) => true,
+    //         _ => false,
+    //     }
+    // }
 }
 
 // Cloning Context is strongly discouraged
@@ -758,82 +751,12 @@ impl<'a> ToString for Context<'a> {
 //     }
 // }
 //
-// impl<'a> ToString for Value<'a> {
-//     fn to_string(&self) -> String {
-//         match self {
-//             Value::Bool(b) => b.to_string(),
-//             Value::Char(c) => format!("'{}'", c.to_string()),
-//             Value::VarInt(num) => num.to_string(),
-//             Value::Int8(num) => num.to_string(),
-//             Value::Int16(num) => num.to_string(),
-//             Value::Int32(num) => num.to_string(),
-//             Value::Int64(num) => num.to_string(),
-//             Value::Int128(num) => num.to_string(),
-//             Value::Uint8(num) => num.to_string(),
-//             Value::Uint16(num) => num.to_string(),
-//             Value::Uint32(num) => num.to_string(),
-//             Value::Uint64(num) => num.to_string(),
-//             Value::Uint128(num) => num.to_string(),
-//             Value::Float32(num) => num.to_string(),
-//             Value::Float64(num) => num.to_string(),
-//             Value::Array(values) => {
-//                 let mut result = String::new();
-//                 let mut is_string = false;
-//                 for value in values {
-//                     match value {
-//                         Value::Char(c) => {
-//                             is_string = true;
-//                             result.push(*c);
-//                         }
-//                         other => {
-//                             result.push_str(&other.to_string());
-//                             result.push_str(", ");
-//                         }
-//                     }
-//                 }
-//                 if is_string {
-//                     format!("\"{}\"", result)
-//                 } else {
-//                     result.pop();
-//                     result.pop();
-//                     result
-//                 }
-//             }
-//             Value::Tuple(values) => format!(
-//                 "({})",
-//                 values
-//                     .iter()
-//                     .map(|value| value.to_string())
-//                     .collect::<Vec<_>>()
-//                     .join(", ")
-//             ),
-//             Value::Type(t) => t.to_string(),
-//             Value::Module(weak) => weak.borrow().sym_path.to_string(),
-//             Value::Function(weak) => weak.borrow().sym_path.to_string(),
-//         }
-//     }
-// }
-//
-// #[derive(Clone)]
-// pub struct Context<'a> {
-//     pub is_lvalue: bool,
-//     pub taipe: Type<'a>,
-//     pub value: Option<Value<'a>>,
-// }
-//
 // impl<'a> Context<'a> {
 //     pub fn from_char(c: char) -> Self {
 //         Self {
 //             is_lvalue: false,
 //             taipe: Type::Char,
 //             value: Some(Value::Char(c)),
-//         }
-//     }
-//     pub fn from_type(taipe: Type<'a>) -> Self {
-//         Self {
-//             is_lvalue: false,
-//             taipe: Type::Typedef,
-//             value: Some(Value::Type(taipe)),
 //         }
 //     }
 // }
