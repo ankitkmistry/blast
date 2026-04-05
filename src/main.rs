@@ -10,13 +10,13 @@ use clap::{self, ArgAction, command};
 
 mod analyzer;
 mod ast;
+mod cfg;
 mod common;
 mod context;
 mod lexer;
 mod parser;
 mod printer;
 mod scope;
-mod cfg;
 
 fn compile_file(file_path: &str) -> CompileResult<()> {
     let matches = command!()
@@ -34,6 +34,14 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
                 .short('p')
                 .long("ast")
                 .help("Shows parser AST output")
+                .required(false)
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("show_ctx")
+                .short('x')
+                .long("ctx")
+                .help("Shows semantic analyzer context output")
                 .required(false)
                 .action(ArgAction::SetTrue),
         )
@@ -70,12 +78,21 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
         printer::print_error(common::CompileError::Errors(sem_result.warnings));
     }
     printer::print_scopes(&sem_result.roots);
-    println!();
-    printer::print_ir_of_all_scopes(&sem_result.roots);
+    if matches.get_flag("show_ctx") {
+        println!();
+        printer::print_ir_of_all_scopes(&sem_result.roots);
+    }
     Ok(())
 }
 
 fn main() -> ExitCode {
+    stderrlog::new()
+        .module(module_path!())
+        .color(stderrlog::ColorChoice::Auto)
+        .verbosity(4)
+        .init()
+        .unwrap();
+
     if let Err(err) = compile_file("examples/program.bl") {
         printer::print_error(err);
         if cfg!(debug_assertions) {

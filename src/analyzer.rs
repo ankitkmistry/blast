@@ -2,10 +2,10 @@ use std::{
     cell::{Ref, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
-    sync::atomic::AtomicU64,
 };
 
 use indexmap::IndexMap;
+use log::debug;
 use num_bigint::ToBigInt;
 use num_traits::cast::ToPrimitive;
 
@@ -87,6 +87,10 @@ impl<'a> Analyzer<'a> {
             // If there are any accumulated errors return them
             Err(CompileError::Errors(self.saved_errs)
                 .chain(err)
+                .chain(CompileError::Errors(self.warnings)))
+        } else if !self.saved_errs.is_empty() {
+            // If there are any accumulated errors return them
+            Err(CompileError::Errors(self.saved_errs)
                 .chain(CompileError::Errors(self.warnings)))
         } else {
             let sem_result = SemResult {
@@ -372,13 +376,21 @@ impl<'a> Analyzer<'a> {
                 eq_token,
                 object,
             } => {
-                let scope = if let Some(child) = self.get_cur_scope().children.get(&name.text) {
-                    Rc::clone(child)
-                } else {
+                let scope = if self.get_current_block().is_some() {
                     if let Some(object) = object {
                         self.declare_sym_with_value(node, &name, object)?
                     } else {
                         self.declare_sym(node, &name)?
+                    }
+                } else {
+                    if let Some(child) = self.get_cur_scope().children.get(&name.text) {
+                        Rc::clone(child)
+                    } else {
+                        if let Some(object) = object {
+                            self.declare_sym_with_value(node, &name, object)?
+                        } else {
+                            self.declare_sym(node, &name)?
+                        }
                     }
                 };
                 // Set in progress
@@ -418,6 +430,24 @@ impl<'a> Analyzer<'a> {
                     } else {
                         scope::ScopeKind::Variable
                     };
+
+                    // cfg: insert variable declared node
+                    //      only if it is a local variable or constant
+                    let should_insert_cfg = match scope.borrow().kind {
+                        scope::ScopeKind::Variable => true,
+                        scope::ScopeKind::Const => true,
+                        _ => false,
+                    };
+                    if should_insert_cfg && self.get_current_block().is_some() {
+                        self.mut_current_block_data(|data| {
+                            let cf_declare = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarDeclared {
+                                scope: Rc::clone(&scope),
+                            }));
+                            data.cfg.insert_edge(data.cf_last, cf_declare);
+                            data.cf_last = cf_declare;
+                        });
+                    }
+
                     scope.borrow_mut().state = State::Visited(ctx);
                     return Ok(result);
                 };
@@ -678,25 +708,6 @@ impl<'a> Analyzer<'a> {
                         } else {
                             None
                         };
-
-                        // cfg: insert variable declared node
-                        //      only if it is a local variable or constant
-                        let should_insert_cfg = match scope.borrow().kind {
-                            scope::ScopeKind::Variable => true,
-                            scope::ScopeKind::Const => true,
-                            _ => false,
-                        };
-                        if should_insert_cfg && self.get_current_block().is_some() {
-                            self.mut_current_block_data(|data| {
-                                let cf_node = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarDeclared {
-                                    line_info: node.get_line_info(),
-                                    scope: Rc::clone(&scope),
-                                }));
-                                data.cfg.insert_edge(data.cf_last, cf_node);
-                                data.cf_last = cf_node;
-                            });
-                        }
-
                         // Visit expr
                         let rhs = self.visit_expr(expr)?;
                         // Resolve assignment
@@ -713,6 +724,29 @@ impl<'a> Analyzer<'a> {
                         } else {
                             scope.borrow_mut().kind = scope::ScopeKind::Variable;
                         }
+
+                        // cfg: insert variable declared node
+                        //      only if it is a local variable or constant
+                        let should_insert_cfg = match scope.borrow().kind {
+                            scope::ScopeKind::Variable => true,
+                            scope::ScopeKind::Const => true,
+                            _ => false,
+                        };
+                        if should_insert_cfg && self.get_current_block().is_some() {
+                            self.mut_current_block_data(|data| {
+                                let cf_declare = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarDeclared {
+                                    scope: Rc::clone(&scope),
+                                }));
+                                let cf_assign = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarAssigned {
+                                    line_info: node.get_line_info(),
+                                    scope: Rc::clone(&scope),
+                                }));
+                                data.cfg.insert_edge(data.cf_last, cf_declare);
+                                data.cfg.insert_edge(cf_declare, cf_assign);
+                                data.cf_last = cf_assign;
+                            });
+                        }
+
                         scope.borrow_mut().state = scope::State::Visited(ctx);
                         Ok(result)
                     }
@@ -751,8 +785,7 @@ impl<'a> Analyzer<'a> {
             ast::Stmt::Break { token, label } => self.visit_break(token, label.as_ref()),
             ast::Stmt::Return { token, expr } => self.visit_return(token, expr.as_ref()),
             ast::Stmt::Decl(decl) => {
-                let ctx = self.visit_decl(decl, false)?;
-                if let context::Value::Reference(ref scope) = ctx.value {}
+                let _ = self.visit_decl(decl, false)?;
                 Ok(Context::from_void())
             }
             ast::Stmt::Expr(expr) => {
@@ -1168,13 +1201,6 @@ impl<'a> Analyzer<'a> {
                 data.cf_last = data.cf_unreachable;
             }
         });
-        // cfg: now traverse the cfg
-        self.use_current_block_data(|data| {
-            // Track all variables by checking their initialization and usage (by performing DFS on the CFG)
-            self.traverse_cfg(&data.cfg, data.cf_start)?;
-            Ok(())
-        })?;
-
         if last_stmt_index < stmts.len() {
             // Check them anyway
             for stmt in &stmts[last_stmt_index..] {
@@ -1184,6 +1210,19 @@ impl<'a> Analyzer<'a> {
             self.warnings
                 .push(self.make_warning("unreachable code", &&stmts[last_stmt_index..]));
         }
+        // Restore old scope
+        self.cur_scope = old_cur_scope;
+        // cfg: now traverse the cfg
+        {
+            let scope::Payload::Block(ref data) = scope.borrow().payload else {
+                unreachable!("probably some analyzer bug");
+            };
+            // Track all variables by checking their initialization and usage (by performing DFS on the CFG)
+            if let Err(err) = self.traverse_cfg(&data.cfg, data.cf_start) {
+                self.saved_errs.push(err);
+            }
+        }
+        // Create the context
         let ctx = Context {
             is_lvalue,
             taipe: block_ret_type.clone(),
@@ -1195,15 +1234,13 @@ impl<'a> Analyzer<'a> {
             value: context::Value::Reference(Rc::clone(&scope)),
         };
         scope.borrow_mut().state = scope::State::Visited(ctx);
-        // Restore old scope
-        self.cur_scope = old_cur_scope;
         Ok(result)
     }
 
     fn traverse_cfg(&self, cfg: &ControlGraph<'a>, node_id: ControlNodeId) -> CompileResult<()> {
-        println!("in: {}", self.cur_scope.borrow().sym_path.to_string());
+        // debug!("in: {}", self.cur_scope.borrow().sym_path.to_string());
         let result = self.traverse_cfg_impl(cfg, node_id, &mut HashSet::new(), HashMap::new(), 0);
-        println!();
+        // debug!("");
         result
     }
     fn traverse_cfg_impl(
@@ -1212,33 +1249,40 @@ impl<'a> Analyzer<'a> {
         node_id: ControlNodeId,
         visited: &mut HashSet<ControlNodeId>,
         mut declared_vars: HashMap<SymbolPath, /* is_init: */ bool>,
-        depth: usize,
+        mut depth: usize,
     ) -> CompileResult<()> {
-        // Pretty printing
-        for _ in 0..depth {
-            print!("  ");
-        }
-
         // Mark as visited
         visited.insert(node_id);
         let mut err = CompileError::Errors(Vec::new());
 
-        // TODO: Track all sorts of things
+        // Track variables
         let mut is_end = false;
         let node = cfg.get_vertex(node_id).unwrap();
         match node {
             ControlNode::Start => {
-                println!("start");
+                // debug!("{}start", " ".repeat(depth));
+                depth += 1;
             }
             ControlNode::Junction => {
-                println!("junction");
+                // debug!("{}junction", " ".repeat(depth));
             }
             ControlNode::Info(info) => match info {
-                ControlInfo::VarDeclared { line_info, scope } => {
+                ControlInfo::VarDeclared { scope } => {
+                    // debug!(
+                    //     "{}declared variable -> {}:{}",
+                    //     " ".repeat(depth),
+                    //     line_info.line_start,
+                    //     line_info.col_start
+                    // );
                     declared_vars.insert(scope.borrow().sym_path.clone(), false);
-                    println!("declared variable -> {}:{}", line_info.line_start, line_info.col_start);
                 }
                 ControlInfo::VarUsed { line_info, scope } => {
+                    // debug!(
+                    //     "{}variable used -> {}:{}",
+                    //     " ".repeat(depth),
+                    //     line_info.line_start,
+                    //     line_info.col_start
+                    // );
                     if let Some(is_init) = declared_vars.get(&scope.borrow().sym_path) {
                         if !is_init {
                             let msg = format!("'{}' may be uninitialized", scope.borrow().name);
@@ -1247,47 +1291,62 @@ impl<'a> Analyzer<'a> {
                                 .chain(self.make_note("declared here", &scope.borrow()));
                         }
                     } else {
-                        // TODO: Do something
-                        // todo!()
+                        // probably the declaration is outside of this scope
+                        self.mut_current_block_data(|data| {
+                            let cf_node = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarUsed {
+                                line_info: *line_info,
+                                scope: Rc::clone(scope),
+                            }));
+                            data.cfg.insert_edge(data.cf_last, cf_node);
+                            data.cf_last = cf_node;
+                        })
                     }
-                    println!("variable used -> {}:{}", line_info.line_start, line_info.col_start);
                 }
                 ControlInfo::VarAssigned { line_info, scope } => {
+                    // debug!(
+                    //     "{}declared assigned -> {}:{}",
+                    //     " ".repeat(depth),
+                    //     line_info.line_start,
+                    //     line_info.col_start
+                    // );
                     if let Some(is_init) = declared_vars.get_mut(&scope.borrow().sym_path) {
                         *is_init = true;
                     } else {
                         // probably the declaration is outside of this scope
-                        declared_vars.insert(scope.borrow().sym_path.clone(), true);
-                        // TODO: do something
+                        self.mut_current_block_data(|data| {
+                            let cf_node = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarAssigned {
+                                line_info: *line_info,
+                                scope: Rc::clone(scope),
+                            }));
+                            data.cfg.insert_edge(data.cf_last, cf_node);
+                            data.cf_last = cf_node;
+                        })
                     }
-                    println!("variable assigned -> {}:{}", line_info.line_start, line_info.col_start);
                 }
             },
             ControlNode::Return => {
-                println!("return");
-                // TODO: Do something
+                depth -= 1;
+                // debug!("{}return", " ".repeat(depth));
+                is_end = true;
             }
             ControlNode::End => {
-                println!("end");
+                depth -= 1;
+                // debug!("{}end", " ".repeat(depth));
                 is_end = true;
             }
             ControlNode::Unreachable => unreachable!("probably some control flow contruction bug"),
         }
 
         // Traverse other destination nodes
-        if !is_end {
-            let outgoing = cfg.outgoing(node_id);
-            let outgoing_len = outgoing.len();
-            for dest_node_id in outgoing {
-                if !visited.contains(&dest_node_id) {
-                    let new_depth = if outgoing_len == 1 { depth } else { depth + 1 };
-                    if let Err(dest_err) =
-                        self.traverse_cfg_impl(cfg, dest_node_id, visited, declared_vars.clone(), new_depth)
-                    {
-                        // Accumulate errors
-                        err = err.chain(dest_err)
-                    };
-                }
+        let outgoing = cfg.outgoing(node_id);
+        for dest_node_id in outgoing {
+            assert!(!is_end);
+            if !visited.contains(&dest_node_id) {
+                if let Err(dest_err) = self.traverse_cfg_impl(cfg, dest_node_id, visited, declared_vars.clone(), depth)
+                {
+                    // Accumulate errors
+                    err = err.chain(dest_err)
+                };
             }
         }
         // Return the accumulated errors
@@ -1445,16 +1504,16 @@ impl<'a> Analyzer<'a> {
         let layout = self.resolve_layout_scope(&scope)?;
         // Print the layout
         {
-            println!("Memory layout of {}: {:?}", scope.borrow().sym_path.to_string(), layout);
+            debug!("Memory layout of {}: {:?}", scope.borrow().sym_path.to_string(), layout);
             let scope::Payload::Compound(ref compound) = scope.borrow().payload else {
                 unreachable!("not supposed to happen")
             };
             let mut fields = compound.offsets.iter().collect::<Vec<_>>();
             fields.sort_by_key(|&(_, &data)| data.offset);
             for (name, field_data) in fields {
-                println!("  offset of {} = {:?}", name, field_data);
+                debug!("  offset of {} = {:?}", name, field_data);
             }
-            println!();
+            debug!("");
         }
         // Restore old scope
         self.cur_scope = old_cur_scope;

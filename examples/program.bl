@@ -116,17 +116,18 @@ j :: 4654654651321354631;
 //     }
 // }
 
-fib :: fun (n: __uint) -> __uint {
-    a: __uint = 0;
-    b: __uint = 1;
-    while b <= n {
-        // print("{}", a);
-        temp :: a;
-        a = b;
-        b = temp + b;
-    }
-    return a;
-}
+// fib :: fun (n: __uint) -> __uint {
+//     a: __uint = 0;
+//     b: __uint = 1;
+//     while b <= n {
+//         // print("{}", a);
+//         temp: __uint;
+//         temp = a;
+//         a = b;
+//         b = temp + b;
+//     }
+//     return a;
+// }
 
 // Advanced variable scoping
 // ai := 5;
@@ -145,13 +146,20 @@ fib :: fun (n: __uint) -> __uint {
 //     return ai + j;
 // }
 
-// f :: fun (b: __bool) -> __int {
-//    x: __int;
-//    while b {
-//        return x;
-//    }
-//    return 0;
-// }
+// Checking control flow analysis
+f :: fun (b: __bool) -> __int {
+   x: __int;
+   while b {
+       if b {
+           return 1;
+           // return x;
+       } else {
+           x = 1;
+           return x;
+       }
+   }
+   return 0;
+}
 
 // print :: fun (str: []__char, newline: __bool = true, stderr: __bool = false) {
 // }

@@ -7,14 +7,13 @@ use std::{
 use indexmap::IndexSet;
 
 use crate::{
-    common::{HasLineInfo, LineInfo},
+    common::LineInfo,
     scope,
 };
 
 #[derive(Clone)]
 pub enum ControlInfo<'a> {
     VarDeclared {
-        line_info: LineInfo,
         scope: Rc<RefCell<scope::Scope<'a>>>,
     },
     VarUsed {
@@ -71,16 +70,6 @@ impl<'a> PartialEq for ControlInfo<'a> {
 
 impl<'a> Eq for ControlInfo<'a> {}
 
-impl<'a> HasLineInfo for ControlInfo<'a> {
-    fn get_line_info(&self) -> LineInfo {
-        match self {
-            ControlInfo::VarDeclared { line_info, scope: _ }
-            | ControlInfo::VarUsed { line_info, scope: _ }
-            | ControlInfo::VarAssigned { line_info, scope: _ } => *line_info,
-        }
-    }
-}
-
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ControlNode<'a> {
     /// Start node of a control graph
@@ -104,7 +93,6 @@ pub struct ControlNodeId(usize);
 pub struct ControlGraph<'a> {
     nodes: IndexSet<ControlNode<'a>>,
     outgoing: HashMap<ControlNodeId, HashSet<ControlNodeId>>,
-    incoming: HashMap<ControlNodeId, HashSet<ControlNodeId>>,
 }
 
 impl<'a> ControlGraph<'a> {
@@ -112,7 +100,6 @@ impl<'a> ControlGraph<'a> {
         Self {
             nodes: IndexSet::new(),
             outgoing: HashMap::new(),
-            incoming: HashMap::new(),
         }
     }
 
@@ -134,7 +121,6 @@ impl<'a> ControlGraph<'a> {
         let index = ControlNodeId(index);
         if inserted {
             self.outgoing.insert(index, HashSet::new());
-            self.incoming.insert(index, HashSet::new());
         }
         index
     }
@@ -147,10 +133,6 @@ impl<'a> ControlGraph<'a> {
             return false;
         };
         m.insert(to_id);
-        let Some(m) = self.incoming.get_mut(&to_id) else {
-            return false;
-        };
-        m.insert(from_id);
         true
     }
 
