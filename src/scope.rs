@@ -2,13 +2,14 @@ use indexmap::IndexMap;
 
 use crate::{
     ast,
+    cfg::{ControlGraph, ControlNodeId},
     common::{HasLineInfo, Layout, LineInfo},
     context::{self, Context},
 };
 use std::{
     cell::RefCell,
     collections::HashMap,
-    rc::{Rc, Weak},
+    rc::{Rc, Weak}, sync::atomic::AtomicU64,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -81,12 +82,24 @@ pub enum State<'a> {
 pub enum Payload<'a> {
     Compound(Compound<'a>),
     Function(Function<'a>),
+    Block(Block<'a>),
     LayoutResolutionInProg,
     None,
 }
 
-#[derive(Clone)]
-pub struct LoopInfo;
+pub struct Block<'a> {
+    pub cfg: ControlGraph<'a>,
+    pub cf_start: ControlNodeId,
+    pub cf_end: ControlNodeId,
+    pub cf_last: ControlNodeId,
+    pub cf_unreachable: ControlNodeId,
+}
+
+#[derive(Copy, Clone)]
+pub struct LoopInfo {
+    pub cf_break: ControlNodeId,
+    pub cf_continue: ControlNodeId,
+}
 
 pub struct ParamInfo<'a> {
     pub taipe: context::Type<'a>,
@@ -196,6 +209,13 @@ pub struct Scope<'a> {
     pub payload: Payload<'a>,
     /// The children of this scope
     pub children: Map<String, Rc<RefCell<Scope<'a>>>>,
+
+    /// Counter for generating unique names of anonymous scopes
+    pub unique_counter: AtomicU64,
+    /// Counter for generating unique names of blocks
+    pub block_counter: AtomicU64,
+    /// Counter for generating unique names of anonymous loop labels
+    pub loop_counter: AtomicU64,
 }
 
 impl<'a> Scope<'a> {
@@ -210,6 +230,9 @@ impl<'a> Scope<'a> {
             state: State::NotVisited(ScopeNode::Object(node)),
             payload: Payload::None,
             children: Map::new(),
+            unique_counter: AtomicU64::new(0),
+            block_counter: AtomicU64::new(0),
+            loop_counter: AtomicU64::new(0),
         }))
     }
 
@@ -234,6 +257,9 @@ impl<'a> Scope<'a> {
             state,
             payload: Payload::None,
             children: Map::new(),
+            unique_counter: AtomicU64::new(0),
+            block_counter: AtomicU64::new(0),
+            loop_counter: AtomicU64::new(0),
         }));
         // Clone it so we can return later
         let result = Rc::clone(&child);

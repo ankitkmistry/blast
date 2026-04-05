@@ -7,5 +7,6 @@ edition = "2024"
 clap = { version = "4.5.60", features = ["cargo"] }
 color-print = "0.3.7"
 indexmap = "2.13.0"
+log = "0.4.29"
 num-bigint = "0.4.6"
 num-traits = "0.2.19"

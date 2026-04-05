@@ -1,7 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
-    hash::{DefaultHasher, Hasher},
+    collections::{HashMap, HashSet},
     rc::Rc,
 };
 
@@ -14,6 +13,10 @@ use crate::{
 
 #[derive(Clone)]
 pub enum ControlInfo<'a> {
+    VarDeclared {
+        line_info: LineInfo,
+        scope: Rc<RefCell<scope::Scope<'a>>>,
+    },
     VarUsed {
         line_info: LineInfo,
         scope: Rc<RefCell<scope::Scope<'a>>>,
@@ -28,11 +31,9 @@ impl<'a> std::hash::Hash for ControlInfo<'a> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
         match self {
-            ControlInfo::VarUsed { line_info, scope } => {
-                line_info.hash(state);
-                std::ptr::hash(Rc::as_ptr(scope), state);
-            }
-            ControlInfo::VarAssigned { line_info, scope } => {
+            ControlInfo::VarDeclared { line_info, scope }
+            | ControlInfo::VarUsed { line_info, scope }
+            | ControlInfo::VarAssigned { line_info, scope } => {
                 line_info.hash(state);
                 std::ptr::hash(Rc::as_ptr(scope), state);
             }
@@ -73,26 +74,37 @@ impl<'a> Eq for ControlInfo<'a> {}
 impl<'a> HasLineInfo for ControlInfo<'a> {
     fn get_line_info(&self) -> LineInfo {
         match self {
-            ControlInfo::VarUsed { line_info, scope: _ } => *line_info,
-            ControlInfo::VarAssigned { line_info, scope: _ } => *line_info,
+            ControlInfo::VarDeclared { line_info, scope: _ }
+            | ControlInfo::VarUsed { line_info, scope: _ }
+            | ControlInfo::VarAssigned { line_info, scope: _ } => *line_info,
         }
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ControlNode<'a> {
+    /// Start node of a control graph
     Start,
+    /// A node where multiple nodes meet
+    Junction,
+    /// A node where some operation occurs
     Info(ControlInfo<'a>),
+    /// A special node that indicates return from a function
+    Return,
+    /// End node of a control graph
     End,
+    /// Any outgoing node from this node is never executed
+    Unreachable,
 }
 
-type ControlNodeId = usize;
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ControlNodeId(usize);
 
 // INFO: No removal operations are possible on ControlGraph
 pub struct ControlGraph<'a> {
     nodes: IndexSet<ControlNode<'a>>,
-    outgoing: HashMap<ControlNodeId, HashMap<ControlNodeId, ()>>,
-    incoming: HashMap<ControlNodeId, HashMap<ControlNodeId, ()>>,
+    outgoing: HashMap<ControlNodeId, HashSet<ControlNodeId>>,
+    incoming: HashMap<ControlNodeId, HashSet<ControlNodeId>>,
 }
 
 impl<'a> ControlGraph<'a> {
@@ -113,23 +125,40 @@ impl<'a> ControlGraph<'a> {
         self.outgoing.iter().map(|(_, m)| m.len()).sum()
     }
 
+    pub fn get_vertex(&self, node_id: ControlNodeId) -> Option<&ControlNode<'a>> {
+        self.nodes.get_index(node_id.0)
+    }
+
     pub fn insert_vertex(&mut self, vertex: ControlNode<'a>) -> ControlNodeId {
         let (index, inserted) = self.nodes.insert_full(vertex);
+        let index = ControlNodeId(index);
         if inserted {
-            self.outgoing.insert(index, HashMap::new());
-            self.incoming.insert(index, HashMap::new());
+            self.outgoing.insert(index, HashSet::new());
+            self.incoming.insert(index, HashSet::new());
         }
         index
     }
     pub fn insert_edge(&mut self, from_id: ControlNodeId, to_id: ControlNodeId) -> bool {
+        if from_id == to_id {
+            log::warn!("insert_edge: from_id and to_id are same");
+        }
+
         let Some(m) = self.outgoing.get_mut(&from_id) else {
             return false;
         };
-        m.insert(to_id, ());
+        m.insert(to_id);
         let Some(m) = self.incoming.get_mut(&to_id) else {
             return false;
         };
-        m.insert(from_id, ());
+        m.insert(from_id);
         true
+    }
+
+    pub fn outgoing(&self, node_id: ControlNodeId) -> HashSet<ControlNodeId> {
+        if let Some(m) = self.outgoing.get(&node_id) {
+            m.clone()
+        } else {
+            HashSet::new()
+        }
     }
 }

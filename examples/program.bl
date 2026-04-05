@@ -108,13 +108,13 @@ j :: 4654654651321354631;
 // p := &pp;
 // ppp := 1;
 
-factorial :: fun (n: __uint) -> __uint {
-    if n == 0 {
-        return 1;
-    } else {
-        return n * factorial(n - 1);
-    }
-}
+// factorial :: fun (n: __uint) -> __uint {
+//     if n == 0 {
+//         return 1;
+//     } else {
+//         return n * factorial(n - 1);
+//     }
+// }
 
 fib :: fun (n: __uint) -> __uint {
     a: __uint = 0;
@@ -122,7 +122,6 @@ fib :: fun (n: __uint) -> __uint {
     while b <= n {
         // print("{}", a);
         temp :: a;
-        1 + 2;
         a = b;
         b = temp + b;
     }
@@ -146,11 +145,19 @@ fib :: fun (n: __uint) -> __uint {
 //     return ai + j;
 // }
 
-print :: fun (str: []__char, newline: __bool = true, stderr: __bool = false) {
-}
+// f :: fun (b: __bool) -> __int {
+//    x: __int;
+//    while b {
+//        return x;
+//    }
+//    return 0;
+// }
 
-main :: fun () {
-    print("1", newline: false);
-}
+// print :: fun (str: []__char, newline: __bool = true, stderr: __bool = false) {
+// }
+// 
+// main :: fun () {
+//     print("1", newline: false);
+// }
 
 // This is a comment at the end of a line

@@ -11,33 +11,40 @@ use num_traits::cast::ToPrimitive;
 
 use crate::{
     ast,
+    cfg::{ControlGraph, ControlInfo, ControlNode, ControlNodeId},
     common::{CompileError, CompileResult, HasLineInfo, Layout, LineInfo, Settings, fuzzy_search_best, get_plural},
     context::{self, Context},
     lexer::{Token, TokenKind, TokenValue},
-    scope::{self, HasSrcInfo, Payload, State},
+    scope::{self, HasSrcInfo, Payload, State, SymbolPath},
 };
 
-// TODO: Counters should not be global
-// It should be a member of scope
-static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
-static BLOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
-static LOOP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 pub struct SemResult<'a> {
+    /// Root scopes that are present in the scope trees
     pub roots: HashMap<String, Rc<RefCell<scope::Scope<'a>>>>,
+    /// Generated warnings about the code
     pub warnings: Vec<CompileError>,
 }
 
 pub struct Analyzer<'a> {
+    /// Root scopes that are present in the scope trees
     roots: HashMap<String, Rc<RefCell<scope::Scope<'a>>>>,
+    /// Current scope in which things are being evaluated
     cur_scope: Rc<RefCell<scope::Scope<'a>>>,
+    /// Compiler settings to customise semantic analysis
     settings: Settings,
-    type_int: context::Type<'a>,
-    type_uint: context::Type<'a>,
-    type_isize: context::Type<'a>,
-    type_usize: context::Type<'a>,
+    /// Saved errors to continue compilation and accumulate more errors
     saved_errs: Vec<CompileError>,
+    /// Generated warnings about the code
     warnings: Vec<CompileError>,
+
+    /// The type that is used for '__int'
+    type_int: context::Type<'a>,
+    /// The type that is used for '__uint'
+    type_uint: context::Type<'a>,
+    /// The type that is used for '__size'
+    type_isize: context::Type<'a>,
+    /// The type that is used for '__usize'
+    type_usize: context::Type<'a>,
 }
 
 impl<'a> Analyzer<'a> {
@@ -201,7 +208,10 @@ impl<'a> Analyzer<'a> {
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
                 "unnamed{}$",
-                UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                self.cur_scope
+                    .borrow()
+                    .unique_counter
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
             name.text.clone()
@@ -231,7 +241,10 @@ impl<'a> Analyzer<'a> {
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
                 "unnamed{}$",
-                UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                self.cur_scope
+                    .borrow()
+                    .unique_counter
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
             name.text.clone()
@@ -288,7 +301,10 @@ impl<'a> Analyzer<'a> {
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
                 "unnamed{}$",
-                UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                self.cur_scope
+                    .borrow()
+                    .unique_counter
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
             name.text.clone()
@@ -318,7 +334,10 @@ impl<'a> Analyzer<'a> {
         let sym_name = if name.kind == TokenKind::Underscore {
             format!(
                 "unnamed{}$",
-                UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                self.cur_scope
+                    .borrow()
+                    .unique_counter
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )
         } else {
             name.text.clone()
@@ -659,9 +678,31 @@ impl<'a> Analyzer<'a> {
                         } else {
                             None
                         };
+
+                        // cfg: insert variable declared node
+                        //      only if it is a local variable or constant
+                        let should_insert_cfg = match scope.borrow().kind {
+                            scope::ScopeKind::Variable => true,
+                            scope::ScopeKind::Const => true,
+                            _ => false,
+                        };
+                        if should_insert_cfg && self.get_current_block().is_some() {
+                            self.mut_current_block_data(|data| {
+                                let cf_node = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarDeclared {
+                                    line_info: node.get_line_info(),
+                                    scope: Rc::clone(&scope),
+                                }));
+                                data.cfg.insert_edge(data.cf_last, cf_node);
+                                data.cf_last = cf_node;
+                            });
+                        }
+
                         // Visit expr
-                        let rhs = self.visit_var(name, expr)?;
+                        let rhs = self.visit_expr(expr)?;
                         // Resolve assignment
+                        if rhs.taipe.is_module() {
+                            return Err(self.make_err("cannot assign a module to a variable", expr));
+                        }
                         let ctx = self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, expr.get_line_info())))?;
                         let result = Context::from_scope(&ctx.taipe, &scope);
                         // Complete the visit
@@ -698,44 +739,20 @@ impl<'a> Analyzer<'a> {
                 then_body,
             } => self.visit_while_stmt(label.as_ref(), expr, then_body),
             ast::Stmt::Block { line_info, stmts } => self.visit_block(*line_info, stmts),
-            ast::Stmt::Yield { token: _, expr } => Ok(self.visit_expr(expr)?),
-            ast::Stmt::Continue { token, label } => self.use_current_function_data(|data| {
-                if data.loop_stack.is_empty() {
-                    return Err(self.make_err(format!("'{}' can be used only in a loop", token.text), node));
-                }
-                if let Some(label) = label {
-                    if !data.loop_stack.contains_key(&label.text) {
-                        let mut searched_names = HashSet::new();
-                        for (name, _) in &data.loop_stack {
-                            searched_names.insert(name.clone());
-                        }
-                        return Err(self
-                            .make_err(format!("undefined loop label '{}'", label.text), label)
-                            .chain(self.make_did_you_mean_help(&label.text, &searched_names)));
-                    }
-                }
-                Ok(Context::from_noreturn())
-            }),
-            ast::Stmt::Break { token, label } => self.use_current_function_data(|data| {
-                if data.loop_stack.is_empty() {
-                    return Err(self.make_err(format!("'{}' can be used only in a loop", token.text), node));
-                }
-                if let Some(label) = label {
-                    if !data.loop_stack.contains_key(&label.text) {
-                        let mut searched_names = HashSet::new();
-                        for (name, _) in &data.loop_stack {
-                            searched_names.insert(name.clone());
-                        }
-                        return Err(self
-                            .make_err(format!("undefined loop label '{}'", label.text), label)
-                            .chain(self.make_did_you_mean_help(&label.text, &searched_names)));
-                    }
-                }
-                Ok(Context::from_noreturn())
-            }),
+            ast::Stmt::Yield { token: _, expr } => {
+                let ctx = self.visit_expr(expr)?;
+                self.mut_current_block_data(|data| {
+                    data.cfg.insert_edge(data.cf_last, data.cf_end);
+                    data.cf_last = data.cf_unreachable;
+                });
+                Ok(ctx)
+            }
+            ast::Stmt::Continue { token, label } => self.visit_continue(token, label.as_ref()),
+            ast::Stmt::Break { token, label } => self.visit_break(token, label.as_ref()),
             ast::Stmt::Return { token, expr } => self.visit_return(token, expr.as_ref()),
             ast::Stmt::Decl(decl) => {
-                self.visit_decl(decl, false)?;
+                let ctx = self.visit_decl(decl, false)?;
+                if let context::Value::Reference(ref scope) = ctx.value {}
                 Ok(Context::from_void())
             }
             ast::Stmt::Expr(expr) => {
@@ -750,12 +767,159 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn visit_return(&mut self, token: &Token, expr: Option<&'a ast::Expr>) -> CompileResult<Context<'a>> {
+        let Some(function) = self.get_current_function() else {
+            return Err(self.make_err("'return' is allowed in functions only", token));
+        };
+        // Get the return type of the function
+        let ret = {
+            let scope::State::Visited(ref ctx) = function.borrow().state else {
+                unreachable!("probably some analyzer bug");
+            };
+            let context::Type::Function { ref ret, params: _ } = ctx.taipe else {
+                unreachable!("probably some analyzer bug");
+            };
+            *ret.clone()
+        };
+        if ret.is_noreturn() {
+            return Err(self.make_err(
+                format!(
+                    "cannot return from a '{}' function",
+                    context::Type::Noreturn.to_string()
+                ),
+                token,
+            ));
+        }
+        // Get some line info
+        let scope::Payload::Function(scope::Function {
+            param_infos: _,
+            loop_stack: _,
+            ret_line_info,
+        }) = function.borrow().payload
+        else {
+            unreachable!("probably some analyzer bug");
+        };
+        let ret_line_info = ret_line_info.unwrap_or_else(|| function.borrow().get_line_info());
+        // Check return
+        if let Some(expr) = expr {
+            if ret.is_void() {
+                return Err(self.make_err("invalid expression", expr).chain(self.make_note(
+                    format!("function expects return type '{}'", ret.to_string()),
+                    &ret_line_info,
+                )));
+            }
+            let rhs = self.visit_expr(expr)?;
+
+            // cfg: direct the control flow as return node
+            self.mut_current_block_data(|data| {
+                let cf_return = data.cfg.insert_vertex(ControlNode::Return);
+                data.cfg.insert_edge(data.cf_last, cf_return);
+                data.cf_last = data.cf_unreachable;
+            });
+
+            let ctx = self.resolve_assign(Some((ret, ret_line_info)), None, Some((rhs, expr.get_line_info())))?;
+            Ok(Context {
+                is_lvalue: false,
+                taipe: context::Type::Noreturn,
+                value: context::Value::Ret(Box::new(ctx)),
+            })
+        } else {
+            // cfg: direct the control flow as return node
+            self.mut_current_block_data(|data| {
+                let cf_return = data.cfg.insert_vertex(ControlNode::Return);
+                data.cfg.insert_edge(data.cf_last, cf_return);
+                data.cf_last = data.cf_unreachable;
+            });
+
+            if !ret.is_void() {
+                return Err(self
+                    .make_err("expected <expression> for 'return'", token)
+                    .chain(self.make_note(
+                        format!("function expects return type '{}'", ret.to_string()),
+                        &ret_line_info,
+                    )));
+            }
+            Ok(Context {
+                is_lvalue: false,
+                taipe: context::Type::Noreturn,
+                value: context::Value::RetVoid,
+            })
+        }
+    }
+
+    fn visit_break(&mut self, token: &Token, label: Option<&Token>) -> CompileResult<Context<'a>> {
+        self.use_current_function_data(|data| {
+            let cf_break = if let Some(label) = label {
+                if let Some(loop_info) = data.loop_stack.get(&label.text) {
+                    loop_info.cf_break
+                } else {
+                    let mut searched_names = HashSet::new();
+                    for (name, _) in &data.loop_stack {
+                        searched_names.insert(name.clone());
+                    }
+                    return Err(self
+                        .make_err(format!("undefined loop label '{}'", label.text), label)
+                        .chain(self.make_did_you_mean_help(&label.text, &searched_names)));
+                }
+            } else if let Some((_, loop_info)) = data.loop_stack.last() {
+                loop_info.cf_break
+            } else {
+                return Err(self.make_err(format!("'{}' can be used only in a loop", token.text), token));
+            };
+            // cfg: direct the control flow to cf_break node
+            self.mut_current_block_data(|data| {
+                data.cfg.insert_edge(data.cf_last, cf_break);
+                data.cf_last = data.cf_unreachable;
+            });
+            Ok(Context::from_noreturn())
+        })
+    }
+
+    fn visit_continue(&mut self, token: &Token, label: Option<&Token>) -> CompileResult<Context<'a>> {
+        self.use_current_function_data(|data| {
+            let cf_continue = if let Some(label) = label {
+                if let Some(loop_info) = data.loop_stack.get(&label.text) {
+                    loop_info.cf_continue
+                } else {
+                    let mut searched_names = HashSet::new();
+                    for (name, _) in &data.loop_stack {
+                        searched_names.insert(name.clone());
+                    }
+                    return Err(self
+                        .make_err(format!("undefined loop label '{}'", label.text), label)
+                        .chain(self.make_did_you_mean_help(&label.text, &searched_names)));
+                }
+            } else if let Some((_, loop_info)) = data.loop_stack.last() {
+                loop_info.cf_continue
+            } else {
+                return Err(self.make_err(format!("'{}' can be used only in a loop", token.text), token));
+            };
+            // cfg: direct the control flow to cf_continue node
+            self.mut_current_block_data(|data| {
+                data.cfg.insert_edge(data.cf_last, cf_continue);
+                data.cf_last = data.cf_unreachable;
+            });
+            Ok(Context::from_noreturn())
+        })
+    }
+
     fn visit_while_stmt(
         &mut self,
         label: Option<&Token>,
         expr: &'a ast::Expr,
         then_body: &'a ast::Stmt,
     ) -> Result<Context<'a>, CompileError> {
+        // cfg: create the break and continue node for this loop
+        let cf_break = self.mut_current_block_data(|data| data.cfg.insert_vertex(ControlNode::Junction));
+        let cf_continue = self.mut_current_block_data(|data| data.cfg.insert_vertex(ControlNode::Junction));
+
+        // cfg: Get the loop start flow
+        // let cf_loop_start = cf_continue;
+        self.mut_current_block_data(|data| {
+            data.cfg.insert_edge(data.cf_last, cf_continue);
+            data.cf_last = cf_continue;
+        });
+
         let cond = self.visit_expr(expr)?;
         if !cond.taipe.is_bool() {
             return Err(self.make_err(
@@ -767,30 +931,43 @@ impl<'a> Analyzer<'a> {
                 expr,
             ));
         }
+
+        // cfg: Get the cond flow
+        let cf_cond = self.use_current_block_data(|data| data.cf_last);
+
         self.mut_current_function_data(|data| {
+            let loop_info = scope::LoopInfo { cf_break, cf_continue };
             if let Some(label) = label {
-                data.loop_stack.insert(label.text.clone(), scope::LoopInfo {});
+                data.loop_stack.insert(label.text.clone(), loop_info);
             } else {
                 data.loop_stack.insert(
                     format!(
                         "loop{}$",
-                        LOOP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        self.cur_scope
+                            .borrow()
+                            .loop_counter
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                     ),
-                    scope::LoopInfo {},
+                    loop_info,
                 );
             }
         });
         let then_body_result = self.visit_stmt(then_body)?;
+
+        // cfg: Get the loop end flow
+        let cf_loop_end = self.use_current_block_data(|data| data.cf_last);
+
+        // cfg: Stitch them together
+        self.mut_current_block_data(|data| {
+            data.cfg.insert_edge(cf_loop_end, cf_continue);
+            data.cfg.insert_edge(cf_cond, cf_break);
+            data.cf_last = cf_break;
+        });
+
         self.mut_current_function_data(|data| {
             data.loop_stack.pop();
         });
-        if then_body_result.taipe.is_noreturn() {
-            Ok(Context {
-                is_lvalue: false,
-                taipe: context::Type::Noreturn,
-                value: context::Value::While(Box::new(cond), Box::new(then_body_result)),
-            })
-        } else if then_body_result.taipe.is_void() {
+        if then_body_result.taipe.is_noreturn() || then_body_result.taipe.is_void() {
             Ok(Context {
                 is_lvalue: false,
                 taipe: context::Type::Void,
@@ -825,9 +1002,34 @@ impl<'a> Analyzer<'a> {
                 expr,
             ));
         }
+
+        // cfg: Get the cond flow
+        let cf_cond = self.use_current_block_data(|data| data.cf_last);
+
         let then_body_result = self.visit_stmt(then_body)?;
+
+        // cfg: Get the then branch flow
+        let cf_then = self.use_current_block_data(|data| data.cf_last);
+
         if let Some(else_body) = else_body {
+            // cfg: Let the flow before else branch descend from cf_cond
+            self.mut_current_block_data(|data| {
+                data.cf_last = cf_cond;
+            });
+
             let else_body_result = self.visit_stmt(else_body)?;
+
+            // cfg: Get the else branch flow
+            let cf_else = self.use_current_block_data(|data| data.cf_last);
+
+            // cfg: Stitch them together
+            self.mut_current_block_data(|data| {
+                let cf_join = data.cfg.insert_vertex(ControlNode::Junction);
+                data.cfg.insert_edge(cf_then, cf_join);
+                data.cfg.insert_edge(cf_else, cf_join);
+                data.cf_last = cf_join;
+            });
+
             if then_body_result.taipe.is_noreturn() {
                 Ok(Context {
                     is_lvalue: else_body_result.is_lvalue,
@@ -870,6 +1072,14 @@ impl<'a> Analyzer<'a> {
                 ));
             }
         } else {
+            // cfg: Stitch them together
+            self.mut_current_block_data(|data| {
+                let cf_join = data.cfg.insert_vertex(ControlNode::Junction);
+                data.cfg.insert_edge(cf_then, cf_join);
+                data.cfg.insert_edge(cf_cond, cf_join);
+                data.cf_last = cf_join;
+            });
+
             if then_body_result.taipe.is_noreturn() {
                 Ok(Context {
                     is_lvalue: false,
@@ -892,70 +1102,6 @@ impl<'a> Analyzer<'a> {
                     then_body,
                 ))
             }
-        }
-    }
-
-    fn visit_return(&mut self, token: &Token, expr: Option<&'a ast::Expr>) -> CompileResult<Context<'a>> {
-        let Some(function) = self.get_current_function() else {
-            return Err(self.make_err("'return' is allowed in functions only", token));
-        };
-        // Get the return type of the function
-        let ret = {
-            let scope::State::Visited(ref ctx) = function.borrow().state else {
-                unreachable!("probably some analyzer bug");
-            };
-            let context::Type::Function { ref ret, params: _ } = ctx.taipe else {
-                unreachable!("probably some analyzer bug");
-            };
-            ret.clone()
-        };
-        let scope::Payload::Function(scope::Function {
-            param_infos: _,
-            loop_stack: _,
-            ret_line_info,
-        }) = function.borrow().payload
-        else {
-            unreachable!("probably some analyzer bug");
-        };
-        let ret_line_info = ret_line_info.unwrap_or_else(|| function.borrow().get_line_info());
-        let ret = *ret;
-        if ret.is_noreturn() {
-            return Err(self.make_err(
-                format!(
-                    "cannot return from a '{}' function",
-                    context::Type::Noreturn.to_string()
-                ),
-                token,
-            ));
-        }
-        if let Some(expr) = expr {
-            if ret.is_void() {
-                return Err(self.make_err("invalid expression", expr).chain(self.make_note(
-                    format!("function expects return type '{}'", ret.to_string()),
-                    &ret_line_info,
-                )));
-            }
-            let rhs = self.visit_expr(expr)?;
-            let ctx = self.resolve_assign(Some((ret, ret_line_info)), None, Some((rhs, expr.get_line_info())))?;
-            Ok(Context {
-                is_lvalue: false,
-                taipe: context::Type::Noreturn,
-                value: context::Value::Ret(Box::new(ctx)),
-            })
-        } else {
-            if !ret.is_void() {
-                return Err(self
-                    .make_err("expected <expression> for 'return'", token)
-                    .chain(self.make_note(
-                        format!("function expects return type '{}'", ret.to_string()),
-                        &ret_line_info,
-                    )));
-            }
-            Ok(Context {
-                is_lvalue: false,
-                taipe: context::Type::Noreturn,
-                value: context::Value::RetVoid,
-            })
         }
     }
 
@@ -1015,6 +1161,20 @@ impl<'a> Analyzer<'a> {
             }
             break;
         }
+        // cfg: everything after this is unreachable
+        self.mut_current_block_data(|data| {
+            if data.cf_last != data.cf_end {
+                data.cfg.insert_edge(data.cf_last, data.cf_end);
+                data.cf_last = data.cf_unreachable;
+            }
+        });
+        // cfg: now traverse the cfg
+        self.use_current_block_data(|data| {
+            // Track all variables by checking their initialization and usage (by performing DFS on the CFG)
+            self.traverse_cfg(&data.cfg, data.cf_start)?;
+            Ok(())
+        })?;
+
         if last_stmt_index < stmts.len() {
             // Check them anyway
             for stmt in &stmts[last_stmt_index..] {
@@ -1040,11 +1200,110 @@ impl<'a> Analyzer<'a> {
         Ok(result)
     }
 
+    fn traverse_cfg(&self, cfg: &ControlGraph<'a>, node_id: ControlNodeId) -> CompileResult<()> {
+        println!("in: {}", self.cur_scope.borrow().sym_path.to_string());
+        let result = self.traverse_cfg_impl(cfg, node_id, &mut HashSet::new(), HashMap::new(), 0);
+        println!();
+        result
+    }
+    fn traverse_cfg_impl(
+        &self,
+        cfg: &ControlGraph<'a>,
+        node_id: ControlNodeId,
+        visited: &mut HashSet<ControlNodeId>,
+        mut declared_vars: HashMap<SymbolPath, /* is_init: */ bool>,
+        depth: usize,
+    ) -> CompileResult<()> {
+        // Pretty printing
+        for _ in 0..depth {
+            print!("  ");
+        }
+
+        // Mark as visited
+        visited.insert(node_id);
+        let mut err = CompileError::Errors(Vec::new());
+
+        // TODO: Track all sorts of things
+        let mut is_end = false;
+        let node = cfg.get_vertex(node_id).unwrap();
+        match node {
+            ControlNode::Start => {
+                println!("start");
+            }
+            ControlNode::Junction => {
+                println!("junction");
+            }
+            ControlNode::Info(info) => match info {
+                ControlInfo::VarDeclared { line_info, scope } => {
+                    declared_vars.insert(scope.borrow().sym_path.clone(), false);
+                    println!("declared variable -> {}:{}", line_info.line_start, line_info.col_start);
+                }
+                ControlInfo::VarUsed { line_info, scope } => {
+                    if let Some(is_init) = declared_vars.get(&scope.borrow().sym_path) {
+                        if !is_init {
+                            let msg = format!("'{}' may be uninitialized", scope.borrow().name);
+                            err = err
+                                .chain(self.make_err(msg, line_info))
+                                .chain(self.make_note("declared here", &scope.borrow()));
+                        }
+                    } else {
+                        // TODO: Do something
+                        // todo!()
+                    }
+                    println!("variable used -> {}:{}", line_info.line_start, line_info.col_start);
+                }
+                ControlInfo::VarAssigned { line_info, scope } => {
+                    if let Some(is_init) = declared_vars.get_mut(&scope.borrow().sym_path) {
+                        *is_init = true;
+                    } else {
+                        // probably the declaration is outside of this scope
+                        declared_vars.insert(scope.borrow().sym_path.clone(), true);
+                        // TODO: do something
+                    }
+                    println!("variable assigned -> {}:{}", line_info.line_start, line_info.col_start);
+                }
+            },
+            ControlNode::Return => {
+                println!("return");
+                // TODO: Do something
+            }
+            ControlNode::End => {
+                println!("end");
+                is_end = true;
+            }
+            ControlNode::Unreachable => unreachable!("probably some control flow contruction bug"),
+        }
+
+        // Traverse other destination nodes
+        if !is_end {
+            let outgoing = cfg.outgoing(node_id);
+            let outgoing_len = outgoing.len();
+            for dest_node_id in outgoing {
+                if !visited.contains(&dest_node_id) {
+                    let new_depth = if outgoing_len == 1 { depth } else { depth + 1 };
+                    if let Err(dest_err) =
+                        self.traverse_cfg_impl(cfg, dest_node_id, visited, declared_vars.clone(), new_depth)
+                    {
+                        // Accumulate errors
+                        err = err.chain(dest_err)
+                    };
+                }
+            }
+        }
+        // Return the accumulated errors
+        if err.is_empty() { Ok(()) } else { Err(err) }
+    }
+
     fn create_block_scope(&mut self, line_info: LineInfo) -> Rc<RefCell<scope::Scope<'a>>> {
+        // Generate unique block name
         let block_name = format!(
             "block{}$",
-            BLOCK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            self.cur_scope
+                .borrow()
+                .block_counter
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         );
+        // Create a block scope
         let scope = scope::Scope::add_child(
             &self.cur_scope,
             scope::ScopeKind::Block,
@@ -1052,14 +1311,26 @@ impl<'a> Analyzer<'a> {
             scope::State::VisitInProg,
             &line_info,
         );
+        // Create its own control graph
+        let mut cfg = ControlGraph::new();
+        let cf_start = cfg.insert_vertex(ControlNode::Start);
+        let cf_unreachable = cfg.insert_vertex(ControlNode::Unreachable);
+        let cf_end = cfg.insert_vertex(ControlNode::End);
+        scope.borrow_mut().payload = scope::Payload::Block(scope::Block {
+            cfg,
+            cf_start,
+            cf_end,
+            cf_last: cf_start,
+            cf_unreachable,
+        });
         scope
     }
 
     fn get_fields(&mut self, field: &'a ast::Field) -> CompileResult<scope::Field<'a>> {
-        self.get_fields_ex(field, false)
+        self.get_fields_impl(field, false)
     }
 
-    fn get_fields_ex(&mut self, field: &'a ast::Field, is_alone: bool) -> CompileResult<scope::Field<'a>> {
+    fn get_fields_impl(&mut self, field: &'a ast::Field, is_alone: bool) -> CompileResult<scope::Field<'a>> {
         match field {
             ast::Field::Compound {
                 line_info: _,
@@ -1073,7 +1344,7 @@ impl<'a> Analyzer<'a> {
                 let mut vec = Vec::new();
                 let is_child_alone = fields.len() == 1;
                 for field in fields {
-                    vec.push(self.get_fields_ex(field, is_child_alone)?);
+                    vec.push(self.get_fields_impl(field, is_child_alone)?);
                 }
                 match token.kind {
                     TokenKind::Struct => Ok(scope::Field::Struct(vec)),
@@ -1098,7 +1369,15 @@ impl<'a> Analyzer<'a> {
                     // name : type = value;
                     // ---------------------------------
                     // Visit expr
-                    let rhs = self.visit_expr(expr)?;
+                    let rhs = match self.visit_expr(expr) {
+                        Ok(ctx) => ctx,
+                        Err(CompileError::SemCyclic { file_path, line_info }) => {
+                            return Err(self
+                                .make_err("inference is ambiguous, encountered cyclic references", name)
+                                .chain(self.make_note_with_path("another one declared here", file_path, &line_info)));
+                        }
+                        Err(err) => return Err(err),
+                    };
                     // TODO: The value of the field should be evaluated at compile time
                     // If no value is provided then default value should be evaluated
                     // Resolve assignment
@@ -1180,23 +1459,6 @@ impl<'a> Analyzer<'a> {
         // Restore old scope
         self.cur_scope = old_cur_scope;
         Ok(result)
-    }
-
-    fn visit_var(&mut self, name: &crate::lexer::Token, expr: &'a ast::Expr) -> CompileResult<Context<'a>> {
-        match self.visit_expr(expr) {
-            Ok(mut ctx) => {
-                if ctx.taipe.is_module() {
-                    Err(self.make_err("cannot assign a module to a variable", expr))
-                } else {
-                    ctx.is_lvalue = true;
-                    Ok(ctx)
-                }
-            }
-            Err(CompileError::SemCyclic { file_path, line_info }) => Err(self
-                .make_err("inference is ambiguous, encountered cyclic references", name)
-                .chain(self.make_note_with_path("another one declared here", file_path, &line_info))),
-            Err(err) => Err(err),
-        }
     }
 
     fn visit_type(&mut self, node: &'a ast::Type) -> CompileResult<context::Type<'a>> {
@@ -1389,6 +1651,54 @@ impl<'a> Analyzer<'a> {
     }
 
     fn visit_expr(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
+        let ctx = self.visit_expr_impl(node)?;
+        if let context::Value::Reference(ref scope) = ctx.value {
+            // cfg: insert variable used node
+            //      only if it is a local variable or constant
+            let should_insert_cfg = match scope.borrow().kind {
+                scope::ScopeKind::Variable => true,
+                scope::ScopeKind::Const => true,
+                _ => false,
+            };
+            if should_insert_cfg && self.get_current_block().is_some() && scope.borrow().get_enclosing_block().is_some()
+            {
+                self.mut_current_block_data(|data| {
+                    let cf_node = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarUsed {
+                        line_info: node.get_line_info(),
+                        scope: Rc::clone(scope),
+                    }));
+                    data.cfg.insert_edge(data.cf_last, cf_node);
+                    data.cf_last = cf_node;
+                });
+            }
+        }
+        Ok(ctx)
+    }
+    fn visit_expr_lhs_of_assign(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
+        let ctx = self.visit_expr_impl(node)?;
+        if let context::Value::Reference(ref scope) = ctx.value {
+            // cfg: insert variable assigned node
+            //      only if it is a local variable or constant
+            let should_insert_cfg = match scope.borrow().kind {
+                scope::ScopeKind::Variable => true,
+                scope::ScopeKind::Const => true,
+                _ => false,
+            };
+            if should_insert_cfg && self.get_current_block().is_some() && scope.borrow().get_enclosing_block().is_some()
+            {
+                self.mut_current_block_data(|data| {
+                    let cf_node = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarAssigned {
+                        line_info: node.get_line_info(),
+                        scope: Rc::clone(scope),
+                    }));
+                    data.cfg.insert_edge(data.cf_last, cf_node);
+                    data.cf_last = cf_node;
+                });
+            }
+        }
+        Ok(ctx)
+    }
+    fn visit_expr_impl(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
         match node {
             ast::Expr::Assign { lhses, op, rhses } => {
                 match op.kind {
@@ -1412,7 +1722,7 @@ impl<'a> Analyzer<'a> {
                     let rhs = self.visit_expr(rhs_node)?;
                     let lhs_node = &lhses[i];
                     let lhs_line_info = lhs_node.get_line_info();
-                    let lhs = self.visit_expr(lhs_node)?;
+                    let lhs = self.visit_expr_lhs_of_assign(lhs_node)?;
                     // do lvalue checking
                     if !lhs.is_lvalue {
                         return Err(self.make_err("cannot assign to a prvalue (pure rvalue)", &lhs_line_info));
@@ -1422,7 +1732,8 @@ impl<'a> Analyzer<'a> {
                         taipe: lhs.taipe.clone(),
                         value: lhs.value,
                     });
-                    let rhs_ctx = self.resolve_assign(Some((lhs.taipe, lhs_line_info)), None, Some((rhs, rhs_line_info)))?;
+                    let rhs_ctx =
+                        self.resolve_assign(Some((lhs.taipe, lhs_line_info)), None, Some((rhs, rhs_line_info)))?;
                     rhs_ctxes.push(rhs_ctx);
                 }
                 Ok(Context {
@@ -2851,7 +3162,7 @@ impl<'a> Analyzer<'a> {
                     line_info: scope.borrow().get_line_info(),
                 });
             }
-            Payload::Function(_) => unreachable!("probably some analyzer bug"),
+            Payload::Function(_) | Payload::Block(_) => unreachable!("probably some analyzer bug"),
         }
     }
 
@@ -3319,14 +3630,15 @@ impl<'a> Analyzer<'a> {
         loop {
             match self.resolve_member(&scope, name, searched_names) {
                 Ok(Some(ctx)) => {
-                    if let Some(inner_fn) = inner_fn {
-                        if ctx.taipe.is_typedef() {
-                            // Typedef is encoded by Type::Basic so ignore that case
-                            return Ok(Some(ctx));
-                        } else {
-                            let context::Value::Reference(ref scope) = ctx.value else {
-                                unreachable!("probably some bug in resolve_member");
-                            };
+                    if ctx.taipe.is_typedef() {
+                        // Typedef is encoded by Type::Basic so ignore that case
+                        return Ok(Some(ctx));
+                    } else {
+                        let context::Value::Reference(ref scope) = ctx.value else {
+                            unreachable!("probably some bug in resolve_member");
+                        };
+
+                        if let Some(inner_fn) = inner_fn {
                             let scope = scope.borrow();
                             if scope.is_variable()
                                 && let Some(outer_fn) = scope.get_enclosing_function()
@@ -3341,9 +3653,7 @@ impl<'a> Analyzer<'a> {
                                     .chain(self.make_note("outer function is declared here", &outer_fn.borrow())));
                             }
                             drop(scope);
-                            return Ok(Some(ctx));
                         }
-                    } else {
                         return Ok(Some(ctx));
                     }
                 }
@@ -3596,7 +3906,7 @@ impl<'a> Analyzer<'a> {
 
     fn use_current_function_data<F, T>(&self, handler: F) -> T
     where
-        F: FnOnce(&scope::Function) -> T,
+        F: FnOnce(&scope::Function<'a>) -> T,
     {
         let function = self.get_current_function().expect("not in a function");
         let scope::Payload::Function(ref data) = function.borrow().payload else {
@@ -3607,7 +3917,7 @@ impl<'a> Analyzer<'a> {
 
     fn mut_current_function_data<F, T>(&self, handler: F) -> T
     where
-        F: FnOnce(&mut scope::Function) -> T,
+        F: FnOnce(&mut scope::Function<'a>) -> T,
     {
         let function = self.get_current_function().expect("not in a function");
         let scope::Payload::Function(ref mut data) = function.borrow_mut().payload else {
@@ -3616,11 +3926,33 @@ impl<'a> Analyzer<'a> {
         handler(data)
     }
 
-    // fn get_current_block(&self) -> Option<Rc<RefCell<scope::Scope<'a>>>> {
-    //     if self.cur_scope.borrow().is_block() {
-    //         Some(Rc::clone(&self.cur_scope))
-    //     } else {
-    //         self.cur_scope.borrow().get_enclosing_block()
-    //     }
-    // }
+    fn get_current_block(&self) -> Option<Rc<RefCell<scope::Scope<'a>>>> {
+        if self.cur_scope.borrow().is_block() {
+            Some(Rc::clone(&self.cur_scope))
+        } else {
+            self.cur_scope.borrow().get_enclosing_block()
+        }
+    }
+
+    fn use_current_block_data<F, T>(&self, handler: F) -> T
+    where
+        F: FnOnce(&scope::Block<'a>) -> T,
+    {
+        let block = self.get_current_block().expect("not in a block");
+        let scope::Payload::Block(ref data) = block.borrow().payload else {
+            unreachable!("probably some analyzer bug");
+        };
+        handler(data)
+    }
+
+    fn mut_current_block_data<F, T>(&self, handler: F) -> T
+    where
+        F: FnOnce(&mut scope::Block<'a>) -> T,
+    {
+        let block = self.get_current_block().expect("not in a block");
+        let scope::Payload::Block(ref mut data) = block.borrow_mut().payload else {
+            unreachable!("probably some analyzer bug");
+        };
+        handler(data)
+    }
 }

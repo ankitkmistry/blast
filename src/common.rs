@@ -150,7 +150,7 @@ impl CompileError {
     pub fn is_empty(&self) -> bool {
         match self {
             CompileError::Errors(errs) => errs.is_empty(),
-            _ => true,
+            _ => false,
         }
     }
     pub fn chain(self, other: CompileError) -> Self {
