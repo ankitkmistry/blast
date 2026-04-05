@@ -90,8 +90,7 @@ impl<'a> Analyzer<'a> {
                 .chain(CompileError::Errors(self.warnings)))
         } else if !self.saved_errs.is_empty() {
             // If there are any accumulated errors return them
-            Err(CompileError::Errors(self.saved_errs)
-                .chain(CompileError::Errors(self.warnings)))
+            Err(CompileError::Errors(self.saved_errs).chain(CompileError::Errors(self.warnings)))
         } else {
             let sem_result = SemResult {
                 roots: self.roots,
@@ -774,7 +773,14 @@ impl<'a> Analyzer<'a> {
             } => self.visit_while_stmt(label.as_ref(), expr, then_body),
             ast::Stmt::Block { line_info, stmts } => self.visit_block(*line_info, stmts),
             ast::Stmt::Yield { token: _, expr } => {
-                let ctx = self.visit_expr(expr)?;
+                let mut ctx = self.visit_expr(expr)?;
+                if ctx.taipe.is_varint() {
+                    let context::Value::Imm(ref imm) = ctx.value else {
+                        unreachable!("probably some analyzer bug");
+                    };
+                    ctx.taipe = self.type_int.clone();
+                    ctx.value = context::Value::Imm(self.transform_varint_to_int(imm, expr)?);
+                }
                 self.mut_current_block_data(|data| {
                     data.cfg.insert_edge(data.cf_last, data.cf_end);
                     data.cf_last = data.cf_unreachable;
@@ -1095,13 +1101,18 @@ impl<'a> Analyzer<'a> {
                     ),
                 })
             } else {
+                let line_info = if let context::Value::Reference(ref scope) = else_body_result.value {
+                    scope.borrow().get_line_info()
+                } else {
+                    else_body.get_line_info()
+                };
                 return Err(self.make_err(
                     format!(
                         "expected '{}' but got '{}'",
                         then_body_result.to_string(),
                         else_body_result.to_string(),
                     ),
-                    else_body,
+                    &line_info,
                 ));
             }
         } else {
@@ -1194,6 +1205,8 @@ impl<'a> Analyzer<'a> {
             }
             break;
         }
+        // For better error output change the line info of the block scope
+        scope.borrow_mut().line_info = stmts[last_stmt_index - 1].get_line_info();
         // cfg: everything after this is unreachable
         self.mut_current_block_data(|data| {
             if data.cf_last != data.cf_end {
@@ -1759,6 +1772,7 @@ impl<'a> Analyzer<'a> {
     }
     fn visit_expr_impl(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
         match node {
+            ast::Expr::Block { line_info, stmts } => self.visit_block(*line_info, stmts),
             ast::Expr::Assign { lhses, op, rhses } => {
                 match op.kind {
                     // TODO: implement augmented assignment
@@ -1804,18 +1818,6 @@ impl<'a> Analyzer<'a> {
             ast::Expr::Binary { left, op, right } => self.visit_binary(left, op, right),
             ast::Expr::Cast { expr, taipe } => todo!("implement casting"),
             ast::Expr::Unary { op, expr } => self.visit_unary(op, expr),
-            // Postfix dot operator
-            //    result = value.name       // name is an identifier
-            // Description:
-            //    Flips all the bits of an signed or unsigned integer
-            // value and result can be:
-            //  * value: T               -> result: {type of member}
-            //  * value: const T         -> result: const {type of member}
-            //  * value: *T              -> result: {type of member}
-            //  * value: *const T        -> result: const {type of member}
-            //  * value: const *T        -> result: {type of member}
-            //  * value: const *const T  -> result: const {type of member}
-            // note: T is never a pointer type
             ast::Expr::Member { expr, name } => {
                 let ctx = self.visit_expr(expr)?;
                 let (keep_const, taipe) = match ctx.taipe.clone() {
@@ -1991,7 +1993,6 @@ impl<'a> Analyzer<'a> {
                     value: context::Value::Tuple(values),
                 })
             }
-            // TODO: implement this
             ast::Expr::ArrayLit { line_info: _, items } => todo!(),
         }
     }
@@ -3334,6 +3335,15 @@ impl<'a> Analyzer<'a> {
         eq_token: Option<&Token>,
         mut rhs: Option<(Context<'a>, LineInfo)>,
     ) -> CompileResult<Context<'a>> {
+        // Fix void assignment problem:
+        if let Some((ref rhs, ref rhs_line_info)) = rhs
+            && rhs.taipe.is_void()
+        {
+            return Err(self.make_err(
+                format!("cannot assign value of type '{}'", rhs.to_string()),
+                rhs_line_info,
+            ));
+        }
         // Fix {integer} problem:
         // need to convert to lhs type if it is a integer or float
         // otherwise int if there no lhs type info
@@ -3569,6 +3579,10 @@ impl<'a> Analyzer<'a> {
                     return_err!();
                 }
                 context::Value::Cast(Box::new(rhs))
+            }
+            (_, context::Type::Void) => {
+                // void type cannot be coerced to any type
+                return_err!();
             }
             (context::Type::Noreturn, _) => {
                 return Err(self.make_err(format!("cannot assign to: '{}'", lhs.to_string()), &lhs_line_info));

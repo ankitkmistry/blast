@@ -455,7 +455,7 @@ impl Parser {
                         Ok(ast::Stmt::Expr(Box::new(expr)))
                     } else {
                         Err(self.expect_err_more(
-                            &["<expression>"],
+                            &["<expression>", "<assignment>"],
                             &[If, Label, While, LBrace, Yield, Continue, Break, Return],
                         ))
                     }
@@ -463,7 +463,7 @@ impl Parser {
             }
         } else {
             Err(self.expect_err_more(
-                &["<expression>"],
+                &["<expression>", "<assignment>"],
                 &[If, Label, While, LBrace, Yield, Continue, Break, Return],
             ))
         }
@@ -669,9 +669,32 @@ impl Parser {
         self.rule_or(Self::parse_assignment, Self::parse_logical)
     }
 
-    // expr ::= logical;
+    // expr ::= '{' block '}' | logical;
     fn parse_expr(&mut self) -> CompileResult<ast::Expr> {
-        self.parse_logical()
+        if let Some(tok) = self.peek() && tok.kind == LBrace {
+            self.parse_block_expr()
+        } else {
+            self.parse_logical()
+        }
+    }
+
+    // block ::= '{' (decl | stmt) '}';
+    fn parse_block_expr(&mut self) -> CompileResult<ast::Expr> {
+        let start = self.expect(LBrace)?;
+        let mut stmts = Vec::new();
+        while let Some(tok) = self.peek()
+            && tok.kind != RBrace
+        {
+            stmts.push(self.rule_or(
+                |parser| Ok(ast::Stmt::Decl(Box::new(parser.parse_decl()?))),
+                Self::parse_stmt,
+            )?);
+        }
+        let end = self.expect(RBrace)?;
+        Ok(ast::Expr::Block {
+            line_info: LineInfo::from_range(&start, &end),
+            stmts,
+        })
     }
 
     // assignment ::= (<!empty>logic_or_list) '=' (<!empty>logic_or_list);

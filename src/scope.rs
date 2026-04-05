@@ -201,7 +201,7 @@ pub struct Scope<'a> {
     /// The name of the scope in the form of a token. (to improve error output)
     pub name: String,
     /// The line info of the scope.
-    line_info: LineInfo,
+    pub line_info: LineInfo,
     /// The state for the context evaluation of this scope
     pub state: State<'a>,
     /// The payload data for this scope.

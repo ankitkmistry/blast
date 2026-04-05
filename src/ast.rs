@@ -3,6 +3,7 @@ use crate::{
     lexer::Token,
 };
 
+#[derive(Clone)]
 pub enum Decl {
     Decl {
         name: Token,
@@ -16,6 +17,7 @@ pub enum Decl {
     },
 }
 
+#[derive(Clone)]
 pub enum Object {
     ExternModule {
         line_info: LineInfo,
@@ -39,6 +41,7 @@ pub enum Object {
     Expr(Expr),
 }
 
+#[derive(Clone)]
 pub enum Field {
     Compound {
         line_info: LineInfo,
@@ -53,6 +56,7 @@ pub enum Field {
     },
 }
 
+#[derive(Clone)]
 pub struct Param {
     pub name: Token,
     pub taipe: Type,
@@ -60,6 +64,7 @@ pub struct Param {
     pub expr: Option<Expr>,
 }
 
+#[derive(Clone)]
 pub enum Stmt {
     If {
         line_info: LineInfo,
@@ -144,6 +149,12 @@ pub struct Arg {
 
 #[derive(Clone)]
 pub enum Expr {
+    // Block
+    Block {
+        line_info: LineInfo,
+        stmts: Vec<Stmt>,
+    },
+    // Assignment
     Assign {
         lhses: Vec<Expr>,
         op: Token,
@@ -359,6 +370,7 @@ impl HasLineInfo for Arg {
 impl HasLineInfo for Expr {
     fn get_line_info(&self) -> LineInfo {
         match self {
+            Expr::Block { line_info, stmts: _ } => *line_info,
             Expr::Assign {
                 lhses: lhs,
                 op: _,

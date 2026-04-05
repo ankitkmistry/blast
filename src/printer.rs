@@ -967,6 +967,10 @@ impl AstPrinter {
 
     fn visit_expr(&mut self, expr: &ast::Expr) -> fmt::Result {
         match expr {
+            ast::Expr::Block { line_info: _, stmts } => {
+                write!(self, "::Block")?;
+                self.print_list("stmts", stmts, Self::print_stmt)?;
+            }
             ast::Expr::Assign {
                 lhses: lhs,
                 op,
