@@ -1206,7 +1206,9 @@ impl<'a> Analyzer<'a> {
             break;
         }
         // For better error output change the line info of the block scope
-        scope.borrow_mut().line_info = stmts[last_stmt_index - 1].get_line_info();
+        if !stmts.is_empty() {
+            scope.borrow_mut().line_info = stmts[last_stmt_index - 1].get_line_info();
+        }
         // cfg: everything after this is unreachable
         self.mut_current_block_data(|data| {
             if data.cf_last != data.cf_end {
@@ -1236,6 +1238,7 @@ impl<'a> Analyzer<'a> {
             }
         }
         // Create the context
+        block_ret_type = block_ret_type.add_const();
         let ctx = Context {
             is_lvalue,
             taipe: block_ret_type.clone(),

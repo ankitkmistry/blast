@@ -654,24 +654,25 @@ impl Parser {
         let Some(peek) = self.peek() else {
             return false;
         };
-        [
+        match peek.kind {
             // Expr begin tokens
-            Not, Plus, Minus, Tilde, Star, Ampersand, Sizeof, Alignof, Typeof, //
+            Not | Plus | Minus | Tilde | Star | Ampersand | Sizeof | Alignof | Typeof 
             // Primary expr begin tokens
-            True, False, StringLit, IntLit, FloatLit, Ident, LParen, LBrace, LBrack, //
-        ]
-        .into_iter()
-        .any(|kind| kind == peek.kind)
+            | True | False | StringLit | IntLit | FloatLit | Ident | LParen | LBrace | LBrack => true,
+            _ => false,
+        }
     }
 
     // expr_or_assign ::= assigment | expr;
     fn parse_expr_or_assign(&mut self) -> CompileResult<ast::Expr> {
-        self.rule_or(Self::parse_assignment, Self::parse_logical)
+        self.rule_or(Self::parse_assignment, Self::parse_expr)
     }
 
     // expr ::= '{' block '}' | logical;
     fn parse_expr(&mut self) -> CompileResult<ast::Expr> {
-        if let Some(tok) = self.peek() && tok.kind == LBrace {
+        if let Some(tok) = self.peek()
+            && tok.kind == LBrace
+        {
             self.parse_block_expr()
         } else {
             self.parse_logical()
@@ -697,7 +698,7 @@ impl Parser {
         })
     }
 
-    // assignment ::= (<!empty>logic_or_list) '=' (<!empty>logic_or_list);
+    // assignment ::= (<!empty>logical_list) '=' (<!empty>logical_list);
     fn parse_assignment(&mut self) -> CompileResult<ast::Expr> {
         let lhs = self.parse_logical_list();
         if lhs.is_empty() {

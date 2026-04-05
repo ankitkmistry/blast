@@ -172,6 +172,7 @@ impl<'a> Type<'a> {
             Type::Function { ret: _, params: _ } => true,
             Type::Module => true,
             Type::Typedef => true,
+            Type::Noreturn => true,
             _ => false,
         }
     }
@@ -190,6 +191,7 @@ impl<'a> Type<'a> {
     pub fn is_void(&self) -> bool {
         match self {
             Type::Void => true,
+            Type::Const(taipe) => taipe.is_void(),
             _ => false,
         }
     }

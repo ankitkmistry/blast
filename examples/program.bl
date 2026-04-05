@@ -161,19 +161,24 @@ j :: 4654654651321354631;
 //    return 0;
 // }
 
+// Testing block expressions
 block_magic :: fun () {
+    // Yes, blocks can be expressions
     x := {
+        x: __int;
         if true {
-            yield 1;
+            x = 1;
+            yield x;
         } else {
             yield 2;
         }
     };
+    { yield x; } = 1;
 }
 
 // print :: fun (str: []__char, newline: __bool = true, stderr: __bool = false) {
 // }
-// 
+//
 // main :: fun () {
 //     print("1", newline: false);
 // }
