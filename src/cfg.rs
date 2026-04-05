@@ -6,10 +6,7 @@ use std::{
 
 use indexmap::IndexSet;
 
-use crate::{
-    common::LineInfo,
-    scope,
-};
+use crate::{common::LineInfo, scope};
 
 #[derive(Clone)]
 pub enum ControlInfo<'a> {
@@ -30,9 +27,10 @@ impl<'a> std::hash::Hash for ControlInfo<'a> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
         match self {
-            ControlInfo::VarDeclared { line_info, scope }
-            | ControlInfo::VarUsed { line_info, scope }
-            | ControlInfo::VarAssigned { line_info, scope } => {
+            ControlInfo::VarDeclared { scope } => {
+                std::ptr::hash(Rc::as_ptr(scope), state);
+            }
+            ControlInfo::VarUsed { line_info, scope } | ControlInfo::VarAssigned { line_info, scope } => {
                 line_info.hash(state);
                 std::ptr::hash(Rc::as_ptr(scope), state);
             }
@@ -103,14 +101,14 @@ impl<'a> ControlGraph<'a> {
         }
     }
 
-    pub fn vertex_count(&self) -> usize {
-        // or using self.incoming both are equivalent in this case
-        self.outgoing.len()
-    }
-    pub fn edge_count(&self) -> usize {
-        // or using self.incoming both are equivalent in this case
-        self.outgoing.iter().map(|(_, m)| m.len()).sum()
-    }
+    // pub fn vertex_count(&self) -> usize {
+    //     // or using self.incoming both are equivalent in this case
+    //     self.outgoing.len()
+    // }
+    // pub fn edge_count(&self) -> usize {
+    //     // or using self.incoming both are equivalent in this case
+    //     self.outgoing.iter().map(|(_, m)| m.len()).sum()
+    // }
 
     pub fn get_vertex(&self, node_id: ControlNodeId) -> Option<&ControlNode<'a>> {
         self.nodes.get_index(node_id.0)
