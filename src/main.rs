@@ -8,15 +8,15 @@ use crate::{
 };
 use clap::{self, ArgAction, command};
 
-mod analyzer;
-mod ast;
-mod cfg;
-mod common;
-mod context;
-mod lexer;
-mod parser;
-mod printer;
-mod scope;
+pub(crate) mod analyzer;
+pub(crate) mod ast;
+pub(crate) mod cfg;
+pub(crate) mod common;
+pub(crate) mod context;
+pub(crate) mod lexer;
+pub(crate) mod parser;
+pub(crate) mod printer;
+pub(crate) mod scope;
 
 fn compile_file(file_path: &str) -> CompileResult<()> {
     let matches = command!()

@@ -68,6 +68,12 @@ pub enum TokenKind {
     Sizeof,
     Typeof,
     Alignof,
+
+    // Directives
+    DirectiveZero,
+    DirectiveUninit,
+    DirectiveGhost,
+    DirectiveDefault,
 }
 
 impl TokenKind {
@@ -133,6 +139,10 @@ impl TokenKind {
             TokenKind::Sizeof => "'sizeof'",
             TokenKind::Typeof => "'typeof'",
             TokenKind::Alignof => "'alignof'",
+            TokenKind::DirectiveZero => "'#zero'",
+            TokenKind::DirectiveUninit => "'#uninit'",
+            TokenKind::DirectiveGhost => "'#ghost'",
+            TokenKind::DirectiveDefault => "'#default'",
         }
     }
 }
@@ -195,6 +205,15 @@ static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("typeof", TokenKind::Typeof);
     keywords.insert("alignof", TokenKind::Alignof);
     keywords
+});
+
+static DIRECTIVES: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
+    let mut directives: HashMap<&str, TokenKind> = HashMap::new();
+    directives.insert("#zero", TokenKind::DirectiveZero);
+    directives.insert("#uninit", TokenKind::DirectiveUninit);
+    directives.insert("#ghost", TokenKind::DirectiveGhost);
+    directives.insert("#default", TokenKind::DirectiveDefault);
+    directives
 });
 
 impl Lexer {
@@ -292,6 +311,10 @@ impl Lexer {
                 '&' => token!(Ampersand),
                 '^' => token!(Caret),
                 '|' => token!(Pipe),
+                '#' => {
+                    self.expect_ident(true)?;
+                    token!(Ident)
+                }
                 '$' => {
                     self.expect_ident(true)?;
                     token!(Label)
@@ -541,18 +564,21 @@ impl Lexer {
     }
 
     fn get_ident_kind(text: &str) -> TokenKind {
-        KEYWORDS.get(text).copied().unwrap_or(TokenKind::Ident)
+        KEYWORDS
+            .get(text)
+            .copied()
+            .unwrap_or_else(|| DIRECTIVES.get(text).copied().unwrap_or(TokenKind::Ident))
     }
 
     fn make_token_with_val(&mut self, kind: TokenKind, value: Option<TokenValue>) -> Token {
         // Construct the token
-        // let text: String = self
-        //     .text
-        //     .chars()
-        //     .skip(self.start)
-        //     .take(self.index - self.start)
-        //     .collect();
-        let text = self.text[self.start..self.index].to_owned();
+        let text: String = self
+            .text
+            .chars()
+            .skip(self.start)
+            .take(self.index - self.start)
+            .collect();
+        // let text = self.text[self.start..self.index].to_owned();
         let result = Token {
             line_info: self.line_info,
             kind: if kind == TokenKind::Ident {

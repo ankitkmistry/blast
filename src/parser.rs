@@ -77,52 +77,126 @@ impl Parser {
         }
     }
 
-    // decl ::= (identifier | '_') ':' type (';' | ((':'|'=') object))
-    //        | (identifier | '_') ':' ((':'|'=') object)
+    // init_directives ::= '#zero'
+    //                   | '#uninit'
+    //                   | '#ghost'
+    //                   | '#default'
+    //                   ;
+    // decl ::= (identifier | '_') ':' type ':' object
+    //        | (identifier | '_') ':' type ('=' (expr | init_directives))? ';'
+    //        | (identifier | '_') ':' ':' object
+    //        | (identifier | '_') ':' '=' expr ';'
     //        | 'using' identifier ('.' identifier)* ('.' '*')
     //        ;
+
     fn parse_decl(&mut self) -> CompileResult<ast::Decl> {
         if let Some(tok) = self.peek() {
             match tok.kind {
                 Ident | Underscore => {
                     let name = self.get_token()?;
                     self.expect(Colon)?;
-                    if let Some(taipe) = self.rule_optional(Self::parse_type) {
-                        if let Some(tok) = self.peek()
-                            && (tok.kind == Equal || tok.kind == Colon)
-                        {
-                            let eq_tok = self.get_token()?;
-                            let object = self.parse_object()?;
-                            Ok(ast::Decl::Decl {
-                                name,
-                                taipe: Some(taipe),
-                                eq_token: Some(eq_tok),
-                                object: Some(object),
-                            })
+                    let taipe = if let Some(tok) = self.peek() {
+                        if tok.kind != Colon && tok.kind != Equal {
+                            Some(self.parse_type()?)
                         } else {
-                            self.expect_term()?;
-                            Ok(ast::Decl::Decl {
-                                name,
-                                taipe: Some(taipe),
-                                eq_token: None,
-                                object: None,
-                            })
+                            None
                         }
                     } else {
-                        if let Some(tok) = self.peek()
-                            && (tok.kind == Equal || tok.kind == Colon)
-                        {
-                            let eq_tok = self.get_token()?;
-                            let object = self.parse_object()?;
-                            Ok(ast::Decl::Decl {
-                                name,
-                                taipe: None,
-                                eq_token: Some(eq_tok),
-                                object: Some(object),
-                            })
+                        return Err(self.expect_err_more(&["<type>"], &[Colon, Equal]));
+                    };
+                    if let Some(tok) = self.peek() {
+                        if tok.kind == Colon {
+                            let eq_token = self.get_token()?;
+                            if let Some(taipe) = taipe {
+                                if let Some(tok) = self.peek() {
+                                    match tok.kind {
+                                        DirectiveZero | DirectiveUninit | DirectiveGhost | DirectiveDefault => {
+                                            let directive = self.get_token()?;
+                                            self.expect_term()?;
+                                            Ok(ast::Decl::DeclWithDirective {
+                                                name, taipe, eq_token, directive
+                                            })
+                                        },
+                                        _ => {
+                                            let object = self.parse_object()?;
+                                            Ok(ast::Decl::Decl {
+                                                name,
+                                                taipe: Some(taipe),
+                                                eq_token: Some(eq_token),
+                                                object: Some(object)
+                                            })
+                                        }
+                                    }
+                                } else {
+                                    Err(self.expect_err_more(&["<expression>"], &[
+                                        Module, Struct, Union, Fun, Typedef,
+                                        DirectiveZero, DirectiveUninit, DirectiveGhost, DirectiveDefault
+                                    ]))
+                                }
+                            } else {
+                                let object = self.parse_object()?;
+                                Ok(ast::Decl::Decl {
+                                    name,
+                                    taipe: None,
+                                    eq_token: Some(eq_token),
+                                    object: Some(object)
+                                })
+                            }
+                        } else if tok.kind == Equal {
+                            let eq_token = self.get_token()?;
+                            if let Some(taipe) = taipe {
+                                if let Some(tok) = self.peek() {
+                                    match tok.kind {
+                                        DirectiveZero | DirectiveUninit | DirectiveGhost | DirectiveDefault => {
+                                            let directive = self.get_token()?;
+                                            self.expect_term()?;
+                                            Ok(ast::Decl::DeclWithDirective {
+                                                name, taipe, eq_token, directive
+                                            })
+                                        },
+                                        _ => {
+                                            let expr = self.parse_expr()?;
+                                            self.expect_term()?;
+                                            Ok(ast::Decl::Decl {
+                                                name,
+                                                taipe: Some(taipe),
+                                                eq_token: Some(eq_token),
+                                                object: Some(ast::Object::Expr(expr))
+                                            })
+                                        }
+                                    }
+                                } else {
+                                    Err(self.expect_err_more(&["<expression>"], &[
+                                        DirectiveZero, DirectiveUninit, DirectiveGhost, DirectiveDefault
+                                    ]))
+                                }
+                            } else {
+                                let expr = self.parse_expr()?;
+                                self.expect_term()?;
+                                Ok(ast::Decl::Decl {
+                                    name,
+                                    taipe: None,
+                                    eq_token: Some(eq_token),
+                                    object: Some(ast::Object::Expr(expr))
+                                })
+                            }
+                        } else if tok.kind == Semicolon {
+                            if let Some(taipe) = taipe {
+                                self.expect_term()?;
+                                Ok(ast::Decl::Decl {
+                                    name,
+                                    taipe: Some(taipe),
+                                    eq_token: None,
+                                    object: None,
+                                })
+                            } else {
+                                Err(self.expect_err(&[Colon, Equal, Semicolon]))
+                            }
                         } else {
-                            Err(self.expect_err_more(&["<type>"], &[Equal, Colon]))
+                            Err(self.expect_err(&[Colon, Equal, Semicolon]))
                         }
+                    } else {
+                        Err(self.expect_err(&[Colon, Equal, Semicolon]))
                     }
                 }
                 Using => {
@@ -160,6 +234,90 @@ impl Parser {
             Err(self.expect_err(&[Ident, Underscore, Using]))
         }
     }
+
+    // decl ::= (identifier | '_') ':' type (';' | ((':'|'=') object))
+    //        | (identifier | '_') ':' ((':'|'=') object)
+    //        | 'using' identifier ('.' identifier)* ('.' '*')
+    //        ;
+    // fn parse_decl_old(&mut self) -> CompileResult<ast::Decl> {
+    //     if let Some(tok) = self.peek() {
+    //         match tok.kind {
+    //             Ident | Underscore => {
+    //                 let name = self.get_token()?;
+    //                 self.expect(Colon)?;
+    //                 if let Some(taipe) = self.rule_optional(Self::parse_type) {
+    //                     if let Some(tok) = self.peek()
+    //                         && (tok.kind == Equal || tok.kind == Colon)
+    //                     {
+    //                         let eq_tok = self.get_token()?;
+    //                         let object = self.parse_object()?;
+    //                         Ok(ast::Decl::Decl {
+    //                             name,
+    //                             taipe: Some(taipe),
+    //                             eq_token: Some(eq_tok),
+    //                             object: Some(object),
+    //                         })
+    //                     } else {
+    //                         self.expect_term()?;
+    //                         Ok(ast::Decl::Decl {
+    //                             name,
+    //                             taipe: Some(taipe),
+    //                             eq_token: None,
+    //                             object: None,
+    //                         })
+    //                     }
+    //                 } else {
+    //                     if let Some(tok) = self.peek()
+    //                         && (tok.kind == Equal || tok.kind == Colon)
+    //                     {
+    //                         let eq_tok = self.get_token()?;
+    //                         let object = self.parse_object()?;
+    //                         Ok(ast::Decl::Decl {
+    //                             name,
+    //                             taipe: None,
+    //                             eq_token: Some(eq_tok),
+    //                             object: Some(object),
+    //                         })
+    //                     } else {
+    //                         Err(self.expect_err_more(&["<type>"], &[Equal, Colon]))
+    //                     }
+    //                 }
+    //             }
+    //             Using => {
+    //                 let start = self.get_token()?;
+    //
+    //                 let mut items = Vec::new();
+    //                 items.push(self.expect(Ident)?);
+    //                 while let Some(tok) = self.peek()
+    //                     && tok.kind == Dot
+    //                 {
+    //                     self.get_token()?;
+    //                     if let Some(tok) = self.peek() {
+    //                         match tok.kind {
+    //                             Ident => items.push(tok),
+    //                             Star => {
+    //                                 items.push(tok);
+    //                                 break;
+    //                             }
+    //                             _ => return Err(self.expect_err(&[Ident, Star])),
+    //                         }
+    //                     } else {
+    //                         return Err(self.expect_err(&[Ident, Star]));
+    //                     }
+    //                 }
+    //
+    //                 let end = self.expect_term()?;
+    //                 Ok(ast::Decl::Using {
+    //                     line_info: LineInfo::from_range(&start, &end),
+    //                     items,
+    //                 })
+    //             }
+    //             _ => Err(self.expect_err(&[Ident, Underscore, Using])),
+    //         }
+    //     } else {
+    //         Err(self.expect_err(&[Ident, Underscore, Using]))
+    //     }
+    // }
 
     // decls ::= decl*;
     fn parse_decls(&mut self) -> CompileResult<Vec<ast::Decl>> {

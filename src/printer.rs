@@ -59,6 +59,7 @@ pub fn print_error(err: CompileError) {
             line_info,
             msg,
         } => print_diagnostic(DiagKind::Note, &file_path, line_info, &msg),
+        CompileError::SemNoteWithoutPath { msg } => print_note(&msg),
         CompileError::SemHelp { msg } => print_help(&msg),
         CompileError::SemCyclic {
             file_path: _,
@@ -143,10 +144,12 @@ fn process_err_msg(msg: &str) -> String {
     result
 }
 
+fn print_note(msg: &str) {
+    cprint!("<rgb(7,172,242),s>note</>: <s>{}</>", process_err_msg(msg));
+}
+
 fn print_help(msg: &str) {
-    // cprint!("<g,s>help</>: ");
-    cprint!("<rgb(0,230,0),s>help</>: ");
-    cprintln!("<s>{}</>", process_err_msg(msg));
+    cprint!("<rgb(0,230,0),s>help</>: <s>{}</>", process_err_msg(msg));
 }
 
 fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &str) {
@@ -742,6 +745,18 @@ impl AstPrinter {
                 if let Some(object) = object {
                     self.print_object("object", object)?;
                 }
+            }
+            ast::Decl::DeclWithDirective {
+                name,
+                taipe,
+                eq_token,
+                directive,
+            } => {
+                write!(self, "::DeclWithDirective")?;
+                self.print_tok("name", name)?;
+                self.print_type("type", taipe)?;
+                self.print_tok("eq_token", eq_token)?;
+                self.print_tok("directive", directive)?;
             }
             ast::Decl::Using { line_info: _, items } => {
                 write!(self, "::Using")?;

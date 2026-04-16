@@ -11,6 +11,12 @@ pub enum Decl {
         eq_token: Option<Token>,
         object: Option<Object>,
     },
+    DeclWithDirective {
+        name: Token,
+        taipe: Type,
+        eq_token: Token,
+        directive: Token,
+    },
     Using {
         line_info: LineInfo,
         items: Vec<Token>,
@@ -231,6 +237,12 @@ impl HasLineInfo for Decl {
                     name.get_line_info()
                 }
             }
+            Decl::DeclWithDirective {
+                name,
+                taipe: _,
+                eq_token: _,
+                directive,
+            } => LineInfo::from_range(name, directive),
             Decl::Using { line_info, items: _ } => *line_info,
         }
     }

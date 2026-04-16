@@ -136,6 +136,9 @@ pub enum CompileError {
         line_info: LineInfo,
         msg: String,
     },
+    SemNoteWithoutPath {
+        msg: String,
+    },
     SemHelp {
         msg: String,
     },

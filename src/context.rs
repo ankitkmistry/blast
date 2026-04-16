@@ -443,6 +443,16 @@ pub struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
+    // Helper functions
+    pub fn add_const(self) -> Self {
+        Context {
+            is_lvalue: self.is_lvalue,
+            taipe: Type::Const(Box::new(self.taipe)),
+            value: self.value,
+        }
+    }
+
+    // Construction functions
     pub fn from_module(module_ref: &Rc<RefCell<scope::Scope<'a>>>) -> Self {
         Self {
             is_lvalue: true,
@@ -463,6 +473,97 @@ impl<'a> Context<'a> {
             is_lvalue: false,
             taipe: Type::Bool,
             value: Value::Imm(Imm::Bool(value)),
+        }
+    }
+    pub fn from_char(c: char) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Char,
+            value: Value::Imm(Imm::Char(c)),
+        }
+    }
+    pub fn from_i8(value: i8) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Int8,
+            value: Value::Imm(Imm::Int8(value)),
+        }
+    }
+    pub fn from_i16(value: i16) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Int16,
+            value: Value::Imm(Imm::Int16(value)),
+        }
+    }
+    pub fn from_i32(value: i32) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Int32,
+            value: Value::Imm(Imm::Int32(value)),
+        }
+    }
+    pub fn from_i64(value: i64) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Int64,
+            value: Value::Imm(Imm::Int64(value)),
+        }
+    }
+    pub fn from_i128(value: i128) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Int128,
+            value: Value::Imm(Imm::Int128(value)),
+        }
+    }
+    pub fn from_u8(value: u8) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Uint8,
+            value: Value::Imm(Imm::Uint8(value)),
+        }
+    }
+    pub fn from_u16(value: u16) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Uint16,
+            value: Value::Imm(Imm::Uint16(value)),
+        }
+    }
+    pub fn from_u32(value: u32) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Uint32,
+            value: Value::Imm(Imm::Uint32(value)),
+        }
+    }
+    pub fn from_u64(value: u64) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Uint64,
+            value: Value::Imm(Imm::Uint64(value)),
+        }
+    }
+    pub fn from_u128(value: u128) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Uint128,
+            value: Value::Imm(Imm::Uint128(value)),
+        }
+    }
+    pub fn from_f32(value: f32) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Float32,
+            value: Value::Imm(Imm::Float32(value)),
+        }
+    }
+    pub fn from_f64(value: f64) -> Self {
+        Self {
+            is_lvalue: false,
+            taipe: Type::Float64,
+            value: Value::Imm(Imm::Float64(value)),
         }
     }
     pub fn from_str(text: &str) -> Self {
@@ -752,11 +853,4 @@ impl<'a> ToString for Context<'a> {
 // }
 //
 // impl<'a> Context<'a> {
-//     pub fn from_char(c: char) -> Self {
-//         Self {
-//             is_lvalue: false,
-//             taipe: Type::Char,
-//             value: Some(Value::Char(c)),
-//         }
-//     }
 // }
