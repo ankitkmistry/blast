@@ -162,29 +162,30 @@ j :: 4654654651321354631;
 // }
 
 // Testing block expressions
-block_magic :: fun () {
-    // Yes, blocks can be expressions
-    x := {
-        x: __int = #ghost;
-        if true {
-            x = 1;
-            yield x;
-        } else {
-            yield x;
-        }
-    };
-    // { yield x; } = 1;
-}
-
-
+// block_magic :: fun () {
+//     // Yes, blocks can be expressions
+//     x := {
+//         x: __int = #ghost;
+//         // x: __int;
+//         if true {
+//             x = 1;
+//             yield x;
+//         } else {
+//             yield x;
+//         }
+//     };
+//     // { yield x; } = 1;
+// }
 
 y : (__bool, __i32) = #zero;
 
 // print :: fun (str: []__char, newline: __bool = true, stderr: __bool = false) {
 // }
-//
-// main :: fun () {
-//     print("1", newline: false);
-// }
+
+// TODO: implement literals
+
+main :: fun () -> __i64 {
+    return 69 | 420;
+}
 
 // This is a comment at the end of a line

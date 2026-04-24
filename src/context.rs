@@ -1,8 +1,11 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, cmp::Ordering, rc::Rc};
 
 use indexmap::IndexMap;
 
-use crate::{common::Int, scope};
+use crate::{
+    common::{Int, LineInfo},
+    scope,
+};
 
 #[derive(Clone)]
 pub struct Param<'a> {
@@ -136,6 +139,13 @@ impl<'a> Type<'a> {
             | Type::Uint64
             | Type::Uint128 => true,
             Type::Const(taipe) => taipe.is_integer(),
+            _ => false,
+        }
+    }
+    pub fn is_signed_integer(&self) -> bool {
+        match self {
+            Type::VarInt | Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 | Type::Int128 => true,
+            Type::Const(taipe) => taipe.is_signed_integer(),
             _ => false,
         }
     }
@@ -341,6 +351,183 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on value"),
         }
     }
+    pub fn add(self, other: Imm<'a>) -> Option<Self> {
+        match (self, other) {
+            (Imm::Int8(a), Imm::Int8(b)) => a.checked_add(b).map(|value| Imm::Int8(value)),
+            (Imm::Int16(a), Imm::Int16(b)) => a.checked_add(b).map(|value| Imm::Int16(value)),
+            (Imm::Int32(a), Imm::Int32(b)) => a.checked_add(b).map(|value| Imm::Int32(value)),
+            (Imm::Int64(a), Imm::Int64(b)) => a.checked_add(b).map(|value| Imm::Int64(value)),
+            (Imm::Int128(a), Imm::Int128(b)) => a.checked_add(b).map(|value| Imm::Int128(value)),
+            (Imm::Uint8(a), Imm::Uint8(b)) => a.checked_add(b).map(|value| Imm::Uint8(value)),
+            (Imm::Uint16(a), Imm::Uint16(b)) => a.checked_add(b).map(|value| Imm::Uint16(value)),
+            (Imm::Uint32(a), Imm::Uint32(b)) => a.checked_add(b).map(|value| Imm::Uint32(value)),
+            (Imm::Uint64(a), Imm::Uint64(b)) => a.checked_add(b).map(|value| Imm::Uint64(value)),
+            (Imm::Uint128(a), Imm::Uint128(b)) => a.checked_add(b).map(|value| Imm::Uint128(value)),
+            (Imm::Float32(a), Imm::Float32(b)) => Some(Imm::Float32(a + b)),
+            (Imm::Float64(a), Imm::Float64(b)) => Some(Imm::Float64(a + b)),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
+    pub fn sub(self, other: Imm<'a>) -> Option<Self> {
+        match (self, other) {
+            (Imm::Int8(a), Imm::Int8(b)) => a.checked_sub(b).map(|value| Imm::Int8(value)),
+            (Imm::Int16(a), Imm::Int16(b)) => a.checked_sub(b).map(|value| Imm::Int16(value)),
+            (Imm::Int32(a), Imm::Int32(b)) => a.checked_sub(b).map(|value| Imm::Int32(value)),
+            (Imm::Int64(a), Imm::Int64(b)) => a.checked_sub(b).map(|value| Imm::Int64(value)),
+            (Imm::Int128(a), Imm::Int128(b)) => a.checked_sub(b).map(|value| Imm::Int128(value)),
+            (Imm::Uint8(a), Imm::Uint8(b)) => a.checked_sub(b).map(|value| Imm::Uint8(value)),
+            (Imm::Uint16(a), Imm::Uint16(b)) => a.checked_sub(b).map(|value| Imm::Uint16(value)),
+            (Imm::Uint32(a), Imm::Uint32(b)) => a.checked_sub(b).map(|value| Imm::Uint32(value)),
+            (Imm::Uint64(a), Imm::Uint64(b)) => a.checked_sub(b).map(|value| Imm::Uint64(value)),
+            (Imm::Uint128(a), Imm::Uint128(b)) => a.checked_sub(b).map(|value| Imm::Uint128(value)),
+            (Imm::Float32(a), Imm::Float32(b)) => Some(Imm::Float32(a - b)),
+            (Imm::Float64(a), Imm::Float64(b)) => Some(Imm::Float64(a - b)),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
+    pub fn mul(self, other: Imm<'a>) -> Option<Self> {
+        match (self, other) {
+            (Imm::Int8(a), Imm::Int8(b)) => a.checked_mul(b).map(|value| Imm::Int8(value)),
+            (Imm::Int16(a), Imm::Int16(b)) => a.checked_mul(b).map(|value| Imm::Int16(value)),
+            (Imm::Int32(a), Imm::Int32(b)) => a.checked_mul(b).map(|value| Imm::Int32(value)),
+            (Imm::Int64(a), Imm::Int64(b)) => a.checked_mul(b).map(|value| Imm::Int64(value)),
+            (Imm::Int128(a), Imm::Int128(b)) => a.checked_mul(b).map(|value| Imm::Int128(value)),
+            (Imm::Uint8(a), Imm::Uint8(b)) => a.checked_mul(b).map(|value| Imm::Uint8(value)),
+            (Imm::Uint16(a), Imm::Uint16(b)) => a.checked_mul(b).map(|value| Imm::Uint16(value)),
+            (Imm::Uint32(a), Imm::Uint32(b)) => a.checked_mul(b).map(|value| Imm::Uint32(value)),
+            (Imm::Uint64(a), Imm::Uint64(b)) => a.checked_mul(b).map(|value| Imm::Uint64(value)),
+            (Imm::Uint128(a), Imm::Uint128(b)) => a.checked_mul(b).map(|value| Imm::Uint128(value)),
+            (Imm::Float32(a), Imm::Float32(b)) => Some(Imm::Float32(a * b)),
+            (Imm::Float64(a), Imm::Float64(b)) => Some(Imm::Float64(a * b)),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
+    pub fn div(self, other: Imm<'a>) -> Option<Self> {
+        match (self, other) {
+            (Imm::Int8(a), Imm::Int8(b)) => a.checked_div(b).map(|value| Imm::Int8(value)),
+            (Imm::Int16(a), Imm::Int16(b)) => a.checked_div(b).map(|value| Imm::Int16(value)),
+            (Imm::Int32(a), Imm::Int32(b)) => a.checked_div(b).map(|value| Imm::Int32(value)),
+            (Imm::Int64(a), Imm::Int64(b)) => a.checked_div(b).map(|value| Imm::Int64(value)),
+            (Imm::Int128(a), Imm::Int128(b)) => a.checked_div(b).map(|value| Imm::Int128(value)),
+            (Imm::Uint8(a), Imm::Uint8(b)) => a.checked_div(b).map(|value| Imm::Uint8(value)),
+            (Imm::Uint16(a), Imm::Uint16(b)) => a.checked_div(b).map(|value| Imm::Uint16(value)),
+            (Imm::Uint32(a), Imm::Uint32(b)) => a.checked_div(b).map(|value| Imm::Uint32(value)),
+            (Imm::Uint64(a), Imm::Uint64(b)) => a.checked_div(b).map(|value| Imm::Uint64(value)),
+            (Imm::Uint128(a), Imm::Uint128(b)) => a.checked_div(b).map(|value| Imm::Uint128(value)),
+            (Imm::Float32(a), Imm::Float32(b)) => Some(Imm::Float32(a / b)),
+            (Imm::Float64(a), Imm::Float64(b)) => Some(Imm::Float64(a / b)),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
+    pub fn modulo(self, other: Imm<'a>) -> Option<Self> {
+        match (self, other) {
+            (Imm::Int8(a), Imm::Int8(b)) => a.checked_rem(b).map(|value| Imm::Int8(value)),
+            (Imm::Int16(a), Imm::Int16(b)) => a.checked_rem(b).map(|value| Imm::Int16(value)),
+            (Imm::Int32(a), Imm::Int32(b)) => a.checked_rem(b).map(|value| Imm::Int32(value)),
+            (Imm::Int64(a), Imm::Int64(b)) => a.checked_rem(b).map(|value| Imm::Int64(value)),
+            (Imm::Int128(a), Imm::Int128(b)) => a.checked_rem(b).map(|value| Imm::Int128(value)),
+            (Imm::Uint8(a), Imm::Uint8(b)) => a.checked_rem(b).map(|value| Imm::Uint8(value)),
+            (Imm::Uint16(a), Imm::Uint16(b)) => a.checked_rem(b).map(|value| Imm::Uint16(value)),
+            (Imm::Uint32(a), Imm::Uint32(b)) => a.checked_rem(b).map(|value| Imm::Uint32(value)),
+            (Imm::Uint64(a), Imm::Uint64(b)) => a.checked_rem(b).map(|value| Imm::Uint64(value)),
+            (Imm::Uint128(a), Imm::Uint128(b)) => a.checked_rem(b).map(|value| Imm::Uint128(value)),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
+    pub fn shl(self, other: Imm<'a>) -> Self {
+        match (self, other) {
+            (Imm::Int8(a), Imm::Uint32(b)) => Imm::Int8(a.wrapping_shl(b)),
+            (Imm::Int16(a), Imm::Uint32(b)) => Imm::Int16(a.wrapping_shl(b)),
+            (Imm::Int32(a), Imm::Uint32(b)) => Imm::Int32(a.wrapping_shl(b)),
+            (Imm::Int64(a), Imm::Uint32(b)) => Imm::Int64(a.wrapping_shl(b)),
+            (Imm::Int128(a), Imm::Uint32(b)) => Imm::Int128(a.wrapping_shl(b)),
+            (Imm::Uint8(a), Imm::Uint32(b)) => Imm::Uint8(a.wrapping_shl(b)),
+            (Imm::Uint16(a), Imm::Uint32(b)) => Imm::Uint16(a.wrapping_shl(b)),
+            (Imm::Uint32(a), Imm::Uint32(b)) => Imm::Uint32(a.wrapping_shl(b)),
+            (Imm::Uint64(a), Imm::Uint32(b)) => Imm::Uint64(a.wrapping_shl(b)),
+            (Imm::Uint128(a), Imm::Uint32(b)) => Imm::Uint128(a.wrapping_shl(b)),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
+    pub fn shr(self, other: Imm<'a>) -> Self {
+        match (self, other) {
+            (Imm::Int8(a), Imm::Uint32(b)) => Imm::Int8(a.wrapping_shr(b)),
+            (Imm::Int16(a), Imm::Uint32(b)) => Imm::Int16(a.wrapping_shr(b)),
+            (Imm::Int32(a), Imm::Uint32(b)) => Imm::Int32(a.wrapping_shr(b)),
+            (Imm::Int64(a), Imm::Uint32(b)) => Imm::Int64(a.wrapping_shr(b)),
+            (Imm::Int128(a), Imm::Uint32(b)) => Imm::Int128(a.wrapping_shr(b)),
+            (Imm::Uint8(a), Imm::Uint32(b)) => Imm::Uint8(a.wrapping_shr(b)),
+            (Imm::Uint16(a), Imm::Uint32(b)) => Imm::Uint16(a.wrapping_shr(b)),
+            (Imm::Uint32(a), Imm::Uint32(b)) => Imm::Uint32(a.wrapping_shr(b)),
+            (Imm::Uint64(a), Imm::Uint32(b)) => Imm::Uint64(a.wrapping_shr(b)),
+            (Imm::Uint128(a), Imm::Uint32(b)) => Imm::Uint128(a.wrapping_shr(b)),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
+    pub fn bit_or(self, other: Imm<'a>) -> Self {
+        match (self, other) {
+            (Imm::Int8(a), Imm::Int8(b)) => Imm::Int8(a | b),
+            (Imm::Int16(a), Imm::Int16(b)) => Imm::Int16(a | b),
+            (Imm::Int32(a), Imm::Int32(b)) => Imm::Int32(a | b),
+            (Imm::Int64(a), Imm::Int64(b)) => Imm::Int64(a | b),
+            (Imm::Int128(a), Imm::Int128(b)) => Imm::Int128(a | b),
+            (Imm::Uint8(a), Imm::Uint8(b)) => Imm::Uint8(a | b),
+            (Imm::Uint16(a), Imm::Uint16(b)) => Imm::Uint16(a | b),
+            (Imm::Uint32(a), Imm::Uint32(b)) => Imm::Uint32(a | b),
+            (Imm::Uint64(a), Imm::Uint64(b)) => Imm::Uint64(a | b),
+            (Imm::Uint128(a), Imm::Uint128(b)) => Imm::Uint128(a | b),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
+    pub fn bit_xor(self, other: Imm<'a>) -> Self {
+        match (self, other) {
+            (Imm::Int8(a), Imm::Int8(b)) => Imm::Int8(a ^ b),
+            (Imm::Int16(a), Imm::Int16(b)) => Imm::Int16(a ^ b),
+            (Imm::Int32(a), Imm::Int32(b)) => Imm::Int32(a ^ b),
+            (Imm::Int64(a), Imm::Int64(b)) => Imm::Int64(a ^ b),
+            (Imm::Int128(a), Imm::Int128(b)) => Imm::Int128(a ^ b),
+            (Imm::Uint8(a), Imm::Uint8(b)) => Imm::Uint8(a ^ b),
+            (Imm::Uint16(a), Imm::Uint16(b)) => Imm::Uint16(a ^ b),
+            (Imm::Uint32(a), Imm::Uint32(b)) => Imm::Uint32(a ^ b),
+            (Imm::Uint64(a), Imm::Uint64(b)) => Imm::Uint64(a ^ b),
+            (Imm::Uint128(a), Imm::Uint128(b)) => Imm::Uint128(a ^ b),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
+    pub fn bit_and(self, other: Imm<'a>) -> Self {
+        match (self, other) {
+            (Imm::Int8(a), Imm::Int8(b)) => Imm::Int8(a & b),
+            (Imm::Int16(a), Imm::Int16(b)) => Imm::Int16(a & b),
+            (Imm::Int32(a), Imm::Int32(b)) => Imm::Int32(a & b),
+            (Imm::Int64(a), Imm::Int64(b)) => Imm::Int64(a & b),
+            (Imm::Int128(a), Imm::Int128(b)) => Imm::Int128(a & b),
+            (Imm::Uint8(a), Imm::Uint8(b)) => Imm::Uint8(a & b),
+            (Imm::Uint16(a), Imm::Uint16(b)) => Imm::Uint16(a & b),
+            (Imm::Uint32(a), Imm::Uint32(b)) => Imm::Uint32(a & b),
+            (Imm::Uint64(a), Imm::Uint64(b)) => Imm::Uint64(a & b),
+            (Imm::Uint128(a), Imm::Uint128(b)) => Imm::Uint128(a & b),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
+    pub fn compare(&self, other: &Imm<'a>) -> Option<Ordering> {
+        match (self, other) {
+            (Imm::Bool(a), Imm::Bool(b)) => a.partial_cmp(b),
+            (Imm::Char(a), Imm::Char(b)) => a.partial_cmp(b),
+            (Imm::Int8(a), Imm::Int8(b)) => a.partial_cmp(b),
+            (Imm::Int16(a), Imm::Int16(b)) => a.partial_cmp(b),
+            (Imm::Int32(a), Imm::Int32(b)) => a.partial_cmp(b),
+            (Imm::Int64(a), Imm::Int64(b)) => a.partial_cmp(b),
+            (Imm::Int128(a), Imm::Int128(b)) => a.partial_cmp(b),
+            (Imm::Uint8(a), Imm::Uint8(b)) => a.partial_cmp(b),
+            (Imm::Uint16(a), Imm::Uint16(b)) => a.partial_cmp(b),
+            (Imm::Uint32(a), Imm::Uint32(b)) => a.partial_cmp(b),
+            (Imm::Uint64(a), Imm::Uint64(b)) => a.partial_cmp(b),
+            (Imm::Uint128(a), Imm::Uint128(b)) => a.partial_cmp(b),
+            (Imm::Float32(a), Imm::Float32(b)) => a.partial_cmp(b),
+            (Imm::Float64(a), Imm::Float64(b)) => a.partial_cmp(b),
+            _ => panic!("invalid operation on imm"),
+        }
+    }
 }
 
 impl<'a> ToString for Imm<'a> {
@@ -376,30 +563,117 @@ pub enum Value<'a> {
     /// Anything that can be referenced by an identifier
     Reference(Rc<RefCell<scope::Scope<'a>>>),
     // Unary Instructions
-    Negate(Box<Context<'a>>),
-    FlipBits(Box<Context<'a>>),
-    Deref(Box<Context<'a>>),
-    AddrOf(Box<Context<'a>>),
-    Not(Box<Context<'a>>),
+    Negate {
+        line_info: LineInfo,
+        ctx: Box<Context<'a>>,
+    },
+    FlipBits {
+        line_info: LineInfo,
+        ctx: Box<Context<'a>>,
+    },
+    Deref {
+        line_info: LineInfo,
+        ctx: Box<Context<'a>>,
+    },
+    AddrOf {
+        line_info: LineInfo,
+        ctx: Box<Context<'a>>,
+    },
+    Not {
+        line_info: LineInfo,
+        ctx: Box<Context<'a>>,
+    },
     // Binary Instructions
-    Add(Box<Context<'a>>, Box<Context<'a>>),
-    Sub(Box<Context<'a>>, Box<Context<'a>>),
-    Mul(Box<Context<'a>>, Box<Context<'a>>),
-    Div(Box<Context<'a>>, Box<Context<'a>>),
-    Rem(Box<Context<'a>>, Box<Context<'a>>),
-    Shl(Box<Context<'a>>, Box<Context<'a>>),
-    Shr(Box<Context<'a>>, Box<Context<'a>>),
-    BitAnd(Box<Context<'a>>, Box<Context<'a>>),
-    BitXor(Box<Context<'a>>, Box<Context<'a>>),
-    BitOr(Box<Context<'a>>, Box<Context<'a>>),
-    Lt(Box<Context<'a>>, Box<Context<'a>>),
-    Le(Box<Context<'a>>, Box<Context<'a>>),
-    Eq(Box<Context<'a>>, Box<Context<'a>>),
-    Ne(Box<Context<'a>>, Box<Context<'a>>),
-    Ge(Box<Context<'a>>, Box<Context<'a>>),
-    Gt(Box<Context<'a>>, Box<Context<'a>>),
-    LogicAnd(Box<Context<'a>>, Box<Context<'a>>),
-    LogicOr(Box<Context<'a>>, Box<Context<'a>>),
+    Add {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Sub {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Mul {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Div {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Rem {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Shl {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Shr {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    BitAnd {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    BitXor {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    BitOr {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Lt {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Le {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Eq {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Ne {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Ge {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    Gt {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    LogicAnd {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
+    LogicOr {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        rhs: Box<Context<'a>>,
+    },
     // Postfix op instructions
     Index(Box<Context<'a>>, Box<Context<'a>>),
     Call(Rc<RefCell<scope::Scope<'a>>>, IndexMap<String, Context<'a>>),
@@ -410,8 +684,8 @@ pub enum Value<'a> {
     While(Box<Context<'a>>, Box<Context<'a>>),
     Block(Vec<Context<'a>>),
     Ret(Box<Context<'a>>),
-    Eval(Box<Context<'a>>),
     RetVoid,
+    Eval(Box<Context<'a>>),
     // Cast instructions
     // from: fX         to: fY
     // from: iX         to: iY
@@ -605,252 +879,3 @@ impl<'a> ToString for Context<'a> {
         self.taipe.to_string()
     }
 }
-
-// impl<'a> Value<'a> {
-//     pub fn add(self, other: Value<'a>) -> Option<Self> {
-//         match (self, other) {
-//             (Value::Int8(a), Value::Int8(b)) => a.checked_add(b).map(|value| Value::Int8(value)),
-//             (Value::Int16(a), Value::Int16(b)) => a.checked_add(b).map(|value| Value::Int16(value)),
-//             (Value::Int32(a), Value::Int32(b)) => a.checked_add(b).map(|value| Value::Int32(value)),
-//             (Value::Int64(a), Value::Int64(b)) => a.checked_add(b).map(|value| Value::Int64(value)),
-//             (Value::Int128(a), Value::Int128(b)) => {
-//                 a.checked_add(b).map(|value| Value::Int128(value))
-//             }
-//             (Value::Uint8(a), Value::Uint8(b)) => a.checked_add(b).map(|value| Value::Uint8(value)),
-//             (Value::Uint16(a), Value::Uint16(b)) => {
-//                 a.checked_add(b).map(|value| Value::Uint16(value))
-//             }
-//             (Value::Uint32(a), Value::Uint32(b)) => {
-//                 a.checked_add(b).map(|value| Value::Uint32(value))
-//             }
-//             (Value::Uint64(a), Value::Uint64(b)) => {
-//                 a.checked_add(b).map(|value| Value::Uint64(value))
-//             }
-//             (Value::Uint128(a), Value::Uint128(b)) => {
-//                 a.checked_add(b).map(|value| Value::Uint128(value))
-//             }
-//             (Value::Float32(a), Value::Float32(b)) => Some(Value::Float32(a + b)),
-//             (Value::Float64(a), Value::Float64(b)) => Some(Value::Float64(a + b)),
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//     pub fn sub(self, other: Value<'a>) -> Option<Self> {
-//         match (self, other) {
-//             (Value::Int8(a), Value::Int8(b)) => a.checked_sub(b).map(|value| Value::Int8(value)),
-//             (Value::Int16(a), Value::Int16(b)) => a.checked_sub(b).map(|value| Value::Int16(value)),
-//             (Value::Int32(a), Value::Int32(b)) => a.checked_sub(b).map(|value| Value::Int32(value)),
-//             (Value::Int64(a), Value::Int64(b)) => a.checked_sub(b).map(|value| Value::Int64(value)),
-//             (Value::Int128(a), Value::Int128(b)) => {
-//                 a.checked_sub(b).map(|value| Value::Int128(value))
-//             }
-//             (Value::Uint8(a), Value::Uint8(b)) => a.checked_sub(b).map(|value| Value::Uint8(value)),
-//             (Value::Uint16(a), Value::Uint16(b)) => {
-//                 a.checked_sub(b).map(|value| Value::Uint16(value))
-//             }
-//             (Value::Uint32(a), Value::Uint32(b)) => {
-//                 a.checked_sub(b).map(|value| Value::Uint32(value))
-//             }
-//             (Value::Uint64(a), Value::Uint64(b)) => {
-//                 a.checked_sub(b).map(|value| Value::Uint64(value))
-//             }
-//             (Value::Uint128(a), Value::Uint128(b)) => {
-//                 a.checked_sub(b).map(|value| Value::Uint128(value))
-//             }
-//             (Value::Float32(a), Value::Float32(b)) => Some(Value::Float32(a - b)),
-//             (Value::Float64(a), Value::Float64(b)) => Some(Value::Float64(a - b)),
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//     pub fn mul(self, other: Value<'a>) -> Option<Self> {
-//         match (self, other) {
-//             (Value::Int8(a), Value::Int8(b)) => a.checked_mul(b).map(|value| Value::Int8(value)),
-//             (Value::Int16(a), Value::Int16(b)) => a.checked_mul(b).map(|value| Value::Int16(value)),
-//             (Value::Int32(a), Value::Int32(b)) => a.checked_mul(b).map(|value| Value::Int32(value)),
-//             (Value::Int64(a), Value::Int64(b)) => a.checked_mul(b).map(|value| Value::Int64(value)),
-//             (Value::Int128(a), Value::Int128(b)) => {
-//                 a.checked_mul(b).map(|value| Value::Int128(value))
-//             }
-//             (Value::Uint8(a), Value::Uint8(b)) => a.checked_mul(b).map(|value| Value::Uint8(value)),
-//             (Value::Uint16(a), Value::Uint16(b)) => {
-//                 a.checked_mul(b).map(|value| Value::Uint16(value))
-//             }
-//             (Value::Uint32(a), Value::Uint32(b)) => {
-//                 a.checked_mul(b).map(|value| Value::Uint32(value))
-//             }
-//             (Value::Uint64(a), Value::Uint64(b)) => {
-//                 a.checked_mul(b).map(|value| Value::Uint64(value))
-//             }
-//             (Value::Uint128(a), Value::Uint128(b)) => {
-//                 a.checked_mul(b).map(|value| Value::Uint128(value))
-//             }
-//             (Value::Float32(a), Value::Float32(b)) => Some(Value::Float32(a * b)),
-//             (Value::Float64(a), Value::Float64(b)) => Some(Value::Float64(a * b)),
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//     pub fn div(self, other: Value<'a>) -> Option<Self> {
-//         match (self, other) {
-//             (Value::Int8(a), Value::Int8(b)) => a.checked_div(b).map(|value| Value::Int8(value)),
-//             (Value::Int16(a), Value::Int16(b)) => a.checked_div(b).map(|value| Value::Int16(value)),
-//             (Value::Int32(a), Value::Int32(b)) => a.checked_div(b).map(|value| Value::Int32(value)),
-//             (Value::Int64(a), Value::Int64(b)) => a.checked_div(b).map(|value| Value::Int64(value)),
-//             (Value::Int128(a), Value::Int128(b)) => {
-//                 a.checked_div(b).map(|value| Value::Int128(value))
-//             }
-//             (Value::Uint8(a), Value::Uint8(b)) => a.checked_div(b).map(|value| Value::Uint8(value)),
-//             (Value::Uint16(a), Value::Uint16(b)) => {
-//                 a.checked_div(b).map(|value| Value::Uint16(value))
-//             }
-//             (Value::Uint32(a), Value::Uint32(b)) => {
-//                 a.checked_div(b).map(|value| Value::Uint32(value))
-//             }
-//             (Value::Uint64(a), Value::Uint64(b)) => {
-//                 a.checked_div(b).map(|value| Value::Uint64(value))
-//             }
-//             (Value::Uint128(a), Value::Uint128(b)) => {
-//                 a.checked_div(b).map(|value| Value::Uint128(value))
-//             }
-//             (Value::Float32(a), Value::Float32(b)) => Some(Value::Float32(a / b)),
-//             (Value::Float64(a), Value::Float64(b)) => Some(Value::Float64(a / b)),
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//     pub fn modulo(self, other: Value<'a>) -> Option<Self> {
-//         match (self, other) {
-//             (Value::Int8(a), Value::Int8(b)) => a.checked_rem(b).map(|value| Value::Int8(value)),
-//             (Value::Int16(a), Value::Int16(b)) => a.checked_rem(b).map(|value| Value::Int16(value)),
-//             (Value::Int32(a), Value::Int32(b)) => a.checked_rem(b).map(|value| Value::Int32(value)),
-//             (Value::Int64(a), Value::Int64(b)) => a.checked_rem(b).map(|value| Value::Int64(value)),
-//             (Value::Int128(a), Value::Int128(b)) => {
-//                 a.checked_rem(b).map(|value| Value::Int128(value))
-//             }
-//             (Value::Uint8(a), Value::Uint8(b)) => a.checked_rem(b).map(|value| Value::Uint8(value)),
-//             (Value::Uint16(a), Value::Uint16(b)) => {
-//                 a.checked_rem(b).map(|value| Value::Uint16(value))
-//             }
-//             (Value::Uint32(a), Value::Uint32(b)) => {
-//                 a.checked_rem(b).map(|value| Value::Uint32(value))
-//             }
-//             (Value::Uint64(a), Value::Uint64(b)) => {
-//                 a.checked_rem(b).map(|value| Value::Uint64(value))
-//             }
-//             (Value::Uint128(a), Value::Uint128(b)) => {
-//                 a.checked_rem(b).map(|value| Value::Uint128(value))
-//             }
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//     pub fn shl(self, other: Value<'a>) -> Self {
-//         match (self, other) {
-//             (Value::Int8(a), Value::Uint32(b)) => Value::Int8(a.wrapping_shl(b)),
-//             (Value::Int16(a), Value::Uint32(b)) => Value::Int16(a.wrapping_shl(b)),
-//             (Value::Int32(a), Value::Uint32(b)) => Value::Int32(a.wrapping_shl(b)),
-//             (Value::Int64(a), Value::Uint32(b)) => Value::Int64(a.wrapping_shl(b)),
-//             (Value::Int128(a), Value::Uint32(b)) => Value::Int128(a.wrapping_shl(b)),
-//             (Value::Uint8(a), Value::Uint32(b)) => Value::Uint8(a.wrapping_shl(b)),
-//             (Value::Uint16(a), Value::Uint32(b)) => Value::Uint16(a.wrapping_shl(b)),
-//             (Value::Uint32(a), Value::Uint32(b)) => Value::Uint32(a.wrapping_shl(b)),
-//             (Value::Uint64(a), Value::Uint32(b)) => Value::Uint64(a.wrapping_shl(b)),
-//             (Value::Uint128(a), Value::Uint32(b)) => Value::Uint128(a.wrapping_shl(b)),
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//     pub fn shr(self, other: Value<'a>) -> Self {
-//         match (self, other) {
-//             (Value::Int8(a), Value::Uint32(b)) => Value::Int8(a.wrapping_shr(b)),
-//             (Value::Int16(a), Value::Uint32(b)) => Value::Int16(a.wrapping_shr(b)),
-//             (Value::Int32(a), Value::Uint32(b)) => Value::Int32(a.wrapping_shr(b)),
-//             (Value::Int64(a), Value::Uint32(b)) => Value::Int64(a.wrapping_shr(b)),
-//             (Value::Int128(a), Value::Uint32(b)) => Value::Int128(a.wrapping_shr(b)),
-//             (Value::Uint8(a), Value::Uint32(b)) => Value::Uint8(a.wrapping_shr(b)),
-//             (Value::Uint16(a), Value::Uint32(b)) => Value::Uint16(a.wrapping_shr(b)),
-//             (Value::Uint32(a), Value::Uint32(b)) => Value::Uint32(a.wrapping_shr(b)),
-//             (Value::Uint64(a), Value::Uint32(b)) => Value::Uint64(a.wrapping_shr(b)),
-//             (Value::Uint128(a), Value::Uint32(b)) => Value::Uint128(a.wrapping_shr(b)),
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//     pub fn bit_or(self, other: Value<'a>) -> Self {
-//         match (self, other) {
-//             (Value::Int8(a), Value::Int8(b)) => Value::Int8(a | b),
-//             (Value::Int16(a), Value::Int16(b)) => Value::Int16(a | b),
-//             (Value::Int32(a), Value::Int32(b)) => Value::Int32(a | b),
-//             (Value::Int64(a), Value::Int64(b)) => Value::Int64(a | b),
-//             (Value::Int128(a), Value::Int128(b)) => Value::Int128(a | b),
-//             (Value::Uint8(a), Value::Uint8(b)) => Value::Uint8(a | b),
-//             (Value::Uint16(a), Value::Uint16(b)) => Value::Uint16(a | b),
-//             (Value::Uint32(a), Value::Uint32(b)) => Value::Uint32(a | b),
-//             (Value::Uint64(a), Value::Uint64(b)) => Value::Uint64(a | b),
-//             (Value::Uint128(a), Value::Uint128(b)) => Value::Uint128(a | b),
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//     pub fn bit_xor(self, other: Value<'a>) -> Self {
-//         match (self, other) {
-//             (Value::Int8(a), Value::Int8(b)) => Value::Int8(a ^ b),
-//             (Value::Int16(a), Value::Int16(b)) => Value::Int16(a ^ b),
-//             (Value::Int32(a), Value::Int32(b)) => Value::Int32(a ^ b),
-//             (Value::Int64(a), Value::Int64(b)) => Value::Int64(a ^ b),
-//             (Value::Int128(a), Value::Int128(b)) => Value::Int128(a ^ b),
-//             (Value::Uint8(a), Value::Uint8(b)) => Value::Uint8(a ^ b),
-//             (Value::Uint16(a), Value::Uint16(b)) => Value::Uint16(a ^ b),
-//             (Value::Uint32(a), Value::Uint32(b)) => Value::Uint32(a ^ b),
-//             (Value::Uint64(a), Value::Uint64(b)) => Value::Uint64(a ^ b),
-//             (Value::Uint128(a), Value::Uint128(b)) => Value::Uint128(a ^ b),
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//     pub fn bit_and(self, other: Value<'a>) -> Self {
-//         match (self, other) {
-//             (Value::Int8(a), Value::Int8(b)) => Value::Int8(a & b),
-//             (Value::Int16(a), Value::Int16(b)) => Value::Int16(a & b),
-//             (Value::Int32(a), Value::Int32(b)) => Value::Int32(a & b),
-//             (Value::Int64(a), Value::Int64(b)) => Value::Int64(a & b),
-//             (Value::Int128(a), Value::Int128(b)) => Value::Int128(a & b),
-//             (Value::Uint8(a), Value::Uint8(b)) => Value::Uint8(a & b),
-//             (Value::Uint16(a), Value::Uint16(b)) => Value::Uint16(a & b),
-//             (Value::Uint32(a), Value::Uint32(b)) => Value::Uint32(a & b),
-//             (Value::Uint64(a), Value::Uint64(b)) => Value::Uint64(a & b),
-//             (Value::Uint128(a), Value::Uint128(b)) => Value::Uint128(a & b),
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//     pub fn compare(&self, other: &Value<'a>) -> Option<Ordering> {
-//         match (self, other) {
-//             (Value::Bool(a), Value::Bool(b)) => a.partial_cmp(b),
-//             (Value::Char(a), Value::Char(b)) => a.partial_cmp(b),
-//             (Value::Int8(a), Value::Int8(b)) => a.partial_cmp(b),
-//             (Value::Int16(a), Value::Int16(b)) => a.partial_cmp(b),
-//             (Value::Int32(a), Value::Int32(b)) => a.partial_cmp(b),
-//             (Value::Int64(a), Value::Int64(b)) => a.partial_cmp(b),
-//             (Value::Int128(a), Value::Int128(b)) => a.partial_cmp(b),
-//             (Value::Uint8(a), Value::Uint8(b)) => a.partial_cmp(b),
-//             (Value::Uint16(a), Value::Uint16(b)) => a.partial_cmp(b),
-//             (Value::Uint32(a), Value::Uint32(b)) => a.partial_cmp(b),
-//             (Value::Uint64(a), Value::Uint64(b)) => a.partial_cmp(b),
-//             (Value::Uint128(a), Value::Uint128(b)) => a.partial_cmp(b),
-//             (Value::Float32(a), Value::Float32(b)) => a.partial_cmp(b),
-//             (Value::Float64(a), Value::Float64(b)) => a.partial_cmp(b),
-//             _ => panic!("invalid operation on value"),
-//         }
-//     }
-//
-//     pub fn to_usize(&self) -> Option<usize> {
-//         match self {
-//             Value::Int8(val) => usize::try_from(*val).ok(),
-//             Value::Int16(val) => usize::try_from(*val).ok(),
-//             Value::Int32(val) => usize::try_from(*val).ok(),
-//             Value::Int64(val) => usize::try_from(*val).ok(),
-//             Value::Int128(val) => usize::try_from(*val).ok(),
-//             Value::Uint8(val) => usize::try_from(*val).ok(),
-//             Value::Uint16(val) => usize::try_from(*val).ok(),
-//             Value::Uint32(val) => usize::try_from(*val).ok(),
-//             Value::Uint64(val) => usize::try_from(*val).ok(),
-//             Value::Uint128(val) => usize::try_from(*val).ok(),
-//             _ => None,
-//         }
-//     }
-// }
-//
-// impl<'a> Context<'a> {
-// }

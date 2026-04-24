@@ -17,6 +17,7 @@ pub(crate) mod lexer;
 pub(crate) mod parser;
 pub(crate) mod printer;
 pub(crate) mod scope;
+pub(crate) mod codegen;
 
 fn compile_file(file_path: &str) -> CompileResult<()> {
     let matches = command!()
@@ -77,11 +78,14 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
     if !sem_result.warnings.is_empty() {
         printer::print_error(common::CompileError::Errors(sem_result.warnings));
     }
-    printer::print_scopes(&sem_result.roots);
+    let roots = sem_result.roots;
+    printer::print_scopes(&roots);
     if matches.get_flag("show_ctx") {
         println!();
-        printer::print_ir_of_all_scopes(&sem_result.roots);
+        printer::print_ir_of_all_scopes(&roots);
     }
+    // codegen::generate_code("main", roots);
+
     Ok(())
 }
 

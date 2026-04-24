@@ -1012,18 +1012,18 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn traverse_cfg(&self, cfg: &ControlGraph<'a>, node_id: ControlNodeId) -> CompileResult<()> {
+    fn traverse_cfg(&mut self, cfg: &ControlGraph<'a>, node_id: ControlNodeId) -> CompileResult<()> {
         // debug!("in: {}", self.cur_scope.borrow().sym_path.to_string());
         let result = self.traverse_cfg_impl(cfg, node_id, &mut HashSet::new(), HashMap::new(), 0);
         // debug!("");
         result
     }
     fn traverse_cfg_impl(
-        &self,
+        &mut self,
         cfg: &ControlGraph<'a>,
         node_id: ControlNodeId,
         visited: &mut HashSet<ControlNodeId>,
-        mut declared_vars: HashMap<SymbolPath, /* is_init: */ bool>,
+        mut declared_vars: HashMap<SymbolPath, ControlInfo<'a>>,
         mut depth: usize,
     ) -> CompileResult<()> {
         // Mark as visited
@@ -1049,7 +1049,7 @@ impl<'a> Analyzer<'a> {
                     //     line_info.line_start,
                     //     line_info.col_start
                     // );
-                    declared_vars.insert(scope.borrow().sym_path.clone(), false);
+                    declared_vars.insert(scope.borrow().sym_path.clone(), info.clone());
                 }
                 ControlInfo::VarUsed { line_info, scope } => {
                     // debug!(
@@ -1058,12 +1058,15 @@ impl<'a> Analyzer<'a> {
                     //     line_info.line_start,
                     //     line_info.col_start
                     // );
-                    if let Some(is_init) = declared_vars.get(&scope.borrow().sym_path) {
-                        if !is_init {
-                            let msg = format!("'{}' may be uninitialized", scope.borrow().name);
-                            err = err
-                                .chain(self.make_err(msg, line_info))
-                                .chain(self.make_note("declared here", &scope.borrow()));
+                    if let Some(prev_cf_info) = declared_vars.get(&scope.borrow().sym_path) {
+                        match prev_cf_info {
+                            ControlInfo::VarDeclared { scope: _ } => {
+                                let msg = format!("'{}' may be uninitialized", scope.borrow().name);
+                                err = err
+                                    .chain(self.make_err(msg, line_info))
+                                    .chain(self.make_note("declared here", &scope.borrow()));
+                            },
+                            _ => {}
                         }
                     } else {
                         // probably the declaration is outside of this scope
@@ -1084,8 +1087,16 @@ impl<'a> Analyzer<'a> {
                     //     line_info.line_start,
                     //     line_info.col_start
                     // );
-                    if let Some(is_init) = declared_vars.get_mut(&scope.borrow().sym_path) {
-                        *is_init = true;
+                    if let Some(prev_cf_info) = declared_vars.get_mut(&scope.borrow().sym_path) {
+                        match prev_cf_info {
+                            // TODO: implement this
+                            // this is not complete as we have to check whether a variable
+                            // assignment is read in all possible consequent control flows
+                            // ControlInfo::VarAssigned { line_info, scope: _ } => {
+                            //     self.warnings.push(self.make_warning("value of assignment is never read", line_info));
+                            // }
+                            _ => *prev_cf_info = info.clone(),
+                        }
                     } else {
                         // probably the declaration is outside of this scope
                         self.mut_current_block_data(|data| {

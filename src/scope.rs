@@ -7,9 +7,7 @@ use crate::{
     context::{self, Context},
 };
 use std::{
-    cell::RefCell,
-    collections::HashMap,
-    rc::{Rc, Weak}, sync::atomic::AtomicU64,
+    cell::RefCell, collections::HashMap, fmt, rc::{Rc, Weak}, sync::atomic::AtomicU64
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -29,9 +27,9 @@ impl From<&str> for SymbolPath {
     }
 }
 
-impl ToString for SymbolPath {
-    fn to_string(&self) -> String {
-        self.elms.join(".")
+impl fmt::Display for SymbolPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.elms.join("."))
     }
 }
 

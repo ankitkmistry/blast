@@ -1,7 +1,4 @@
-use std::{
-    collections::HashSet,
-    rc::Rc,
-};
+use std::{collections::HashSet, rc::Rc};
 
 use indexmap::IndexMap;
 use num_bigint::ToBigInt;
@@ -17,6 +14,456 @@ use crate::{
 };
 
 impl<'a> Analyzer<'a> {
+    pub(crate) fn compeval_trivial(
+        &self,
+        ctx: Context<'a>,
+        line_info: &impl HasLineInfo,
+    ) -> CompileResult<Context<'a>> {
+        macro_rules! return_err {
+            (compeval_not_trivial: $line_info:expr) => {
+                return Err(self.make_err(
+                    "could not evaluate expression trivially at compile time",
+                    &$line_info,
+                ));
+            };
+            (integer_overflow: $line_info:expr) => {
+                return Err(self.make_err("detected integer overflow", &$line_info));
+            };
+        }
+        // Only returns
+        // - Value::Imm
+        // - Value::Array
+        // - Value::Tuple
+        // - noreturn
+        // - void
+        match ctx.value {
+            context::Value::Imm(_) => Ok(ctx),
+            context::Value::Array(values) => {
+                let context::Type::Array { count, taipe } = ctx.taipe else {
+                    unreachable!("probably some analyzer bug");
+                };
+                let taipe = *taipe;
+                let mut new_values = Vec::new();
+                for value in values {
+                    let ctx = Context {
+                        is_lvalue: false,
+                        taipe: taipe.clone(),
+                        value,
+                    };
+                    let new_value = self.compeval_trivial(ctx, line_info)?.value;
+                    new_values.push(new_value);
+                }
+                Ok(Context {
+                    is_lvalue: ctx.is_lvalue,
+                    taipe: context::Type::Array {
+                        count,
+                        taipe: Box::new(taipe),
+                    },
+                    value: context::Value::Array(new_values),
+                })
+            }
+            context::Value::Tuple(values) => {
+                let context::Type::Tuple(types) = ctx.taipe else {
+                    unreachable!("probably some analyzer bug");
+                };
+                let mut new_values = Vec::new();
+                for (i, value) in values.into_iter().enumerate() {
+                    let ctx = Context {
+                        is_lvalue: false,
+                        taipe: types[i].clone(),
+                        value,
+                    };
+                    let new_value = self.compeval_trivial(ctx, line_info)?.value;
+                    new_values.push(new_value);
+                }
+                Ok(Context {
+                    is_lvalue: ctx.is_lvalue,
+                    taipe: context::Type::Tuple(types),
+                    value: context::Value::Array(new_values),
+                })
+            }
+            context::Value::Reference(scope) => {
+                // TODO: Change the line_info situation here for accurate error output
+                let scope = scope.borrow();
+                match &scope.state {
+                    scope::State::NotVisited(_) | scope::State::VisitInProg => {
+                        unreachable!("probably some analyzer bug")
+                    }
+                    scope::State::Visited(ctx) => {
+                        if let context::Value::Imm(_) = ctx.value {
+                            Ok(ctx.clone())
+                        } else {
+                            Err(self.make_err("could not evaluate expression trivially at compile time", line_info))
+                        }
+                    }
+                }
+            }
+            context::Value::Negate { line_info, ctx } => {
+                let ctx = self.compeval_trivial(*ctx, &line_info)?;
+                assert!(ctx.taipe.is_signed_integer() || ctx.taipe.is_float());
+                if let context::Value::Imm(imm) = ctx.value {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: ctx.taipe.remove_const(),
+                        value: context::Value::Imm(imm.negate()),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::FlipBits { line_info, ctx } => {
+                let ctx = self.compeval_trivial(*ctx, &line_info)?;
+                assert!(ctx.taipe.is_integer());
+                if let context::Value::Imm(imm) = ctx.value {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: ctx.taipe.remove_const(),
+                        value: context::Value::Imm(imm.flip_bits()),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::Deref { line_info, ctx } => todo!(),
+            context::Value::AddrOf { line_info, ctx } => todo!(),
+            context::Value::Not { line_info, ctx } => {
+                let ctx = self.compeval_trivial(*ctx, &line_info)?;
+                assert!(ctx.taipe.is_bool());
+                if let context::Value::Imm(context::Imm::Bool(b)) = ctx.value {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: ctx.taipe.remove_const(),
+                        value: context::Value::Imm(context::Imm::Bool(!b)),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::Add { line_info, lhs, rhs } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
+                let res_type = lhs.taipe.remove_const();
+                if let context::Value::Imm(lhs) = lhs.value
+                    && let context::Value::Imm(rhs) = rhs.value
+                {
+                    let Some(value) = lhs.add(rhs) else {
+                        return_err!(integer_overflow: line_info);
+                    };
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: res_type,
+                        value: context::Value::Imm(value),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::Sub { line_info, lhs, rhs } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
+                let res_type = lhs.taipe.remove_const();
+                if let context::Value::Imm(lhs) = lhs.value
+                    && let context::Value::Imm(rhs) = rhs.value
+                {
+                    let Some(value) = lhs.sub(rhs) else {
+                        return_err!(integer_overflow: line_info);
+                    };
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: res_type,
+                        value: context::Value::Imm(value),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::Mul { line_info, lhs, rhs } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
+                let res_type = lhs.taipe.remove_const();
+                if let context::Value::Imm(lhs) = lhs.value
+                    && let context::Value::Imm(rhs) = rhs.value
+                {
+                    let Some(value) = lhs.mul(rhs) else {
+                        return_err!(integer_overflow: line_info);
+                    };
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: res_type,
+                        value: context::Value::Imm(value),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::Div { line_info, lhs, rhs } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
+                let res_type = lhs.taipe.remove_const();
+                if let context::Value::Imm(lhs) = lhs.value
+                    && let context::Value::Imm(rhs) = rhs.value
+                {
+                    let Some(value) = lhs.div(rhs) else {
+                        return_err!(integer_overflow: line_info);
+                    };
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: res_type,
+                        value: context::Value::Imm(value),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::Rem { line_info, lhs, rhs } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
+                let res_type = lhs.taipe.remove_const();
+                if let context::Value::Imm(lhs) = lhs.value
+                    && let context::Value::Imm(rhs) = rhs.value
+                {
+                    let Some(value) = lhs.modulo(rhs) else {
+                        return_err!(integer_overflow: line_info);
+                    };
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: res_type,
+                        value: context::Value::Imm(value),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::Shl { line_info, lhs, rhs } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                assert!(lhs.taipe.is_integer() && rhs.taipe.is_unsigned_integer());
+                // TODO: to be changed
+                assert!(rhs.taipe == context::Type::Uint32);
+                let res_type = lhs.taipe.remove_const();
+                if let context::Value::Imm(lhs) = lhs.value
+                    && let context::Value::Imm(rhs) = rhs.value
+                {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: res_type,
+                        value: context::Value::Imm(lhs.shl(rhs)),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::Shr { line_info, lhs, rhs } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                assert!(lhs.taipe.is_integer() && rhs.taipe.is_unsigned_integer());
+                // TODO: to be changed
+                assert!(rhs.taipe == context::Type::Uint32);
+                let res_type = lhs.taipe.remove_const();
+                if let context::Value::Imm(lhs) = lhs.value
+                    && let context::Value::Imm(rhs) = rhs.value
+                {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: res_type,
+                        value: context::Value::Imm(lhs.shr(rhs)),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::BitAnd { line_info, lhs, rhs } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
+                assert!(lhs.taipe.is_integer() && rhs.taipe.is_integer());
+                let res_type = lhs.taipe.remove_const();
+                if let context::Value::Imm(lhs) = lhs.value
+                    && let context::Value::Imm(rhs) = rhs.value
+                {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: res_type,
+                        value: context::Value::Imm(lhs.bit_and(rhs)),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::BitXor { line_info, lhs, rhs } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
+                assert!(lhs.taipe.is_integer() && rhs.taipe.is_integer());
+                let res_type = lhs.taipe.remove_const();
+                if let context::Value::Imm(lhs) = lhs.value
+                    && let context::Value::Imm(rhs) = rhs.value
+                {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: res_type,
+                        value: context::Value::Imm(lhs.bit_xor(rhs)),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::BitOr { line_info, lhs, rhs } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
+                assert!(lhs.taipe.is_integer() && rhs.taipe.is_integer());
+                let res_type = lhs.taipe.remove_const();
+                if let context::Value::Imm(lhs) = lhs.value
+                    && let context::Value::Imm(rhs) = rhs.value
+                {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: res_type,
+                        value: context::Value::Imm(lhs.bit_or(rhs)),
+                    })
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::Lt { line_info, lhs, rhs } => todo!(),
+            context::Value::Le { line_info, lhs, rhs } => todo!(),
+            context::Value::Eq { line_info, lhs, rhs } => todo!(),
+            context::Value::Ne { line_info, lhs, rhs } => todo!(),
+            context::Value::Ge { line_info, lhs, rhs } => todo!(),
+            context::Value::Gt { line_info, lhs, rhs } => todo!(),
+            context::Value::LogicAnd { line_info, lhs, rhs } => {
+                assert!(lhs.taipe.is_bool() && rhs.taipe.is_bool());
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                assert!(lhs.taipe.is_bool());
+                if let context::Value::Imm(context::Imm::Bool(lhs)) = lhs.value {
+                    if lhs {
+                        let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                        assert!(rhs.taipe.is_bool());
+                        if let context::Value::Imm(context::Imm::Bool(rhs)) = rhs.value {
+                            if rhs {
+                                Ok(Context::from_bool(true))
+                            } else {
+                                Ok(Context::from_bool(false))
+                            }
+                        } else {
+                            return_err!(compeval_not_trivial: line_info);
+                        }
+                    } else {
+                        Ok(Context::from_bool(false))
+                    }
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::LogicOr { line_info, lhs, rhs } => {
+                assert!(lhs.taipe.is_bool() && rhs.taipe.is_bool());
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                assert!(lhs.taipe.is_bool());
+                if let context::Value::Imm(context::Imm::Bool(lhs)) = lhs.value {
+                    if lhs {
+                        Ok(Context::from_bool(true))
+                    } else {
+                        let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                        assert!(rhs.taipe.is_bool());
+                        if let context::Value::Imm(context::Imm::Bool(rhs)) = rhs.value {
+                            if rhs {
+                                Ok(Context::from_bool(true))
+                            } else {
+                                Ok(Context::from_bool(false))
+                            }
+                        } else {
+                            return_err!(compeval_not_trivial: line_info);
+                        }
+                    }
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::Index(lhs, index_ctx) => {
+                // - array
+                // - tuple
+                // - fat
+                todo!()
+            }
+            context::Value::Call(_, _) => Err(self
+                .make_err("could not evaluate expression trivially at compile time", line_info)
+                .chain(self.make_note_no_path("function calls may have side effects"))),
+            context::Value::Assign(ctxs, contexts1) => todo!(),
+            context::Value::IfElse(cond_ctx, then_ctx, else_ctx) => {
+                let cond_ctx = self.compeval_trivial(*cond_ctx, line_info)?;
+                assert!(cond_ctx.taipe.is_bool());
+                if let context::Value::Imm(context::Imm::Bool(cond)) = cond_ctx.value {
+                    if cond {
+                        self.compeval_trivial(*then_ctx, line_info)
+                    } else {
+                        self.compeval_trivial(*else_ctx, line_info)
+                    }
+                } else {
+                    Err(self.make_err("could not evaluate expression trivially at compile time", line_info))
+                }
+            }
+            context::Value::If(cond_ctx, then_ctx) => {
+                let cond_ctx = self.compeval_trivial(*cond_ctx, line_info)?;
+                assert!(cond_ctx.taipe.is_bool());
+                if let context::Value::Imm(context::Imm::Bool(cond)) = cond_ctx.value {
+                    if cond {
+                        self.compeval_trivial(*then_ctx, line_info)
+                    } else {
+                        Ok(Context::from_void())
+                    }
+                } else {
+                    Err(self.make_err("could not evaluate expression trivially at compile time", line_info))
+                }
+            }
+            context::Value::While(cond_ctx, body_ctx) => {
+                let mut cond_ctx = *cond_ctx;
+                let body_ctx = *body_ctx;
+                loop {
+                    cond_ctx = self.compeval_trivial(cond_ctx, line_info)?;
+                    assert!(cond_ctx.taipe.is_bool());
+                    if let context::Value::Imm(context::Imm::Bool(cond)) = cond_ctx.value {
+                        if cond {
+                            // FIXME: performance here: clone()
+                            let _ = self.compeval_trivial(body_ctx.clone(), line_info)?;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        return Err(self.make_err("could not evaluate expression trivially at compile time", line_info));
+                    }
+                }
+                Ok(Context::from_void())
+            }
+            context::Value::Block(ctxs) => {
+                let ctx_count = ctxs.len();
+                for (i, ctx) in ctxs.into_iter().enumerate() {
+                    let ctx = self.compeval_trivial(ctx, line_info)?;
+                    if i >= ctx_count - 1 {
+                        return Ok(ctx);
+                    }
+                }
+                // Err(self.make_err("could not evaluate expression trivially at compile time", line_info))
+                Ok(Context::from_void())
+            }
+            context::Value::Ret(ctx) => {
+                let _ = self.compeval_trivial(*ctx, line_info)?;
+                Ok(Context::from_noreturn())
+            }
+            context::Value::RetVoid => Ok(Context::from_noreturn()),
+            context::Value::Eval(ctx) => {
+                let _ = self.compeval_trivial(*ctx, line_info)?;
+                Ok(Context::from_void())
+            }
+            context::Value::Cast(ctx) => todo!(),
+        }
+    }
+
     pub(crate) fn visit_expr(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
         let ctx = self.visit_expr_impl(node)?;
         if let context::Value::Reference(ref scope) = ctx.value {
@@ -167,16 +614,16 @@ impl<'a> Analyzer<'a> {
                         if keep_const {
                             taipe = taipe.add_const();
                         }
-                        // comptime: array indexing
+                        // comptime: tuple indexing
                         let index = Context {
-                            is_lvalue: true,
+                            is_lvalue: false,
                             taipe: self.type_usize.clone(),
                             value: context::Value::Imm(
                                 self.transform_varint_to_usize(&context::Imm::VarInt(index), name)?,
                             ),
                         };
                         Ok(Context {
-                            is_lvalue: false,
+                            is_lvalue: keep_lvalue,
                             taipe,
                             value: context::Value::Index(Box::new(ctx), Box::new(index)),
                         })
@@ -606,13 +1053,17 @@ impl<'a> Analyzer<'a> {
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Bool,
-                    value: context::Value::LogicAnd(Box::new(lhs), Box::new(rhs)),
+                    value: context::Value::LogicAnd {
+                        line_info,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
                 })
             }
-            // Binary logical and operator
-            //    result = (value1) and (value2)
+            // Binary logical or operator
+            //    result = (value1) or (value2)
             // Description:
-            //    Returns the result of logical short-circuiting and of two bools
+            //    Returns the result of logical short-circuiting or of two bools
             // value1, value2 and result can be:
             //  * value1: bool      value2: bool      -> result: bool
             // note: value may be const or non-const
@@ -623,7 +1074,11 @@ impl<'a> Analyzer<'a> {
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Bool,
-                    value: context::Value::LogicOr(Box::new(lhs), Box::new(rhs)),
+                    value: context::Value::LogicOr {
+                        line_info,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
                 })
             }
             // Binary relational operators
@@ -681,12 +1136,36 @@ impl<'a> Analyzer<'a> {
                     | context::Type::Float64 => {
                         // Refer to: https://doc.rust-lang.org/std/cmp/trait.PartialOrd.html
                         match op.kind {
-                            TokenKind::EqEq => context::Value::Eq(Box::new(lhs), Box::new(rhs)),
-                            TokenKind::LAngle => context::Value::Lt(Box::new(lhs), Box::new(rhs)),
-                            TokenKind::RAngle => context::Value::Gt(Box::new(lhs), Box::new(rhs)),
-                            TokenKind::LessEq => context::Value::Le(Box::new(lhs), Box::new(rhs)),
-                            TokenKind::GreaterEq => context::Value::Ge(Box::new(lhs), Box::new(rhs)),
-                            TokenKind::NotEq => context::Value::Ne(Box::new(lhs), Box::new(rhs)),
+                            TokenKind::EqEq => context::Value::Eq {
+                                line_info,
+                                lhs: Box::new(lhs),
+                                rhs: Box::new(rhs),
+                            },
+                            TokenKind::LAngle => context::Value::Lt {
+                                line_info,
+                                lhs: Box::new(lhs),
+                                rhs: Box::new(rhs),
+                            },
+                            TokenKind::RAngle => context::Value::Gt {
+                                line_info,
+                                lhs: Box::new(lhs),
+                                rhs: Box::new(rhs),
+                            },
+                            TokenKind::LessEq => context::Value::Le {
+                                line_info,
+                                lhs: Box::new(lhs),
+                                rhs: Box::new(rhs),
+                            },
+                            TokenKind::GreaterEq => context::Value::Ge {
+                                line_info,
+                                lhs: Box::new(lhs),
+                                rhs: Box::new(rhs),
+                            },
+                            TokenKind::NotEq => context::Value::Ne {
+                                line_info,
+                                lhs: Box::new(lhs),
+                                rhs: Box::new(rhs),
+                            },
                             _ => unreachable!("probably some analyzer bug"),
                         }
                     }
@@ -741,7 +1220,11 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.clone().add_const(),
-                        value: context::Value::BitAnd(Box::new(lhs), Box::new(rhs)),
+                        value: context::Value::BitAnd {
+                            line_info,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
                     })
                 } else {
                     return_err!();
@@ -769,7 +1252,11 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.clone().add_const(),
-                        value: context::Value::BitXor(Box::new(lhs), Box::new(rhs)),
+                        value: context::Value::BitXor {
+                            line_info,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
                     })
                 } else {
                     return_err!();
@@ -797,7 +1284,11 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.clone().add_const(),
-                        value: context::Value::BitOr(Box::new(lhs), Box::new(rhs)),
+                        value: context::Value::BitOr {
+                            line_info,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
                     })
                 } else {
                     return_err!();
@@ -845,7 +1336,11 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.clone().add_const(),
-                        value: context::Value::Shl(Box::new(lhs), Box::new(rhs)),
+                        value: context::Value::Shl {
+                            line_info,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
                     })
                 } else {
                     return_err!();
@@ -894,7 +1389,11 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.clone().add_const(),
-                        value: context::Value::Shr(Box::new(lhs), Box::new(rhs)),
+                        value: context::Value::Shr {
+                            line_info,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
                     })
                 } else {
                     return_err!();
@@ -926,7 +1425,11 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.remove_const(),
-                        value: context::Value::Add(Box::new(lhs), Box::new(rhs)),
+                        value: context::Value::Add {
+                            line_info,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
                     })
                 } else {
                     return_err!();
@@ -958,7 +1461,11 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.remove_const(),
-                        value: context::Value::Sub(Box::new(lhs), Box::new(rhs)),
+                        value: context::Value::Sub {
+                            line_info,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
                     })
                 } else {
                     return_err!();
@@ -990,7 +1497,11 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.clone().add_const(),
-                        value: context::Value::Mul(Box::new(lhs), Box::new(rhs)),
+                        value: context::Value::Mul {
+                            line_info,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
                     })
                 } else {
                     return_err!();
@@ -1022,7 +1533,11 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.clone().add_const(),
-                        value: context::Value::Div(Box::new(lhs), Box::new(rhs)),
+                        value: context::Value::Div {
+                            line_info,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
                     })
                 } else {
                     return_err!();
@@ -1050,7 +1565,11 @@ impl<'a> Analyzer<'a> {
                     Ok(Context {
                         is_lvalue: false,
                         taipe: lhs.taipe.clone().add_const(),
-                        value: context::Value::Rem(Box::new(lhs), Box::new(rhs)),
+                        value: context::Value::Rem {
+                            line_info,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
                     })
                 } else {
                     return_err!();
@@ -1099,7 +1618,10 @@ impl<'a> Analyzer<'a> {
                 | context::Type::Float64 => Ok(Context {
                     is_lvalue: false,
                     taipe: ctx.taipe.clone().remove_const(),
-                    value: context::Value::Negate(Box::new(ctx)),
+                    value: context::Value::Negate {
+                        line_info: expr.get_line_info(),
+                        ctx: Box::new(ctx),
+                    },
                 }),
                 context::Type::Uint8
                 | context::Type::Uint16
@@ -1153,7 +1675,10 @@ impl<'a> Analyzer<'a> {
                 | context::Type::Uint128 => Ok(Context {
                     is_lvalue: false,
                     taipe: ctx.taipe.clone().remove_const(),
-                    value: context::Value::FlipBits(Box::new(ctx)),
+                    value: context::Value::FlipBits {
+                        line_info: expr.get_line_info(),
+                        ctx: Box::new(ctx),
+                    },
                 }),
                 _ => {
                     return Err(self.make_err(
@@ -1175,7 +1700,10 @@ impl<'a> Analyzer<'a> {
                 context::Type::Pointer(taipe) => Ok(Context {
                     is_lvalue: true,
                     taipe: *taipe,
-                    value: context::Value::Deref(Box::new(ctx)),
+                    value: context::Value::Deref {
+                        line_info: expr.get_line_info(),
+                        ctx: Box::new(ctx),
+                    },
                 }),
                 _ => {
                     return Err(self.make_err(format!("cannot dereference type '{}'", ctx.taipe.to_string()), expr));
@@ -1222,7 +1750,10 @@ impl<'a> Analyzer<'a> {
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Pointer(Box::new(ctx.taipe.clone())),
-                    value: context::Value::AddrOf(Box::new(ctx)),
+                    value: context::Value::AddrOf {
+                        line_info: expr.get_line_info(),
+                        ctx: Box::new(ctx),
+                    },
                 })
             }
             // Unary sizeof operator
@@ -1361,7 +1892,10 @@ impl<'a> Analyzer<'a> {
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Bool,
-                    value: context::Value::Not(Box::new(ctx)),
+                    value: context::Value::Not {
+                        line_info: expr.get_line_info(),
+                        ctx: Box::new(ctx),
+                    },
                 })
             }
             _ => unreachable!("probably some parser bug"),

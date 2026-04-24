@@ -1,9 +1,5 @@
 use std::{
-    cell::{Ref, RefCell},
-    collections::HashMap,
-    fmt::{self, Write},
-    fs,
-    rc::Rc,
+    cell::{Ref, RefCell}, collections::HashMap, fmt::{self, Write}, fs, io::{self, IsTerminal}, rc::Rc
 };
 
 use color_print::{cprint, cprintln, cwrite};
@@ -398,10 +394,18 @@ impl<'a> IrPrinter {
         if !name.is_empty() {
             write!(self, "{}: ", name)?;
         }
-        if ctx.is_lvalue {
-            write!(self, "lvalue ({}) ", ctx.taipe.to_string())?;
+        if io::stdout().is_terminal() {
+            if ctx.is_lvalue {
+                write!(self, "\x1b[92mlvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ", ctx.taipe.to_string())?;
+            } else {
+                write!(self, "\x1b[94mprvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ", ctx.taipe.to_string())?;
+            }
         } else {
-            write!(self, "prvalue ({}) ", ctx.taipe.to_string())?;
+            if ctx.is_lvalue {
+                write!(self, "lvalue {} ", ctx.taipe.to_string())?;
+            } else {
+                write!(self, "prvalue {} ", ctx.taipe.to_string())?;
+            }
         }
         self.visit_value(&ctx.value)?;
         // End the level
