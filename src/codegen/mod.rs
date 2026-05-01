@@ -66,7 +66,7 @@ fn gen_ctx<'a>(
         context::Value::Array(values) => todo!(),
         context::Value::Tuple(values) => todo!(),
         context::Value::Reference(ref_cell) => todo!(),
-        context::Value::Negate(ctx) => {
+        context::Value::Negate { line_info, ctx } => {
             let value = gen_ctx(ctx, builder, module);
             if let Some(value) = value {
                 if ctx.taipe.is_float() {
@@ -78,7 +78,7 @@ fn gen_ctx<'a>(
                 None
             }
         }
-        context::Value::FlipBits(ctx) => {
+        context::Value::FlipBits { line_info, ctx } => {
             let value = gen_ctx(ctx, builder, module);
             if let Some(value) = value {
                 Some(builder.ins().bnot(value))
@@ -86,14 +86,14 @@ fn gen_ctx<'a>(
                 None
             }
         }
-        context::Value::Deref(context) => todo!(),
-        context::Value::AddrOf(context) => todo!(),
-        context::Value::Not(ctx) => {
+        context::Value::Deref { line_info, ctx } => todo!(),
+        context::Value::AddrOf { line_info, ctx } => todo!(),
+        context::Value::Not { line_info, ctx } => {
             // z -> nz
             // nz -> z
             todo!()
         }
-        context::Value::Add(lhs, rhs) => {
+        context::Value::Add { line_info, lhs, rhs } => {
             let lhs = gen_ctx(lhs, builder, module);
             let rhs = gen_ctx(rhs, builder, module);
             if let Some(lhs) = lhs
@@ -104,7 +104,7 @@ fn gen_ctx<'a>(
                 None
             }
         }
-        context::Value::Sub(lhs, rhs) => {
+        context::Value::Sub { line_info, lhs, rhs } => {
             let lhs = gen_ctx(lhs, builder, module);
             let rhs = gen_ctx(rhs, builder, module);
             if let Some(lhs) = lhs
@@ -115,7 +115,7 @@ fn gen_ctx<'a>(
                 None
             }
         }
-        context::Value::Mul(lhs, rhs) => {
+        context::Value::Mul { line_info, lhs, rhs } => {
             let lhs = gen_ctx(lhs, builder, module);
             let rhs = gen_ctx(rhs, builder, module);
             if let Some(lhs) = lhs
@@ -126,13 +126,13 @@ fn gen_ctx<'a>(
                 None
             }
         }
-        context::Value::Div(lhs, rhs) => {
+        context::Value::Div { line_info, lhs, rhs } => {
             todo!()
         }
-        context::Value::Rem(lhs, rhs) => {
+        context::Value::Rem { line_info, lhs, rhs } => {
             todo!()
         }
-        context::Value::Shl(lhs, rhs) => {
+        context::Value::Shl { line_info, lhs, rhs } => {
             let lhs = gen_ctx(lhs, builder, module);
             let rhs = gen_ctx(rhs, builder, module);
             if let Some(lhs) = lhs
@@ -143,7 +143,7 @@ fn gen_ctx<'a>(
                 None
             }
         }
-        context::Value::Shr(lhs, rhs) => {
+        context::Value::Shr { line_info, lhs, rhs } => {
             let lhs_type = &lhs.taipe;
             let lhs = gen_ctx(lhs, builder, module);
             let rhs = gen_ctx(rhs, builder, module);
@@ -159,7 +159,7 @@ fn gen_ctx<'a>(
                 None
             }
         }
-        context::Value::BitAnd(lhs, rhs) => {
+        context::Value::BitAnd { line_info, lhs, rhs } => {
             let lhs = gen_ctx(lhs, builder, module);
             let rhs = gen_ctx(rhs, builder, module);
             if let Some(lhs) = lhs
@@ -170,7 +170,7 @@ fn gen_ctx<'a>(
                 None
             }
         }
-        context::Value::BitXor(lhs, rhs) => {
+        context::Value::BitXor { line_info, lhs, rhs } => {
             let lhs = gen_ctx(lhs, builder, module);
             let rhs = gen_ctx(rhs, builder, module);
             if let Some(lhs) = lhs
@@ -181,7 +181,7 @@ fn gen_ctx<'a>(
                 None
             }
         }
-        context::Value::BitOr(lhs, rhs) => {
+        context::Value::BitOr { line_info, lhs, rhs } => {
             let lhs = gen_ctx(lhs, builder, module);
             let rhs = gen_ctx(rhs, builder, module);
             if let Some(lhs) = lhs
@@ -192,14 +192,14 @@ fn gen_ctx<'a>(
                 None
             }
         }
-        context::Value::Lt(lhs, rhs) => todo!(),
-        context::Value::Le(lhs, rhs) => todo!(),
-        context::Value::Eq(lhs, rhs) => todo!(),
-        context::Value::Ne(lhs, rhs) => todo!(),
-        context::Value::Ge(lhs, rhs) => todo!(),
-        context::Value::Gt(lhs, rhs) => todo!(),
-        context::Value::LogicAnd(context, context1) => todo!(),
-        context::Value::LogicOr(context, context1) => todo!(),
+        context::Value::Lt { line_info, lhs, rhs } => todo!(),
+        context::Value::Le { line_info, lhs, rhs } => todo!(),
+        context::Value::Eq { line_info, lhs, rhs } => todo!(),
+        context::Value::Ne { line_info, lhs, rhs } => todo!(),
+        context::Value::Ge { line_info, lhs, rhs } => todo!(),
+        context::Value::Gt { line_info, lhs, rhs } => todo!(),
+        context::Value::LogicAnd { line_info, lhs, rhs } => todo!(),
+        context::Value::LogicOr { line_info, lhs, rhs } => todo!(),
         context::Value::Index(context, context1) => todo!(),
         context::Value::Call(ref_cell, index_map) => todo!(),
         context::Value::Assign(contexts, contexts1) => todo!(),
