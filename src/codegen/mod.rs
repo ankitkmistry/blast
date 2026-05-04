@@ -200,12 +200,29 @@ fn gen_ctx<'a>(
         context::Value::Gt { line_info, lhs, rhs } => todo!(),
         context::Value::LogicAnd { line_info, lhs, rhs } => todo!(),
         context::Value::LogicOr { line_info, lhs, rhs } => todo!(),
-        context::Value::Index(context, context1) => todo!(),
-        context::Value::Call(ref_cell, index_map) => todo!(),
+        context::Value::Index { line_info, lhs, index } => todo!(),
+        context::Value::Call {
+            line_info,
+            fun_scope,
+            args,
+        } => todo!(),
         context::Value::Assign(contexts, contexts1) => todo!(),
-        context::Value::IfElse(context, context1, context2) => todo!(),
-        context::Value::If(context, context1) => todo!(),
-        context::Value::While(context, context1) => todo!(),
+        context::Value::IfElse {
+            line_info,
+            cond,
+            then_ctx,
+            else_ctx,
+        } => todo!(),
+        context::Value::If {
+            line_info,
+            cond,
+            then_ctx,
+        } => todo!(),
+        context::Value::While {
+            line_info,
+            cond,
+            body_ctx,
+        } => todo!(),
         context::Value::Block(ctxs) => {
             let block = builder.create_block();
             builder.switch_to_block(block);

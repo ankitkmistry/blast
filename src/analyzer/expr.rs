@@ -1,6 +1,7 @@
 use std::{collections::HashSet, rc::Rc};
 
 use indexmap::IndexMap;
+use log::debug;
 use num_bigint::ToBigInt;
 
 use super::Analyzer;
@@ -24,7 +25,7 @@ impl<'a> Analyzer<'a> {
                 return Err(self.make_err(
                     "could not evaluate expression trivially at compile time",
                     &$line_info,
-                ));
+                ))
             };
             (integer_overflow: $line_info:expr) => {
                 return Err(self.make_err("detected integer overflow", &$line_info));
@@ -79,7 +80,7 @@ impl<'a> Analyzer<'a> {
                 Ok(Context {
                     is_lvalue: ctx.is_lvalue,
                     taipe: context::Type::Tuple(types),
-                    value: context::Value::Array(new_values),
+                    value: context::Value::Tuple(new_values),
                 })
             }
             context::Value::Reference(scope) => {
@@ -90,10 +91,28 @@ impl<'a> Analyzer<'a> {
                         unreachable!("probably some analyzer bug")
                     }
                     scope::State::Visited(ctx) => {
-                        if let context::Value::Imm(_) = ctx.value {
-                            Ok(ctx.clone())
-                        } else {
-                            Err(self.make_err("could not evaluate expression trivially at compile time", line_info))
+                        match &ctx.value {
+                            context::Value::Imm(_)
+                            | context::Value::Array(_)
+                            | context::Value::Tuple(_)
+                            | context::Value::Reference(_) => {
+                                match scope.kind {
+                                    scope::ScopeKind::Module => todo!(),
+                                    scope::ScopeKind::Compound => todo!(),
+                                    scope::ScopeKind::Field => todo!(),
+                                    scope::ScopeKind::Function => todo!(),
+                                    scope::ScopeKind::Param => todo!(),
+                                    scope::ScopeKind::Typedef => todo!(),
+                                    scope::ScopeKind::Const => Ok(ctx.clone()),
+                                    // Invalid cases
+                                    scope::ScopeKind::Variable => todo!(),
+                                    // Unreachable cases
+                                    scope::ScopeKind::Block | scope::ScopeKind::None => {
+                                        unreachable!("probably some analyzer bug")
+                                    }
+                                }
+                            }
+                            _ => return_err!(compeval_not_trivial: *line_info),
                         }
                     }
                 }
@@ -385,57 +404,130 @@ impl<'a> Analyzer<'a> {
                     return_err!(compeval_not_trivial: line_info);
                 }
             }
-            context::Value::Index(lhs, index_ctx) => {
-                // - array
-                // - tuple
-                // - fat
-                todo!()
-            }
-            context::Value::Call(_, _) => Err(self
-                .make_err("could not evaluate expression trivially at compile time", line_info)
-                .chain(self.make_note_no_path("function calls may have side effects"))),
-            context::Value::Assign(ctxs, contexts1) => todo!(),
-            context::Value::IfElse(cond_ctx, then_ctx, else_ctx) => {
-                let cond_ctx = self.compeval_trivial(*cond_ctx, line_info)?;
-                assert!(cond_ctx.taipe.is_bool());
-                if let context::Value::Imm(context::Imm::Bool(cond)) = cond_ctx.value {
-                    if cond {
-                        self.compeval_trivial(*then_ctx, line_info)
-                    } else {
-                        self.compeval_trivial(*else_ctx, line_info)
+            context::Value::Index { line_info, lhs, index } => {
+                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let index_ctx = self.compeval_trivial(*index, &line_info)?;
+                let context::Value::Imm(index_imm) = index_ctx.value else {
+                    return_err!(compeval_not_trivial: line_info);
+                };
+                let Some(index) = index_imm.to_usize() else {
+                    unreachable!("probably some analyzer bug");
+                };
+                match lhs.value {
+                    context::Value::Array(values) => {
+                        debug!("{}", line_info);
+                        debug!("{}", lhs.taipe.to_string());
+                        let taipe = match lhs.taipe {
+                            context::Type::Array { count: _, taipe } => taipe,
+                            context::Type::Fat(taipe) => taipe,
+                            context::Type::Const(taipe) => match *taipe {
+                                context::Type::Array { count: _, taipe } => taipe,
+                                context::Type::Fat(taipe) => taipe,
+                                _ => unreachable!("probably some analyzer bug"),
+                            },
+                            _ => unreachable!("probably some analyzer bug"),
+                        };
+                        let Some(value) = values.into_iter().nth(index) else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        Ok(self.compeval_trivial(
+                            Context {
+                                is_lvalue: ctx.is_lvalue,
+                                taipe: *taipe,
+                                value,
+                            },
+                            &line_info,
+                        )?)
                     }
-                } else {
-                    Err(self.make_err("could not evaluate expression trivially at compile time", line_info))
+                    context::Value::Tuple(values) => {
+                        let types = match lhs.taipe {
+                            context::Type::Tuple(types) => types,
+                            context::Type::Const(taipe) => match *taipe {
+                                context::Type::Tuple(types) => types,
+                                _ => unreachable!("probably some analyzer bug"),
+                            },
+                            _ => unreachable!("probably some analyzer bug"),
+                        };
+                        let Some(taipe) = types.into_iter().nth(index) else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        let Some(value) = values.into_iter().nth(index) else {
+                            unreachable!("probably some analyzer bug");
+                        };
+                        Ok(self.compeval_trivial(
+                            Context {
+                                is_lvalue: ctx.is_lvalue,
+                                taipe,
+                                value,
+                            },
+                            &line_info,
+                        )?)
+                    }
+                    _ => return_err!(compeval_not_trivial: line_info),
                 }
             }
-            context::Value::If(cond_ctx, then_ctx) => {
-                let cond_ctx = self.compeval_trivial(*cond_ctx, line_info)?;
-                assert!(cond_ctx.taipe.is_bool());
-                if let context::Value::Imm(context::Imm::Bool(cond)) = cond_ctx.value {
+            context::Value::Call {
+                line_info,
+                fun_scope: _,
+                args: _,
+            } => Err(self
+                .make_err("could not evaluate expression trivially at compile time", &line_info)
+                .chain(self.make_note_no_path("function call may have side effects"))),
+            context::Value::Assign(lhses, rhses) => todo!(),
+            context::Value::IfElse {
+                line_info,
+                cond,
+                then_ctx,
+                else_ctx,
+            } => {
+                let cond = self.compeval_trivial(*cond, &line_info)?;
+                assert!(cond.taipe.is_bool());
+                if let context::Value::Imm(context::Imm::Bool(cond)) = cond.value {
                     if cond {
-                        self.compeval_trivial(*then_ctx, line_info)
+                        self.compeval_trivial(*then_ctx, &line_info)
+                    } else {
+                        self.compeval_trivial(*else_ctx, &line_info)
+                    }
+                } else {
+                    return_err!(compeval_not_trivial: line_info);
+                }
+            }
+            context::Value::If {
+                line_info,
+                cond,
+                then_ctx,
+            } => {
+                let cond = self.compeval_trivial(*cond, &line_info)?;
+                assert!(cond.taipe.is_bool());
+                if let context::Value::Imm(context::Imm::Bool(cond)) = cond.value {
+                    if cond {
+                        self.compeval_trivial(*then_ctx, &line_info)
                     } else {
                         Ok(Context::from_void())
                     }
                 } else {
-                    Err(self.make_err("could not evaluate expression trivially at compile time", line_info))
+                    return_err!(compeval_not_trivial: line_info);
                 }
             }
-            context::Value::While(cond_ctx, body_ctx) => {
-                let mut cond_ctx = *cond_ctx;
+            context::Value::While {
+                line_info,
+                cond,
+                body_ctx,
+            } => {
+                let mut cond = *cond;
                 let body_ctx = *body_ctx;
                 loop {
-                    cond_ctx = self.compeval_trivial(cond_ctx, line_info)?;
-                    assert!(cond_ctx.taipe.is_bool());
-                    if let context::Value::Imm(context::Imm::Bool(cond)) = cond_ctx.value {
+                    cond = self.compeval_trivial(cond, &line_info)?;
+                    assert!(cond.taipe.is_bool());
+                    if let context::Value::Imm(context::Imm::Bool(cond)) = cond.value {
                         if cond {
                             // FIXME: performance here: clone()
-                            let _ = self.compeval_trivial(body_ctx.clone(), line_info)?;
+                            let _ = self.compeval_trivial(body_ctx.clone(), &line_info)?;
                         } else {
                             break;
                         }
                     } else {
-                        return Err(self.make_err("could not evaluate expression trivially at compile time", line_info));
+                        return_err!(compeval_not_trivial: line_info);
                     }
                 }
                 Ok(Context::from_void())
@@ -448,7 +540,6 @@ impl<'a> Analyzer<'a> {
                         return Ok(ctx);
                     }
                 }
-                // Err(self.make_err("could not evaluate expression trivially at compile time", line_info))
                 Ok(Context::from_void())
             }
             context::Value::Ret(ctx) => {
@@ -625,7 +716,11 @@ impl<'a> Analyzer<'a> {
                         Ok(Context {
                             is_lvalue: keep_lvalue,
                             taipe,
-                            value: context::Value::Index(Box::new(ctx), Box::new(index)),
+                            value: context::Value::Index {
+                                line_info: node.get_line_info(),
+                                lhs: Box::new(ctx),
+                                index: Box::new(index),
+                            },
                         })
                     }
                     context::Type::Module => {
@@ -665,12 +760,20 @@ impl<'a> Analyzer<'a> {
                     context::Type::Array { count: _, taipe } => Ok(Context {
                         is_lvalue: false,
                         taipe: *taipe,
-                        value: context::Value::Index(Box::new(ctx), Box::new(index)),
+                        value: context::Value::Index {
+                            line_info: node.get_line_info(),
+                            lhs: Box::new(ctx),
+                            index: Box::new(index),
+                        },
                     }),
                     context::Type::Fat(taipe) => Ok(Context {
                         is_lvalue: false,
                         taipe: *taipe,
-                        value: context::Value::Index(Box::new(ctx), Box::new(index)),
+                        value: context::Value::Index {
+                            line_info: node.get_line_info(),
+                            lhs: Box::new(ctx),
+                            index: Box::new(index),
+                        },
                     }),
                     _ => {
                         return Err(self.make_err(
@@ -940,7 +1043,11 @@ impl<'a> Analyzer<'a> {
             Ok(Context {
                 is_lvalue: false,
                 taipe: (*return_type).clone(),
-                value: context::Value::Call(scope_rc, args_info),
+                value: context::Value::Call {
+                    line_info,
+                    fun_scope: scope_rc,
+                    args: args_info,
+                },
             })
         } else {
             todo!()

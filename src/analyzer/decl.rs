@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use indexmap::IndexMap;
-use log::debug;
+use log::{debug, info};
 
 use crate::{
     ast,
@@ -688,10 +688,15 @@ impl<'a> Analyzer<'a> {
                             None
                         };
                         // Visit expr
-                        let rhs = self.visit_expr(expr)?;
+                        let mut rhs = self.visit_expr(expr)?;
                         // Resolve assignment
                         if rhs.taipe.is_module() {
                             return Err(self.make_err("cannot assign a module to a variable", expr));
+                        }
+                        // If this is a global constant or variable then trivially evaluate the
+                        // expression.
+                        if self.get_cur_scope().get_enclosing_function().is_none() {
+                            rhs = self.compeval_trivial(rhs, expr)?;
                         }
                         let ctx = self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, expr.get_line_info())))?;
                         let result = Context::from_scope(&ctx.taipe, &scope);
@@ -789,8 +794,7 @@ impl<'a> Analyzer<'a> {
                         }
                         Err(err) => return Err(err),
                     };
-                    // TODO: The value of the field should be evaluated at compile time
-                    // If no value is provided then default value should be evaluated
+                    let rhs = self.compeval_trivial(rhs, expr)?;
                     // Resolve assignment
                     self.resolve_assign(Some(lhs), eq_token.as_ref(), Some((rhs, expr.get_line_info())))?
                 } else {
@@ -799,7 +803,9 @@ impl<'a> Analyzer<'a> {
                     // name : type;
                     // ---------------------------------
                     assert!(eq_token.is_none());
-                    self.resolve_assign(Some(lhs), None, None)?
+                    // TODO: If no value is provided then default value should be evaluated
+                    let rhs = (self.get_zero_value(&lhs.0, taipe)?, name.get_line_info());
+                    self.resolve_assign(Some(lhs), None, Some(rhs))?
                 };
                 // Check the type of the fields
                 match ctx.taipe {

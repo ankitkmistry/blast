@@ -166,13 +166,13 @@ impl<'a> Analyzer<'a> {
                 expr,
                 then_body,
                 else_body,
-            } => self.visit_if_stmt(expr, then_body, else_body.as_ref().map(|s| &**s)),
+            } => self.visit_if_stmt(expr, then_body, else_body.as_ref().map(|s| &**s), node.get_line_info()),
             ast::Stmt::While {
                 line_info: _,
                 label,
                 expr,
                 then_body,
-            } => self.visit_while_stmt(label.as_ref(), expr, then_body),
+            } => self.visit_while_stmt(label.as_ref(), expr, then_body, node.get_line_info()),
             ast::Stmt::Block { line_info, stmts } => self.visit_block(*line_info, stmts),
             ast::Stmt::Yield { token: _, expr } => {
                 let mut ctx = self.visit_expr(expr)?;
@@ -349,6 +349,7 @@ impl<'a> Analyzer<'a> {
         label: Option<&Token>,
         expr: &'a ast::Expr,
         then_body: &'a ast::Stmt,
+        line_info: LineInfo,
     ) -> Result<Context<'a>, CompileError> {
         // cfg: create the break and continue node for this loop
         let cf_break = self.mut_current_block_data(|data| data.cfg.insert_vertex(ControlNode::Junction));
@@ -412,7 +413,11 @@ impl<'a> Analyzer<'a> {
             Ok(Context {
                 is_lvalue: false,
                 taipe: context::Type::Void,
-                value: context::Value::While(Box::new(cond), Box::new(then_body_result)),
+                value: context::Value::While {
+                    line_info,
+                    cond: Box::new(cond),
+                    body_ctx: Box::new(then_body_result),
+                },
             })
         } else {
             Err(self.make_err(
@@ -431,6 +436,7 @@ impl<'a> Analyzer<'a> {
         expr: &'a ast::Expr,
         then_body: &'a ast::Stmt,
         else_body: Option<&'a ast::Stmt>,
+        line_info: LineInfo,
     ) -> Result<Context<'a>, CompileError> {
         let cond = self.visit_expr(expr)?;
         if !cond.taipe.is_bool() {
@@ -475,32 +481,35 @@ impl<'a> Analyzer<'a> {
                 Ok(Context {
                     is_lvalue: else_body_result.is_lvalue,
                     taipe: else_body_result.taipe.clone(),
-                    value: context::Value::IfElse(
-                        Box::new(cond),
-                        Box::new(then_body_result),
-                        Box::new(else_body_result),
-                    ),
+                    value: context::Value::IfElse {
+                        line_info,
+                        cond: Box::new(cond),
+                        then_ctx: Box::new(then_body_result),
+                        else_ctx: Box::new(else_body_result),
+                    },
                 })
             } else if else_body_result.taipe.is_noreturn() {
                 Ok(Context {
                     is_lvalue: then_body_result.is_lvalue,
                     taipe: then_body_result.taipe.clone(),
-                    value: context::Value::IfElse(
-                        Box::new(cond),
-                        Box::new(then_body_result),
-                        Box::new(else_body_result),
-                    ),
+                    value: context::Value::IfElse {
+                        line_info,
+                        cond: Box::new(cond),
+                        then_ctx: Box::new(then_body_result),
+                        else_ctx: Box::new(else_body_result),
+                    },
                 })
             } else if then_body_result.taipe == else_body_result.taipe {
                 // TODO: allow mixing of compatible values
                 Ok(Context {
                     is_lvalue: then_body_result.is_lvalue && else_body_result.is_lvalue,
                     taipe: then_body_result.taipe.clone(),
-                    value: context::Value::IfElse(
-                        Box::new(cond),
-                        Box::new(then_body_result),
-                        Box::new(else_body_result),
-                    ),
+                    value: context::Value::IfElse {
+                        line_info,
+                        cond: Box::new(cond),
+                        then_ctx: Box::new(then_body_result),
+                        else_ctx: Box::new(else_body_result),
+                    },
                 })
             } else {
                 let line_info = if let context::Value::Reference(ref scope) = else_body_result.value {
@@ -530,13 +539,21 @@ impl<'a> Analyzer<'a> {
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Noreturn,
-                    value: context::Value::If(Box::new(cond), Box::new(then_body_result)),
+                    value: context::Value::If {
+                        line_info,
+                        cond: Box::new(cond),
+                        then_ctx: Box::new(then_body_result),
+                    },
                 })
             } else if then_body_result.taipe.is_void() {
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Void,
-                    value: context::Value::If(Box::new(cond), Box::new(then_body_result)),
+                    value: context::Value::If {
+                        line_info,
+                        cond: Box::new(cond),
+                        then_ctx: Box::new(then_body_result),
+                    },
                 })
             } else {
                 Err(self.make_err(
@@ -802,6 +819,7 @@ impl<'a> Analyzer<'a> {
                     return Err(self.make_err("array length must be specified", node));
                 };
                 let length_ctx = self.visit_expr(expr)?;
+                let length_ctx = self.compeval_trivial(length_ctx, expr)?;
                 if !length_ctx.taipe.is_unsigned_integer() {
                     return Err(self
                         .make_err("argument of index operator should be an unsigned integer type", expr)
@@ -1065,7 +1083,7 @@ impl<'a> Analyzer<'a> {
                                 err = err
                                     .chain(self.make_err(msg, line_info))
                                     .chain(self.make_note("declared here", &scope.borrow()));
-                            },
+                            }
                             _ => {}
                         }
                     } else {

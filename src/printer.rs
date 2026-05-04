@@ -1,5 +1,10 @@
 use std::{
-    cell::{Ref, RefCell}, collections::HashMap, fmt::{self, Write}, fs, io::{self, IsTerminal}, rc::Rc
+    cell::{Ref, RefCell},
+    collections::HashMap,
+    fmt::{self, Write},
+    fs,
+    io::{self, IsTerminal},
+    rc::Rc,
 };
 
 use color_print::{cprint, cprintln, cwrite};
@@ -396,9 +401,17 @@ impl<'a> IrPrinter {
         }
         if io::stdout().is_terminal() {
             if ctx.is_lvalue {
-                write!(self, "\x1b[92mlvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ", ctx.taipe.to_string())?;
+                write!(
+                    self,
+                    "\x1b[92mlvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ",
+                    ctx.taipe.to_string()
+                )?;
             } else {
-                write!(self, "\x1b[94mprvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ", ctx.taipe.to_string())?;
+                write!(
+                    self,
+                    "\x1b[94mprvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ",
+                    ctx.taipe.to_string()
+                )?;
             }
         } else {
             if ctx.is_lvalue {
@@ -460,124 +473,132 @@ impl<'a> IrPrinter {
             context::Value::Reference(scope) => {
                 write!(self, "Reference = {}", scope.borrow().sym_path.to_string())?;
             }
-            context::Value::Negate { line_info, ctx } => {
+            context::Value::Negate { line_info: _, ctx } => {
                 write!(self, "Negate")?;
                 self.print_context("value", ctx)?;
             }
-            context::Value::FlipBits { line_info, ctx } => {
+            context::Value::FlipBits { line_info: _, ctx } => {
                 write!(self, "FlipBits")?;
                 self.print_context("value", ctx)?;
             }
-            context::Value::Deref { line_info, ctx } => {
+            context::Value::Deref { line_info: _, ctx } => {
                 write!(self, "Deref")?;
                 self.print_context("value", ctx)?;
             }
-            context::Value::AddrOf { line_info, ctx } => {
+            context::Value::AddrOf { line_info: _, ctx } => {
                 write!(self, "AddrOf")?;
                 self.print_context("value", ctx)?;
             }
-            context::Value::Not { line_info, ctx } => {
+            context::Value::Not { line_info: _, ctx } => {
                 write!(self, "Not")?;
                 self.print_context("value", ctx)?;
             }
-            context::Value::Add { line_info, lhs, rhs } => {
+            context::Value::Add { line_info: _, lhs, rhs } => {
                 write!(self, "Add")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Sub { line_info, lhs, rhs } => {
+            context::Value::Sub { line_info: _, lhs, rhs } => {
                 write!(self, "Sub")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Mul { line_info, lhs, rhs } => {
+            context::Value::Mul { line_info: _, lhs, rhs } => {
                 write!(self, "Mul")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Div { line_info, lhs, rhs } => {
+            context::Value::Div { line_info: _, lhs, rhs } => {
                 write!(self, "Div")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Rem { line_info, lhs, rhs } => {
+            context::Value::Rem { line_info: _, lhs, rhs } => {
                 write!(self, "Rem")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Shl { line_info, lhs, rhs } => {
+            context::Value::Shl { line_info: _, lhs, rhs } => {
                 write!(self, "Shl")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Shr { line_info, lhs, rhs } => {
+            context::Value::Shr { line_info: _, lhs, rhs } => {
                 write!(self, "Shr")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::BitAnd { line_info, lhs, rhs } => {
+            context::Value::BitAnd { line_info: _, lhs, rhs } => {
                 write!(self, "BitAnd")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::BitXor { line_info, lhs, rhs } => {
+            context::Value::BitXor { line_info: _, lhs, rhs } => {
                 write!(self, "BitXor")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::BitOr { line_info, lhs, rhs } => {
+            context::Value::BitOr { line_info: _, lhs, rhs } => {
                 write!(self, "BitOr")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Lt { line_info, lhs, rhs } => {
+            context::Value::Lt { line_info: _, lhs, rhs } => {
                 write!(self, "Lt")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Le { line_info, lhs, rhs } => {
+            context::Value::Le { line_info: _, lhs, rhs } => {
                 write!(self, "Le")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Eq { line_info, lhs, rhs } => {
+            context::Value::Eq { line_info: _, lhs, rhs } => {
                 write!(self, "Eq")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Ne { line_info, lhs, rhs } => {
+            context::Value::Ne { line_info: _, lhs, rhs } => {
                 write!(self, "Ne")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Ge { line_info, lhs, rhs } => {
+            context::Value::Ge { line_info: _, lhs, rhs } => {
                 write!(self, "Ge")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Gt { line_info, lhs, rhs } => {
+            context::Value::Gt { line_info: _, lhs, rhs } => {
                 write!(self, "Gt")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::LogicAnd { line_info, lhs, rhs } => {
+            context::Value::LogicAnd { line_info: _, lhs, rhs } => {
                 write!(self, "LogicAnd")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::LogicOr { line_info, lhs, rhs } => {
+            context::Value::LogicOr { line_info: _, lhs, rhs } => {
                 write!(self, "LogicOr")?;
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Index(container, index) => {
+            context::Value::Index {
+                line_info: _,
+                lhs: container,
+                index,
+            } => {
                 write!(self, "Index")?;
                 self.print_context("container", container)?;
                 self.print_context("index", index)?;
             }
-            context::Value::Call(scope, arg_infos) => {
-                write!(self, "Call = {}", scope.borrow().sym_path.to_string())?;
-                for (arg_name, arg_ctx) in arg_infos {
+            context::Value::Call {
+                line_info: _,
+                fun_scope,
+                args,
+            } => {
+                write!(self, "Call = {}", fun_scope.borrow().sym_path.to_string())?;
+                for (arg_name, arg_ctx) in args {
                     self.print_context(arg_name, arg_ctx)?;
                 }
             }
@@ -590,21 +611,34 @@ impl<'a> IrPrinter {
                     self.print_context(&format!("rhs[{}]", i), ctx)?;
                 }
             }
-            context::Value::IfElse(cond, then_ctx, else_ctx) => {
+            context::Value::IfElse {
+                line_info: _,
+                cond,
+                then_ctx,
+                else_ctx,
+            } => {
                 write!(self, "IfElse")?;
                 self.print_context("condition", cond)?;
                 self.print_context("then", then_ctx)?;
                 self.print_context("else", else_ctx)?;
             }
-            context::Value::If(cond, then_ctx) => {
+            context::Value::If {
+                line_info: _,
+                cond,
+                then_ctx,
+            } => {
                 write!(self, "If")?;
                 self.print_context("condition", cond)?;
                 self.print_context("then", then_ctx)?;
             }
-            context::Value::While(cond, body) => {
+            context::Value::While {
+                line_info: _,
+                cond,
+                body_ctx,
+            } => {
                 write!(self, "While")?;
                 self.print_context("condition", cond)?;
-                self.print_context("body", body)?;
+                self.print_context("body", body_ctx)?;
             }
             context::Value::Block(ctxs) => {
                 write!(self, "Block")?;

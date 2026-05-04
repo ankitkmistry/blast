@@ -675,13 +675,34 @@ pub enum Value<'a> {
         rhs: Box<Context<'a>>,
     },
     // Postfix op instructions
-    Index(Box<Context<'a>>, Box<Context<'a>>),
-    Call(Rc<RefCell<scope::Scope<'a>>>, IndexMap<String, Context<'a>>),
+    Index {
+        line_info: LineInfo,
+        lhs: Box<Context<'a>>,
+        index: Box<Context<'a>>,
+    },
+    Call {
+        line_info: LineInfo,
+        fun_scope: Rc<RefCell<scope::Scope<'a>>>,
+        args: IndexMap<String, Context<'a>>,
+    },
     // Statement instructions
     Assign(Vec<Context<'a>>, Vec<Context<'a>>),
-    IfElse(Box<Context<'a>>, Box<Context<'a>>, Box<Context<'a>>),
-    If(Box<Context<'a>>, Box<Context<'a>>),
-    While(Box<Context<'a>>, Box<Context<'a>>),
+    IfElse {
+        line_info: LineInfo,
+        cond: Box<Context<'a>>,
+        then_ctx: Box<Context<'a>>,
+        else_ctx: Box<Context<'a>>,
+    },
+    If {
+        line_info: LineInfo,
+        cond: Box<Context<'a>>,
+        then_ctx: Box<Context<'a>>,
+    },
+    While {
+        line_info: LineInfo,
+        cond: Box<Context<'a>>,
+        body_ctx: Box<Context<'a>>,
+    },
     Block(Vec<Context<'a>>),
     Ret(Box<Context<'a>>),
     RetVoid,

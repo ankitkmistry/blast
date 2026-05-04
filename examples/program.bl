@@ -94,9 +94,20 @@ invert := ~number;
 tup :: (11, 22, 33);
 tup_mem :: tup.2;
 
-// floats_count : __u64 : 10;
-// floats : [floats_count]__f32;
-floats : [10]__f32;
+constants :: module {
+    Numbers :: struct {
+        // items: *__int,
+        count: __int,
+        capacity: __int,
+    }
+    floats_count : __u64 : 10;
+}
+
+count_gen :: fun () -> __int { return 10; }
+
+// floats : [constants.floats_count * 2 + 1]__f32;
+floats : [count_gen()]__f32;
+// floats : [10]__f32;
 
 // comptime overflow check
 i :: 7265465651321354631;
