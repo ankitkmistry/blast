@@ -1,4 +1,4 @@
-use std::{cell::RefCell, cmp::Ordering, rc::Rc};
+use std::{cell::RefCell, cmp::Ordering, fmt, rc::Rc};
 
 use indexmap::IndexMap;
 
@@ -241,27 +241,28 @@ impl<'a> PartialEq for Type<'a> {
 
 impl<'a> Eq for Type<'a> {}
 
-impl<'a> ToString for Type<'a> {
-    fn to_string(&self) -> String {
+impl<'a> fmt::Display for Type<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Type::Bool => "__bool".to_string(),
-            Type::Char => "__char".to_string(),
-            Type::VarInt => "{integer}".to_string(),
-            Type::Int8 => "__i8".to_string(),
-            Type::Int16 => "__i16".to_string(),
-            Type::Int32 => "__i32".to_string(),
-            Type::Int64 => "__i64".to_string(),
-            Type::Int128 => "__i128".to_string(),
-            Type::Uint8 => "__u8".to_string(),
-            Type::Uint16 => "__u16".to_string(),
-            Type::Uint32 => "__u32".to_string(),
-            Type::Uint64 => "__u64".to_string(),
-            Type::Uint128 => "__u128".to_string(),
-            Type::Float32 => "__f32".to_string(),
-            Type::Float64 => "__f64".to_string(),
-            Type::Const(taipe) => format!("const {}", taipe.to_string()),
-            Type::Basic(scope) => scope.borrow().sym_path.to_string(),
-            Type::Function { ret, params } => format!(
+            Type::Bool => write!(f, "__bool"),
+            Type::Char => write!(f, "__char"),
+            Type::VarInt => write!(f, "{}", "{integer}"),
+            Type::Int8 => write!(f, "__i8"),
+            Type::Int16 => write!(f, "__i16"),
+            Type::Int32 => write!(f, "__i32"),
+            Type::Int64 => write!(f, "__i64"),
+            Type::Int128 => write!(f, "__i128"),
+            Type::Uint8 => write!(f, "__u8"),
+            Type::Uint16 => write!(f, "__u16"),
+            Type::Uint32 => write!(f, "__u32"),
+            Type::Uint64 => write!(f, "__u64"),
+            Type::Uint128 => write!(f, "__u128"),
+            Type::Float32 => write!(f, "__f32"),
+            Type::Float64 => write!(f, "__f64"),
+            Type::Const(taipe) => write!(f, "const {}", taipe),
+            Type::Basic(scope) => write!(f, "{}", scope.borrow().sym_path),
+            Type::Function { ret, params } => write!(
+                f,
                 "fun ({}) -> {}",
                 params
                     .iter()
@@ -270,17 +271,18 @@ impl<'a> ToString for Type<'a> {
                     .join(", "),
                 ret.to_string()
             ),
-            Type::Pointer(taipe) => format!("*{}", taipe.to_string()),
-            Type::Array { count, taipe } => format!("[{}]{}", count, taipe.to_string()),
-            Type::Fat(taipe) => format!("[]{}", taipe.to_string()),
-            Type::Tuple(items) => format!(
+            Type::Pointer(taipe) => write!(f, "*{}", taipe.to_string()),
+            Type::Array { count, taipe } => write!(f, "[{}]{}", count, taipe.to_string()),
+            Type::Fat(taipe) => write!(f, "[]{}", taipe.to_string()),
+            Type::Tuple(items) => write!(
+                f,
                 "({})",
                 items.iter().map(|item| item.to_string()).collect::<Vec<_>>().join(", ")
             ),
-            Type::Module => "module".to_string(),
-            Type::Typedef => "typedef".to_string(),
-            Type::Void => "void".to_string(),
-            Type::Noreturn => "noreturn".to_string(),
+            Type::Module => write!(f, "module"),
+            Type::Typedef => write!(f, "typedef"),
+            Type::Void => write!(f, "void"),
+            Type::Noreturn => write!(f, "noreturn"),
         }
     }
 }
@@ -530,26 +532,26 @@ impl<'a> Imm<'a> {
     }
 }
 
-impl<'a> ToString for Imm<'a> {
-    fn to_string(&self) -> String {
+impl<'a> fmt::Display for Imm<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Imm::Bool(val) => val.to_string(),
-            Imm::Char(val) => val.to_string(),
-            Imm::VarInt(int) => int.to_string(),
-            Imm::Int8(val) => val.to_string(),
-            Imm::Int16(val) => val.to_string(),
-            Imm::Int32(val) => val.to_string(),
-            Imm::Int64(val) => val.to_string(),
-            Imm::Int128(val) => val.to_string(),
-            Imm::Uint8(val) => val.to_string(),
-            Imm::Uint16(val) => val.to_string(),
-            Imm::Uint32(val) => val.to_string(),
-            Imm::Uint64(val) => val.to_string(),
-            Imm::Uint128(val) => val.to_string(),
-            Imm::Float32(val) => val.to_string(),
-            Imm::Float64(val) => val.to_string(),
-            Imm::Type(t) => t.to_string(),
-            Imm::Nil => String::from("nil"),
+            Imm::Bool(val) => write!(f, "{}", val),
+            Imm::Char(val) => write!(f, "{}", val),
+            Imm::VarInt(int) => write!(f, "{}", int),
+            Imm::Int8(val) => write!(f, "{}", val),
+            Imm::Int16(val) => write!(f, "{}", val),
+            Imm::Int32(val) => write!(f, "{}", val),
+            Imm::Int64(val) => write!(f, "{}", val),
+            Imm::Int128(val) => write!(f, "{}", val),
+            Imm::Uint8(val) => write!(f, "{}", val),
+            Imm::Uint16(val) => write!(f, "{}", val),
+            Imm::Uint32(val) => write!(f, "{}", val),
+            Imm::Uint64(val) => write!(f, "{}", val),
+            Imm::Uint128(val) => write!(f, "{}", val),
+            Imm::Float32(val) => write!(f, "{}", val),
+            Imm::Float64(val) => write!(f, "{}", val),
+            Imm::Type(t) => write!(f, "{}", t),
+            Imm::Nil => write!(f, "nil"),
         }
     }
 }
@@ -895,8 +897,8 @@ impl<'a> Context<'a> {
     }
 }
 
-impl<'a> ToString for Context<'a> {
-    fn to_string(&self) -> String {
-        self.taipe.to_string()
+impl<'a> fmt::Display for Context<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.taipe)
     }
 }

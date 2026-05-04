@@ -278,7 +278,7 @@ impl<'a> Analyzer<'a> {
                 // Visit type
                 let lhs = self.visit_type(taipe)?;
                 if !is_directive_allowed(&lhs) {
-                    return Err(self.make_err(format!("invalid type: '{}'", lhs.to_string()), taipe));
+                    return Err(self.make_err(format!("invalid type: '{}'", lhs), taipe));
                 }
                 let cfg_assign;
                 // Check directives
@@ -620,9 +620,9 @@ impl<'a> Analyzer<'a> {
                                     return Err(self.make_err(
                                         format!(
                                             "expected value of type '{}' or '{}' but got '{}'",
-                                            context::Type::Void.to_string(),
-                                            context::Type::Noreturn.to_string(),
-                                            ctx.taipe.to_string()
+                                            context::Type::Void,
+                                            context::Type::Noreturn,
+                                            ctx.taipe
                                         ),
                                         body,
                                     ));
@@ -631,7 +631,7 @@ impl<'a> Analyzer<'a> {
                                 return Err(self.make_err(
                                     format!(
                                         "invalid function returns value: '{}' function can never return",
-                                        context::Type::Noreturn.to_string(),
+                                        context::Type::Noreturn,
                                     ),
                                     &scope.borrow(),
                                 ));
@@ -814,7 +814,7 @@ impl<'a> Analyzer<'a> {
                     | context::Type::Typedef
                     | context::Type::Noreturn => {
                         return Err(self.make_err(
-                            format!("'{}' cannot be used as a type of a field", ctx.taipe.to_string()),
+                            format!("'{}' cannot be used as a type of a field", ctx.taipe),
                             taipe,
                         ));
                     }
@@ -862,7 +862,7 @@ impl<'a> Analyzer<'a> {
         let layout = self.resolve_layout_scope(&scope)?;
         // Print the layout
         {
-            debug!("Memory layout of {}: {:?}", scope.borrow().sym_path.to_string(), layout);
+            debug!("Memory layout of {}: {:?}", scope.borrow().sym_path, layout);
             let scope::Payload::Compound(ref compound) = scope.borrow().payload else {
                 unreachable!("not supposed to happen")
             };

@@ -280,7 +280,7 @@ fn print_scope<'a>(name: &str, scope: Ref<'_, scope::Scope<'a>>, is_last_vec: &m
         scope::State::NotVisited(_) => print!("not evaluated"),
         scope::State::VisitInProg => print!("evaluation in progress"),
         scope::State::Visited(ctx) => {
-            print!("{}", ctx.to_string());
+            print!("{}", ctx);
             if let context::Value::Imm(value) = &ctx.value {
                 let repr = value.to_string();
                 if !repr.is_empty() {
@@ -357,10 +357,10 @@ pub fn print_ir_of_all_scopes<'a>(scopes: &HashMap<String, Rc<RefCell<scope::Sco
 fn print_ir_of_scope<'a>(scope: Ref<'_, scope::Scope<'a>>) {
     match &scope.state {
         scope::State::NotVisited(_) => {
-            println!("{}: not evaluated", scope.sym_path.to_string())
+            println!("{}: not evaluated", scope.sym_path)
         }
         scope::State::VisitInProg => {
-            println!("{}: evaluation in progress", scope.sym_path.to_string())
+            println!("{}: evaluation in progress", scope.sym_path)
         }
         scope::State::Visited(ctx) => {
             if let context::Value::Reference(_) = ctx.value {
@@ -404,20 +404,20 @@ impl<'a> IrPrinter {
                 write!(
                     self,
                     "\x1b[92mlvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ",
-                    ctx.taipe.to_string()
+                    ctx.taipe
                 )?;
             } else {
                 write!(
                     self,
                     "\x1b[94mprvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ",
-                    ctx.taipe.to_string()
+                    ctx.taipe
                 )?;
             }
         } else {
             if ctx.is_lvalue {
-                write!(self, "lvalue {} ", ctx.taipe.to_string())?;
+                write!(self, "lvalue {} ", ctx.taipe)?;
             } else {
-                write!(self, "prvalue {} ", ctx.taipe.to_string())?;
+                write!(self, "prvalue {} ", ctx.taipe)?;
             }
         }
         self.visit_value(&ctx.value)?;
@@ -456,7 +456,7 @@ impl<'a> IrPrinter {
     fn visit_value(&mut self, value: &context::Value<'a>) -> fmt::Result {
         match value {
             context::Value::Imm(imm) => {
-                write!(self, "Imm = {}", imm.to_string())?;
+                write!(self, "Imm = {}", imm)?;
             }
             context::Value::Array(values) => {
                 write!(self, "Array")?;
@@ -471,7 +471,7 @@ impl<'a> IrPrinter {
                 }
             }
             context::Value::Reference(scope) => {
-                write!(self, "Reference = {}", scope.borrow().sym_path.to_string())?;
+                write!(self, "Reference = {}", scope.borrow().sym_path)?;
             }
             context::Value::Negate { line_info: _, ctx } => {
                 write!(self, "Negate")?;
@@ -597,7 +597,7 @@ impl<'a> IrPrinter {
                 fun_scope,
                 args,
             } => {
-                write!(self, "Call = {}", fun_scope.borrow().sym_path.to_string())?;
+                write!(self, "Call = {}", fun_scope.borrow().sym_path)?;
                 for (arg_name, arg_ctx) in args {
                     self.print_context(arg_name, arg_ctx)?;
                 }

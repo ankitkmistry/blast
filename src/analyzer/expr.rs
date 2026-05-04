@@ -416,7 +416,7 @@ impl<'a> Analyzer<'a> {
                 match lhs.value {
                     context::Value::Array(values) => {
                         debug!("{}", line_info);
-                        debug!("{}", lhs.taipe.to_string());
+                        debug!("{}", lhs.taipe);
                         let taipe = match lhs.taipe {
                             context::Type::Array { count: _, taipe } => taipe,
                             context::Type::Fat(taipe) => taipe,
@@ -731,7 +731,7 @@ impl<'a> Analyzer<'a> {
                     }
                     // TODO: implement this after struct functions
                     // context::Type::Typedef => todo!(),
-                    _ => Err(self.make_err(format!("cannot use '.' operator on '{}'", ctx.taipe.to_string()), expr)),
+                    _ => Err(self.make_err(format!("cannot use '.' operator on '{}'", ctx.taipe), expr)),
                 }
             }
             ast::Expr::Call {
@@ -754,7 +754,7 @@ impl<'a> Analyzer<'a> {
                 if !index.taipe.is_integer() {
                     return Err(self
                         .make_err("argument of index operator should be an integer type", node)
-                        .chain(self.make_note(format!("but got '{}'", index.taipe.to_string()), index_node)));
+                        .chain(self.make_note(format!("but got '{}'", index.taipe), index_node)));
                 }
                 match ctx.taipe.remove_const() {
                     context::Type::Array { count: _, taipe } => Ok(Context {
@@ -776,10 +776,7 @@ impl<'a> Analyzer<'a> {
                         },
                     }),
                     _ => {
-                        return Err(self.make_err(
-                            format!("cannot use index operator on type '{}'", ctx.taipe.to_string()),
-                            expr,
-                        ));
+                        return Err(self.make_err(format!("cannot use index operator on type '{}'", ctx.taipe), expr));
                     }
                 }
             }
@@ -852,10 +849,7 @@ impl<'a> Analyzer<'a> {
     ) -> CompileResult<Context<'a>> {
         let ctx = self.visit_expr(expr)?;
         if !ctx.taipe.is_function() {
-            return Err(self.make_err(
-                format!("expected function but got value of type '{}'", ctx.to_string()),
-                expr,
-            ));
+            return Err(self.make_err(format!("expected function but got value of type '{}'", ctx), expr));
         }
         let mut pos_arg_infos = Vec::new();
         let mut named_arg_infos = IndexMap::new();
@@ -1016,11 +1010,7 @@ impl<'a> Analyzer<'a> {
             if !errs.is_empty() {
                 return Err(errs);
             }
-            println!(
-                "Call to function {}: {}",
-                scope.sym_path.to_string(),
-                fun_ctx.taipe.to_string()
-            );
+            println!("Call to function {}: {}", scope.sym_path, fun_ctx.taipe);
             let line_info = call_line_info.begin();
             println!(
                 "    at {}:{}:{}",
@@ -1029,7 +1019,7 @@ impl<'a> Analyzer<'a> {
                 line_info.col_start
             );
             for (name, arg_ctx) in args_info.iter() {
-                println!("  Argument => {}: {}", name, arg_ctx.to_string())
+                println!("  Argument => {}: {}", name, arg_ctx)
             }
             println!();
             let context::Type::Function {
@@ -1044,7 +1034,7 @@ impl<'a> Analyzer<'a> {
                 is_lvalue: false,
                 taipe: (*return_type).clone(),
                 value: context::Value::Call {
-                    line_info,
+                    line_info: call_line_info,
                     fun_scope: scope_rc,
                     args: args_info,
                 },
@@ -1125,9 +1115,7 @@ impl<'a> Analyzer<'a> {
                 return Err(self.make_err(
                     format!(
                         "cannot apply '{}' operator on values of types '{}' and '{}'",
-                        &op.text,
-                        lhs.taipe.to_string(),
-                        rhs.taipe.to_string()
+                        &op.text, lhs.taipe, rhs.taipe
                     ),
                     &line_info,
                 ));
@@ -1136,9 +1124,9 @@ impl<'a> Analyzer<'a> {
                 return Err(self.make_err(
                     format!(
                         "detected integer overflow: '{}' {} '{}'",
-                        lhs.value.unwrap().to_string(),
+                        lhs.value.unwrap(),
                         &op.text,
-                        rhs.value.unwrap().to_string()
+                        rhs.value.unwrap()
                     ),
                     &line_info,
                 ));
@@ -1419,10 +1407,7 @@ impl<'a> Analyzer<'a> {
             TokenKind::ShiftLeft => {
                 if lhs.taipe.is_integer() {
                     if !rhs.taipe.is_varint() && !rhs.taipe.is_unsigned_integer() {
-                        return Err(self.make_err(
-                            format!("expected unsigned integer but got '{}'", rhs.taipe.to_string()),
-                            right,
-                        ));
+                        return Err(self.make_err(format!("expected unsigned integer but got '{}'", rhs.taipe), right));
                     }
                     // convert varint -> int
                     if lhs.taipe.is_varint() {
@@ -1472,10 +1457,7 @@ impl<'a> Analyzer<'a> {
             TokenKind::ShiftRight => {
                 if lhs.taipe.is_integer() {
                     if !rhs.taipe.is_varint() && !rhs.taipe.is_unsigned_integer() {
-                        return Err(self.make_err(
-                            format!("expected unsigned integer but got '{}'", rhs.taipe.to_string()),
-                            right,
-                        ));
+                        return Err(self.make_err(format!("expected unsigned integer but got '{}'", rhs.taipe), right));
                     }
                     // convert varint -> int
                     if lhs.taipe.is_varint() {
@@ -1738,16 +1720,13 @@ impl<'a> Analyzer<'a> {
                     return Err(self.make_err(
                         format!(
                             "cannot apply '-' operator on type '{}': unsigned values cannot be negated",
-                            ctx.taipe.to_string()
+                            ctx.taipe
                         ),
                         expr,
                     ));
                 }
                 _ => {
-                    return Err(self.make_err(
-                        format!("cannot apply '-' operator on type '{}'", ctx.taipe.to_string()),
-                        expr,
-                    ));
+                    return Err(self.make_err(format!("cannot apply '-' operator on type '{}'", ctx.taipe), expr));
                 }
             },
             // Unary bit flip operator
@@ -1788,10 +1767,7 @@ impl<'a> Analyzer<'a> {
                     },
                 }),
                 _ => {
-                    return Err(self.make_err(
-                        format!("cannot apply '~' operator on type '{}'", ctx.taipe.to_string()),
-                        expr,
-                    ));
+                    return Err(self.make_err(format!("cannot apply '~' operator on type '{}'", ctx.taipe), expr));
                 }
             },
             // Unary dereference operator
@@ -1813,7 +1789,7 @@ impl<'a> Analyzer<'a> {
                     },
                 }),
                 _ => {
-                    return Err(self.make_err(format!("cannot dereference type '{}'", ctx.taipe.to_string()), expr));
+                    return Err(self.make_err(format!("cannot dereference type '{}'", ctx.taipe), expr));
                 }
             },
             // Unary address of operator
@@ -1845,10 +1821,7 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 if !is_addressable(&ctx.taipe) {
-                    return Err(self.make_err(
-                        format!("cannot take address of value of type '{}'", ctx.taipe.to_string()),
-                        expr,
-                    ));
+                    return Err(self.make_err(format!("cannot take address of value of type '{}'", ctx.taipe), expr));
                 }
                 if !ctx.is_lvalue {
                     return Err(self.make_err("cannot take address of a prvalue (pure rvalue)", expr));
@@ -1886,10 +1859,7 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 if !is_sizeof_permitted(&ctx.taipe) {
-                    return Err(self.make_err(
-                        format!("cannot take sizeof value of type '{}'", ctx.taipe.to_string()),
-                        expr,
-                    ));
+                    return Err(self.make_err(format!("cannot take sizeof value of type '{}'", ctx.taipe), expr));
                 }
                 let taipe = match ctx.taipe {
                     context::Type::Typedef => {
@@ -1929,10 +1899,7 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 if !is_alignof_permitted(&ctx.taipe) {
-                    return Err(self.make_err(
-                        format!("cannot take alignof value of type '{}'", ctx.taipe.to_string()),
-                        expr,
-                    ));
+                    return Err(self.make_err(format!("cannot take alignof value of type '{}'", ctx.taipe), expr));
                 }
                 let taipe = match ctx.taipe {
                     context::Type::Typedef => {
@@ -1973,10 +1940,7 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 if is_typeof_permitted(&ctx.taipe) {
-                    return Err(self.make_err(
-                        format!("cannot use typeof operator on type '{}'", ctx.taipe.to_string()),
-                        expr,
-                    ));
+                    return Err(self.make_err(format!("cannot use typeof operator on type '{}'", ctx.taipe), expr));
                 }
                 Ok(Context::from_type(ctx.taipe))
             }
@@ -1991,10 +1955,7 @@ impl<'a> Analyzer<'a> {
             TokenKind::Not => {
                 // comptime: perform logical not
                 if !ctx.taipe.is_bool() {
-                    return Err(self.make_err(
-                        format!("cannot use not operator on type '{}'", ctx.taipe.to_string()),
-                        expr,
-                    ));
+                    return Err(self.make_err(format!("cannot use not operator on type '{}'", ctx.taipe), expr));
                 }
                 Ok(Context {
                     is_lvalue: false,
