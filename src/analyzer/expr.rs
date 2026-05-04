@@ -838,6 +838,21 @@ impl<'a> Analyzer<'a> {
                 })
             }
             ast::Expr::ArrayLit { line_info: _, items } => todo!(),
+            ast::Expr::Compeval {
+                line_info,
+                trivial,
+                expr,
+            } => {
+                let mut ctx = self.visit_expr(expr)?;
+                if let Some(trivial) = trivial {
+                    assert!(trivial.kind == TokenKind::DirectiveTrivial);
+                    ctx = self.compeval_trivial(ctx, line_info)?;
+                } else {
+                    // TODO: change this
+                    ctx = self.compeval_trivial(ctx, line_info)?;
+                }
+                Ok(ctx)
+            }
         }
     }
 

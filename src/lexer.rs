@@ -68,12 +68,14 @@ pub enum TokenKind {
     Sizeof,
     Typeof,
     Alignof,
+    Compeval,
 
     // Directives
     DirectiveZero,
     DirectiveUninit,
     DirectiveGhost,
     DirectiveDefault,
+    DirectiveTrivial,
 }
 
 impl TokenKind {
@@ -139,10 +141,12 @@ impl TokenKind {
             TokenKind::Sizeof => "'sizeof'",
             TokenKind::Typeof => "'typeof'",
             TokenKind::Alignof => "'alignof'",
+            TokenKind::Compeval => "'compeval'",
             TokenKind::DirectiveZero => "'#zero'",
             TokenKind::DirectiveUninit => "'#uninit'",
             TokenKind::DirectiveGhost => "'#ghost'",
             TokenKind::DirectiveDefault => "'#default'",
+            TokenKind::DirectiveTrivial => "'#trivial'",
         }
     }
 }
@@ -204,6 +208,7 @@ static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("sizeof", TokenKind::Sizeof);
     keywords.insert("typeof", TokenKind::Typeof);
     keywords.insert("alignof", TokenKind::Alignof);
+    keywords.insert("compeval", TokenKind::Compeval);
     keywords
 });
 
@@ -213,6 +218,7 @@ static DIRECTIVES: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
     directives.insert("#uninit", TokenKind::DirectiveUninit);
     directives.insert("#ghost", TokenKind::DirectiveGhost);
     directives.insert("#default", TokenKind::DirectiveDefault);
+    directives.insert("#trivial", TokenKind::DirectiveTrivial);
     directives
 });
 

@@ -401,17 +401,9 @@ impl<'a> IrPrinter {
         }
         if io::stdout().is_terminal() {
             if ctx.is_lvalue {
-                write!(
-                    self,
-                    "\x1b[92mlvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ",
-                    ctx.taipe
-                )?;
+                write!(self, "\x1b[92mlvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ", ctx.taipe)?;
             } else {
-                write!(
-                    self,
-                    "\x1b[94mprvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ",
-                    ctx.taipe
-                )?;
+                write!(self, "\x1b[94mprvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ", ctx.taipe)?;
             }
         } else {
             if ctx.is_lvalue {
@@ -1088,6 +1080,17 @@ impl AstPrinter {
             ast::Expr::ArrayLit { line_info: _, items } => {
                 write!(self, "::ArrayLit")?;
                 self.print_list("items", items, Self::print_expr)?;
+            }
+            ast::Expr::Compeval {
+                line_info: _,
+                trivial,
+                expr,
+            } => {
+                write!(self, "::Compeval")?;
+                if let Some(trivial) = trivial {
+                    self.print_tok("trivial", trivial)?;
+                }
+                self.print_expr("expr", expr)?;
             }
         }
         Ok(())

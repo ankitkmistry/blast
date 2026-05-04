@@ -1,11 +1,11 @@
 // 1 0b1 0o147 0x1abcd 1.2 1.23e+23 1.23e-23 0xab.cdp+2
 // TODO: modifiers
-// comptime
-// extern "C"
-// public
-// public(scope)
-// mutable
-// static
+//   comptime
+//   extern "C"
+//   public
+//   public(scope)
+//   mutable
+//   static
 
 // This is a single line comment
 /* This is a multi
@@ -103,11 +103,7 @@ constants :: module {
     floats_count : __u64 : 10;
 }
 
-count_gen :: fun () -> __int { return 10; }
-
-// floats : [constants.floats_count * 2 + 1]__f32;
-floats : [count_gen()]__f32;
-// floats : [10]__f32;
+floats : [constants.floats_count * 2 + 1]__f32;
 
 // comptime overflow check
 i :: 7265465651321354631;
@@ -196,7 +192,7 @@ y : (__bool, __i32) = #zero;
 // TODO: implement literals
 
 main :: fun () -> __i64 {
-    return 69 | 420;
+    return compeval (69 | 420);
 }
 
 // This is a comment at the end of a line

@@ -208,6 +208,11 @@ pub enum Expr {
         line_info: LineInfo,
         items: Vec<Expr>,
     },
+    Compeval {
+        line_info: LineInfo,
+        trivial: Option<Token>,
+        expr: Box<Expr>,
+    },
 }
 
 impl Object {
@@ -406,6 +411,11 @@ impl HasLineInfo for Expr {
             Expr::Paren { line_info, expr: _ } => *line_info,
             Expr::Tuple { line_info, exprs: _ } => *line_info,
             Expr::ArrayLit { line_info, items: _ } => *line_info,
+            Expr::Compeval {
+                line_info,
+                trivial: _,
+                expr: _,
+            } => *line_info,
         }
     }
 }

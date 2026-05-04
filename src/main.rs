@@ -97,7 +97,7 @@ fn main() -> ExitCode {
         .init()
         .unwrap();
 
-    if let Err(err) = compile_file("examples/program.bl") {
+    if let Err(err) = compile_file("examples/small.bl") {
         printer::print_error(err);
         println!();
         if cfg!(debug_assertions) {
