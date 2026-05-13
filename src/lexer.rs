@@ -68,6 +68,14 @@ pub enum TokenKind {
     Sizeof,
     Typeof,
     Alignof,
+    Compeval,
+
+    // Directives
+    DirectiveZero,
+    DirectiveUninit,
+    DirectiveGhost,
+    DirectiveDefault,
+    DirectiveTrivial,
 }
 
 impl TokenKind {
@@ -133,6 +141,12 @@ impl TokenKind {
             TokenKind::Sizeof => "'sizeof'",
             TokenKind::Typeof => "'typeof'",
             TokenKind::Alignof => "'alignof'",
+            TokenKind::Compeval => "'compeval'",
+            TokenKind::DirectiveZero => "'#zero'",
+            TokenKind::DirectiveUninit => "'#uninit'",
+            TokenKind::DirectiveGhost => "'#ghost'",
+            TokenKind::DirectiveDefault => "'#default'",
+            TokenKind::DirectiveTrivial => "'#trivial'",
         }
     }
 }
@@ -194,7 +208,18 @@ static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
     keywords.insert("sizeof", TokenKind::Sizeof);
     keywords.insert("typeof", TokenKind::Typeof);
     keywords.insert("alignof", TokenKind::Alignof);
+    keywords.insert("compeval", TokenKind::Compeval);
     keywords
+});
+
+static DIRECTIVES: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
+    let mut directives: HashMap<&str, TokenKind> = HashMap::new();
+    directives.insert("#zero", TokenKind::DirectiveZero);
+    directives.insert("#uninit", TokenKind::DirectiveUninit);
+    directives.insert("#ghost", TokenKind::DirectiveGhost);
+    directives.insert("#default", TokenKind::DirectiveDefault);
+    directives.insert("#trivial", TokenKind::DirectiveTrivial);
+    directives
 });
 
 impl Lexer {
@@ -213,7 +238,12 @@ impl Lexer {
     }
 
     pub fn next_token(&mut self) -> CompileResult<Token> {
-        // FIXME: Fix comments as the last line in files
+        let token = self.next_token_impl()?;
+        // Skip comments so that has_next_token does not get confused
+        self.skip_unwanted()?;
+        Ok(token)
+    }
+    fn next_token_impl(&mut self) -> CompileResult<Token> {
         macro_rules! token {
             ($kind:ident) => {
                 return Ok(self.make_token($kind))
@@ -228,6 +258,7 @@ impl Lexer {
         self.line_info.line_end = self.line_info.line_start;
         self.line_info.col_end = self.line_info.col_start;
         loop {
+            self.skip_unwanted()?;
             let c = self.getchar()?;
             match c {
                 '(' => token!(LParen),
@@ -279,26 +310,17 @@ impl Lexer {
                 '~' => token!(Tilde),
                 '*' => token!(Star),
                 '/' => {
-                    if self.check("/") {
-                        loop {
-                            if let Some(c) = self.peek() {
-                                if c == '\n' {
-                                    break;
-                                }
-                                self.advance();
-                            } else {
-                                break;
-                            }
-                        }
-                    } else {
-                        token!(Slash)
-                    }
+                    token!(Slash)
                 }
                 '%' => token!(Percent),
                 '+' => token!(Plus),
                 '&' => token!(Ampersand),
                 '^' => token!(Caret),
                 '|' => token!(Pipe),
+                '#' => {
+                    self.expect_ident(true)?;
+                    token!(Ident)
+                }
                 '$' => {
                     self.expect_ident(true)?;
                     token!(Label)
@@ -339,10 +361,7 @@ impl Lexer {
                                 .collect::<String>()
                                 .bytes()
                                 .collect::<Vec<_>>();
-                            token!(
-                                IntLit,
-                                Some(TokenValue::Int(Int::parse_arbitrary(&buf, 10)))
-                            )
+                            token!(IntLit, Some(TokenValue::Int(Int::parse_arbitrary(&buf, 10))))
                         }
                     }
                 }
@@ -356,11 +375,7 @@ impl Lexer {
                                 self.expect_binary()?;
                                 let suffix_start = self.index;
                                 if self.check_int_suffix() {
-                                    return self.make_int_tok_with_suffix(
-                                        num_start,
-                                        suffix_start,
-                                        2,
-                                    );
+                                    return self.make_int_tok_with_suffix(num_start, suffix_start, 2);
                                 } else {
                                     let buf = self
                                         .text
@@ -370,10 +385,7 @@ impl Lexer {
                                         .collect::<String>()
                                         .bytes()
                                         .collect::<Vec<_>>();
-                                    token!(
-                                        IntLit,
-                                        Some(TokenValue::Int(Int::parse_arbitrary(&buf, 2)))
-                                    )
+                                    token!(IntLit, Some(TokenValue::Int(Int::parse_arbitrary(&buf, 2))))
                                 }
                             }
                             // hex
@@ -391,11 +403,7 @@ impl Lexer {
                                 } else {
                                     let suffix_start = self.index;
                                     if self.check_int_suffix() {
-                                        return self.make_int_tok_with_suffix(
-                                            num_start,
-                                            suffix_start,
-                                            16,
-                                        );
+                                        return self.make_int_tok_with_suffix(num_start, suffix_start, 16);
                                     } else {
                                         let buf = self
                                             .text
@@ -405,10 +413,7 @@ impl Lexer {
                                             .collect::<String>()
                                             .bytes()
                                             .collect::<Vec<_>>();
-                                        token!(
-                                            IntLit,
-                                            Some(TokenValue::Int(Int::parse_arbitrary(&buf, 16)))
-                                        )
+                                        token!(IntLit, Some(TokenValue::Int(Int::parse_arbitrary(&buf, 16))))
                                     }
                                 }
                             }
@@ -418,11 +423,7 @@ impl Lexer {
                                 self.expect_octal()?;
                                 let suffix_start = self.index;
                                 if self.check_int_suffix() {
-                                    return self.make_int_tok_with_suffix(
-                                        num_start,
-                                        suffix_start,
-                                        8,
-                                    );
+                                    return self.make_int_tok_with_suffix(num_start, suffix_start, 8);
                                 } else {
                                     let buf = self
                                         .text
@@ -432,10 +433,7 @@ impl Lexer {
                                         .collect::<String>()
                                         .bytes()
                                         .collect::<Vec<_>>();
-                                    token!(
-                                        IntLit,
-                                        Some(TokenValue::Int(Int::parse_arbitrary(&buf, 8)))
-                                    )
+                                    token!(IntLit, Some(TokenValue::Int(Int::parse_arbitrary(&buf, 8))))
                                 }
                             }
                             // decimal float
@@ -450,11 +448,7 @@ impl Lexer {
                                 self.expect_decimal(false)?;
                                 let suffix_start = self.index;
                                 if self.check_int_suffix() {
-                                    return self.make_int_tok_with_suffix(
-                                        num_start,
-                                        suffix_start,
-                                        10,
-                                    );
+                                    return self.make_int_tok_with_suffix(num_start, suffix_start, 10);
                                 } else {
                                     let buf = self
                                         .text
@@ -464,10 +458,7 @@ impl Lexer {
                                         .collect::<String>()
                                         .bytes()
                                         .collect::<Vec<_>>();
-                                    token!(
-                                        IntLit,
-                                        Some(TokenValue::Int(Int::parse_arbitrary(&buf, 10)))
-                                    )
+                                    token!(IntLit, Some(TokenValue::Int(Int::parse_arbitrary(&buf, 10))))
                                 }
                             }
                         },
@@ -484,41 +475,116 @@ impl Lexer {
         }
     }
 
-    fn make_int_tok_with_suffix(
-        &mut self,
-        num_start: usize,
-        suffix_start: usize,
-        radix: u32,
-    ) -> CompileResult<Token> {
-        let buf = self.text[num_start..suffix_start]
-            .bytes()
-            .collect::<Vec<_>>();
-        let mut iter = self.text.chars();
-        let signed = iter.nth(suffix_start).unwrap() == 'i';
-        let size = iter
-            .take(self.index - suffix_start - 1)
-            .collect::<String>()
-            .parse::<u32>()
-            .unwrap();
-        Ok(self.make_token_with_val(
-            TokenKind::IntLit,
-            Some(TokenValue::Int(Int::parse(&buf, radix))),
-        ))
+    fn skip_unwanted(&mut self) -> CompileResult<()> {
+        loop {
+            let Some(c) = self.peek() else { return Ok(()) };
+            match c {
+                '/' => {
+                    if let Some(c) = self.peek_at(1) {
+                        match c {
+                            '/' => {
+                                // Single line comment
+                                self.getchar()?;
+                                self.getchar()?;
+                                self.skip_line();
+                            }
+                            '*' => {
+                                // Multi line comment
+                                self.start = self.index;
+                                self.line_info.line_start = self.line_info.line_end;
+                                self.line_info.col_start = self.line_info.col_end;
+                                self.getchar()?;
+                                self.getchar()?;
+                                self.skip_multiline_comment()?;
+                            }
+                            _ => break,
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                ' ' | '\t' | '\r' | '\n' => {
+                    self.getchar()?;
+                }
+                _ => break,
+            }
+        }
+        self.start = self.index;
+        self.line_info.line_start = self.line_info.line_end;
+        self.line_info.col_start = self.line_info.col_end;
+        Ok(())
+    }
+
+    fn skip_multiline_comment(&mut self) -> CompileResult<()> {
+        let mut depth = 1;
+        loop {
+            if depth == 0 {
+                break;
+            }
+            if let Some(c) = self.peek() {
+                match c {
+                    '/' => {
+                        if let Some(c) = self.peek_at(1)
+                            && c == '*'
+                        {
+                            self.getchar()?;
+                            depth += 1;
+                        }
+                    }
+                    '*' => {
+                        if let Some(c) = self.peek_at(1)
+                            && c == '/'
+                        {
+                            self.getchar()?;
+                            depth -= 1;
+                        }
+                    }
+                    _ => {}
+                }
+                self.advance();
+            } else {
+                return Err(self
+                    .make_error(format!("expected end of multiline comment, comment depth: '{}'", depth))
+                    .chain(self.make_note_at_start("comment starts here")));
+            }
+        }
+        Ok(())
+    }
+
+    fn skip_line(&mut self) {
+        loop {
+            if let Some(c) = self.peek() {
+                if c == '\n' {
+                    break;
+                }
+                self.advance();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn make_int_tok_with_suffix(&mut self, num_start: usize, suffix_start: usize, radix: u32) -> CompileResult<Token> {
+        let buf = self.text[num_start..suffix_start].bytes().collect::<Vec<_>>();
+        Ok(self.make_token_with_val(TokenKind::IntLit, Some(TokenValue::Int(Int::parse(&buf, radix)))))
     }
 
     fn get_ident_kind(text: &str) -> TokenKind {
-        KEYWORDS.get(text).copied().unwrap_or(TokenKind::Ident)
+        KEYWORDS
+            .get(text)
+            .copied()
+            .unwrap_or_else(|| DIRECTIVES.get(text).copied().unwrap_or(TokenKind::Ident))
     }
 
     fn make_token_with_val(&mut self, kind: TokenKind, value: Option<TokenValue>) -> Token {
         // Construct the token
-        // let text: String = self
-        //     .text
-        //     .chars()
-        //     .skip(self.start)
-        //     .take(self.index - self.start)
-        //     .collect();
-        let text = self.text[self.start..self.index].to_owned();
+        let text: String = self
+            .text
+            .chars()
+            .skip(self.start)
+            .take(self.index - self.start)
+            .collect();
+        // let text = self.text[self.start..self.index].to_owned();
         let result = Token {
             line_info: self.line_info,
             kind: if kind == TokenKind::Ident {
@@ -774,14 +840,10 @@ impl Lexer {
         // TODO: use prefix
         if do_start {
             let Some(c) = self.advance() else {
-                return Err(
-                    self.make_error_cur(format!("expected <{prefix}{quantifier}...{quantifier}>"))
-                );
+                return Err(self.make_error_cur(format!("expected <{prefix}{quantifier}...{quantifier}>")));
             };
             if c != quantifier {
-                return Err(
-                    self.make_error_cur(format!("expected <{prefix}{quantifier}...{quantifier}>"))
-                );
+                return Err(self.make_error_cur(format!("expected <{prefix}{quantifier}...{quantifier}>")));
             }
         }
         let mut text = String::new();
@@ -789,9 +851,7 @@ impl Lexer {
             match self.peek() {
                 Some(c) => {
                     if !multiline && c == '\n' {
-                        return Err(self.make_error(format!(
-                            "newlines are not allowed in single-line strings"
-                        )));
+                        return Err(self.make_error(format!("newlines are not allowed in single-line strings")));
                     }
                     self.advance();
                     if c == '\\' {
@@ -810,9 +870,7 @@ impl Lexer {
                             'x' => {
                                 let dig1 = self.getchar()?;
                                 if !Self::is_octal(dig1) {
-                                    return Err(
-                                        self.make_error_cur(format!("expected octal digit"))
-                                    );
+                                    return Err(self.make_error_cur(format!("expected octal digit")));
                                 }
                                 let dig2 = self.getchar()?;
                                 if !Self::is_hex(dig2) {
@@ -839,9 +897,7 @@ impl Lexer {
                                             break;
                                         }
                                         if !Self::is_hex(c) {
-                                            return Err(
-                                                self.make_error(format!("expected hex digit"))
-                                            );
+                                            return Err(self.make_error(format!("expected hex digit")));
                                         }
                                     }
                                     let c = self.getchar()?;
@@ -874,8 +930,7 @@ impl Lexer {
                                 c
                             }
                             _ => {
-                                return Err(self
-                                    .make_error_cur(format!("invalid escape sequence '\\{}'", c)));
+                                return Err(self.make_error_cur(format!("invalid escape sequence '\\{}'", c)));
                             }
                         };
                         text.push(unescaped);
@@ -955,5 +1010,18 @@ impl Lexer {
             },
             msg,
         )
+    }
+
+    fn make_note_at_start(&self, msg: impl ToString) -> CompileError {
+        CompileError::LexerNote {
+            file_path: self.file_path.clone(),
+            line_info: LineInfo {
+                line_start: self.line_info.line_start,
+                line_end: self.line_info.line_start,
+                col_start: self.line_info.col_start,
+                col_end: self.line_info.col_start + 1,
+            },
+            msg: msg.to_string(),
+        }
     }
 }

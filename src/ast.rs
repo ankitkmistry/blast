@@ -3,6 +3,7 @@ use crate::{
     lexer::Token,
 };
 
+#[derive(Clone)]
 pub enum Decl {
     Decl {
         name: Token,
@@ -10,12 +11,19 @@ pub enum Decl {
         eq_token: Option<Token>,
         object: Option<Object>,
     },
+    DeclWithDirective {
+        name: Token,
+        taipe: Type,
+        eq_token: Token,
+        directive: Token,
+    },
     Using {
         line_info: LineInfo,
         items: Vec<Token>,
     },
 }
 
+#[derive(Clone)]
 pub enum Object {
     ExternModule {
         line_info: LineInfo,
@@ -39,8 +47,10 @@ pub enum Object {
     Expr(Expr),
 }
 
+#[derive(Clone)]
 pub enum Field {
     Compound {
+        line_info: LineInfo,
         token: Token,
         fields: Vec<Field>,
     },
@@ -52,6 +62,7 @@ pub enum Field {
     },
 }
 
+#[derive(Clone)]
 pub struct Param {
     pub name: Token,
     pub taipe: Type,
@@ -59,6 +70,7 @@ pub struct Param {
     pub expr: Option<Expr>,
 }
 
+#[derive(Clone)]
 pub enum Stmt {
     If {
         line_info: LineInfo,
@@ -143,6 +155,12 @@ pub struct Arg {
 
 #[derive(Clone)]
 pub enum Expr {
+    // Block
+    Block {
+        line_info: LineInfo,
+        stmts: Vec<Stmt>,
+    },
+    // Assignment
     Assign {
         lhses: Vec<Expr>,
         op: Token,
@@ -190,19 +208,18 @@ pub enum Expr {
         line_info: LineInfo,
         items: Vec<Expr>,
     },
+    Compeval {
+        line_info: LineInfo,
+        trivial: Option<Token>,
+        expr: Box<Expr>,
+    },
 }
 
 impl Object {
     pub fn is_module(&self) -> bool {
         match self {
-            Object::ExternModule {
-                line_info: _,
-                value: _,
-            } => true,
-            Object::Module {
-                line_info: _,
-                decls: _,
-            } => true,
+            Object::ExternModule { line_info: _, value: _ } => true,
+            Object::Module { line_info: _, decls: _ } => true,
             _ => false,
         }
     }
@@ -225,10 +242,13 @@ impl HasLineInfo for Decl {
                     name.get_line_info()
                 }
             }
-            Decl::Using {
-                line_info,
-                items: _,
-            } => *line_info,
+            Decl::DeclWithDirective {
+                name,
+                taipe: _,
+                eq_token: _,
+                directive,
+            } => LineInfo::from_range(name, directive),
+            Decl::Using { line_info, items: _ } => *line_info,
         }
     }
 }
@@ -236,24 +256,15 @@ impl HasLineInfo for Decl {
 impl HasLineInfo for Object {
     fn get_line_info(&self) -> LineInfo {
         match self {
-            Object::ExternModule {
-                line_info,
-                value: _,
-            } => *line_info,
-            Object::Module {
-                line_info,
-                decls: _,
-            } => *line_info,
+            Object::ExternModule { line_info, value: _ } => *line_info,
+            Object::Module { line_info, decls: _ } => *line_info,
             Object::Fun {
                 line_info,
                 params: _,
                 ret: _,
                 body: _,
             } => *line_info,
-            Object::Compound {
-                line_info,
-                field: _,
-            } => *line_info,
+            Object::Compound { line_info, field: _ } => *line_info,
             Object::Typedef(taipe) => taipe.get_line_info(),
             Object::Expr(expr) => expr.get_line_info(),
         }
@@ -263,7 +274,11 @@ impl HasLineInfo for Object {
 impl HasLineInfo for Field {
     fn get_line_info(&self) -> LineInfo {
         match self {
-            Field::Compound { token, fields } => LineInfo::from_range(token, fields),
+            Field::Compound {
+                line_info,
+                token: _,
+                fields: _,
+            } => *line_info,
             Field::Decl {
                 name,
                 taipe,
@@ -305,10 +320,7 @@ impl HasLineInfo for Stmt {
                 expr: _,
                 then_body: _,
             } => *line_info,
-            Stmt::Block {
-                line_info,
-                stmts: _,
-            } => *line_info,
+            Stmt::Block { line_info, stmts: _ } => *line_info,
             Stmt::Yield { token, expr } => LineInfo::from_range(token, expr),
             Stmt::Continue { token, label } => {
                 if let Some(l) = label {
@@ -354,18 +366,9 @@ impl HasLineInfo for Type {
                 taipe: _,
                 expr: _,
             } => *line_info,
-            Type::Fat {
-                line_info,
-                taipe: _,
-            } => *line_info,
-            Type::Paren {
-                line_info,
-                taipe: _,
-            } => *line_info,
-            Type::Tuple {
-                line_info,
-                types: _,
-            } => *line_info,
+            Type::Fat { line_info, taipe: _ } => *line_info,
+            Type::Paren { line_info, taipe: _ } => *line_info,
+            Type::Tuple { line_info, types: _ } => *line_info,
             Type::Literal(token) => token.get_line_info(),
         }
     }
@@ -384,6 +387,7 @@ impl HasLineInfo for Arg {
 impl HasLineInfo for Expr {
     fn get_line_info(&self) -> LineInfo {
         match self {
+            Expr::Block { line_info, stmts: _ } => *line_info,
             Expr::Assign {
                 lhses: lhs,
                 op: _,
@@ -405,13 +409,12 @@ impl HasLineInfo for Expr {
             } => *line_info,
             Expr::Literal(token) => token.get_line_info(),
             Expr::Paren { line_info, expr: _ } => *line_info,
-            Expr::Tuple {
+            Expr::Tuple { line_info, exprs: _ } => *line_info,
+            Expr::ArrayLit { line_info, items: _ } => *line_info,
+            Expr::Compeval {
                 line_info,
-                exprs: _,
-            } => *line_info,
-            Expr::ArrayLit {
-                line_info,
-                items: _,
+                trivial: _,
+                expr: _,
             } => *line_info,
         }
     }

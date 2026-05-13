@@ -2,13 +2,12 @@ use indexmap::IndexMap;
 
 use crate::{
     ast,
+    cfg::{ControlGraph, ControlNodeId},
     common::{HasLineInfo, Layout, LineInfo},
     context::{self, Context},
 };
 use std::{
-    cell::RefCell,
-    collections::HashMap,
-    rc::{Rc, Weak},
+    cell::RefCell, collections::HashMap, fmt, rc::{Rc, Weak}, sync::atomic::AtomicU64
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -28,9 +27,9 @@ impl From<&str> for SymbolPath {
     }
 }
 
-impl ToString for SymbolPath {
-    fn to_string(&self) -> String {
-        self.elms.join(".")
+impl fmt::Display for SymbolPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.elms.join("."))
     }
 }
 
@@ -52,7 +51,7 @@ impl SymbolPath {
     // }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum ScopeNode<'a> {
     Decl(&'a ast::Decl),
     Field(&'a ast::Field),
@@ -69,7 +68,6 @@ impl<'a> HasLineInfo for ScopeNode<'a> {
     }
 }
 
-#[derive(Clone)]
 pub enum State<'a> {
     /// Scope is not visited yet
     NotVisited(ScopeNode<'a>),
@@ -79,26 +77,34 @@ pub enum State<'a> {
     Visited(Context<'a>),
 }
 
-#[derive(Clone)]
 pub enum Payload<'a> {
     Compound(Compound<'a>),
     Function(Function<'a>),
-    Block,
+    Block(Block<'a>),
     LayoutResolutionInProg,
     None,
 }
 
-#[derive(Clone)]
-pub struct LoopInfo;
+pub struct Block<'a> {
+    pub cfg: ControlGraph<'a>,
+    pub cf_start: ControlNodeId,
+    pub cf_end: ControlNodeId,
+    pub cf_last: ControlNodeId,
+    pub cf_unreachable: ControlNodeId,
+}
 
-#[derive(Clone)]
+#[derive(Copy, Clone)]
+pub struct LoopInfo {
+    pub cf_break: ControlNodeId,
+    pub cf_continue: ControlNodeId,
+}
+
 pub struct ParamInfo<'a> {
     pub taipe: context::Type<'a>,
     pub default: Option<context::Value<'a>>,
     pub line_info: LineInfo,
 }
 
-#[derive(Clone)]
 pub struct Function<'a> {
     pub param_infos: IndexMap<String, ParamInfo<'a>>,
     pub loop_stack: IndexMap<String, LoopInfo>,
@@ -122,9 +128,7 @@ impl<'a> Function<'a> {
             .count()
     }
     pub fn has_default_params(&self) -> bool {
-        self.param_infos
-            .iter()
-            .any(|(_, param)| param.default.is_some())
+        self.param_infos.iter().any(|(_, param)| param.default.is_some())
     }
 }
 
@@ -136,7 +140,8 @@ pub enum Field<'a> {
         file_path: String,
         line_info: LineInfo,
         name: String,
-        ctx: Context<'a>,
+        taipe: context::Type<'a>,
+        scope: Rc<RefCell<Scope<'a>>>,
     },
 }
 
@@ -166,7 +171,20 @@ impl<'a> Compound<'a> {
 
 pub type Map<K, V> = IndexMap<K, V>;
 
-#[derive(Clone)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ScopeKind {
+    Module,
+    Compound,
+    Field,
+    Function,
+    Param,
+    Typedef,
+    Variable,
+    Const,
+    Block,
+    None,
+}
+
 pub struct Scope<'a> {
     /// Weak reference to the parent scope
     pub parent: Weak<RefCell<Scope<'a>>>,
@@ -176,10 +194,12 @@ pub struct Scope<'a> {
     pub file_path: Option<String>,
     /// The symbol path of the scope
     pub sym_path: SymbolPath,
+    /// The kind of the scope
+    pub kind: ScopeKind,
     /// The name of the scope in the form of a token. (to improve error output)
     pub name: String,
     /// The line info of the scope.
-    line_info: LineInfo,
+    pub line_info: LineInfo,
     /// The state for the context evaluation of this scope
     pub state: State<'a>,
     /// The payload data for this scope.
@@ -187,6 +207,13 @@ pub struct Scope<'a> {
     pub payload: Payload<'a>,
     /// The children of this scope
     pub children: Map<String, Rc<RefCell<Scope<'a>>>>,
+
+    /// Counter for generating unique names of anonymous scopes
+    pub unique_counter: AtomicU64,
+    /// Counter for generating unique names of blocks
+    pub block_counter: AtomicU64,
+    /// Counter for generating unique names of anonymous loop labels
+    pub loop_counter: AtomicU64,
 }
 
 impl<'a> Scope<'a> {
@@ -195,16 +222,21 @@ impl<'a> Scope<'a> {
             parent: Weak::new(),
             file_path: Some(file_path.to_owned()),
             sym_path: SymbolPath::new(),
+            kind: ScopeKind::Module,
             name: "".to_string(),
             line_info: node.get_line_info(),
             state: State::NotVisited(ScopeNode::Object(node)),
             payload: Payload::None,
             children: Map::new(),
+            unique_counter: AtomicU64::new(0),
+            block_counter: AtomicU64::new(0),
+            loop_counter: AtomicU64::new(0),
         }))
     }
 
     pub fn add_child(
         parent: &Rc<RefCell<Scope<'a>>>,
+        kind: ScopeKind,
         name: &str,
         state: State<'a>,
         line_info: &impl HasLineInfo,
@@ -217,57 +249,45 @@ impl<'a> Scope<'a> {
             parent: Rc::downgrade(parent),
             file_path: None,
             sym_path,
+            kind,
             name: name.to_string(),
             line_info: line_info.get_line_info(),
             state,
             payload: Payload::None,
             children: Map::new(),
+            unique_counter: AtomicU64::new(0),
+            block_counter: AtomicU64::new(0),
+            loop_counter: AtomicU64::new(0),
         }));
         // Clone it so we can return later
         let result = Rc::clone(&child);
         // Finishing up
         let ret = parent.borrow_mut().children.insert(name.to_owned(), child);
         if name != "_" {
-            assert!(
-                ret.is_none(),
-                "redeclaration should be prohibited from analyzer"
-            );
+            assert!(ret.is_none(), "redeclaration should be prohibited from analyzer");
         }
         result
     }
 
+    pub fn is_variable(&self) -> bool {
+        match self.kind {
+            ScopeKind::Variable => true,
+            _ => false,
+        }
+    }
+
     pub fn is_function(&self) -> bool {
-        match &self.state {
-            State::NotVisited(_) => panic!("impossible to know"),
-            State::VisitInProg => {
-                if self.is_block() {
-                    false
-                } else {
-                    panic!("impossible to know")
-                }
-            }
-            State::Visited(ctx) => ctx.taipe.is_function(),
+        match self.kind {
+            ScopeKind::Function => true,
+            _ => false,
         }
     }
 
     pub fn get_enclosing_function(&self) -> Option<Rc<RefCell<Scope<'a>>>> {
         if let Some(parent) = self.parent.upgrade() {
-            match &parent.borrow().state {
-                State::NotVisited(_) => panic!("impossible to know"),
-                State::VisitInProg => {
-                    if self.is_block() {
-                        parent.borrow().get_enclosing_function()
-                    } else {
-                        panic!("impossible to know")
-                    }
-                }
-                State::Visited(ctx) => {
-                    if ctx.taipe.is_function() {
-                        Some(Rc::clone(&parent))
-                    } else {
-                        parent.borrow().get_enclosing_function()
-                    }
-                }
+            match parent.borrow().kind {
+                ScopeKind::Function => Some(Rc::clone(&parent)),
+                _ => parent.borrow().get_enclosing_function(),
             }
         } else {
             None
@@ -275,16 +295,16 @@ impl<'a> Scope<'a> {
     }
 
     pub fn is_block(&self) -> bool {
-        match self.payload {
-            Payload::Block => true,
+        match self.kind {
+            ScopeKind::Block => true,
             _ => false,
         }
     }
 
     pub fn get_enclosing_block(&self) -> Option<Rc<RefCell<Scope<'a>>>> {
         if let Some(parent) = self.parent.upgrade() {
-            match parent.borrow().payload {
-                Payload::Block => Some(Rc::clone(&parent)),
+            match parent.borrow().kind {
+                ScopeKind::Block => Some(Rc::clone(&parent)),
                 _ => None,
             }
         } else {

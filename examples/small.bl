@@ -1,0 +1,3 @@
+main :: fun () -> __int {
+    return compeval ((1 + 2) * 3);
+}

@@ -8,7 +8,7 @@ use num_traits::ToPrimitive;
 
 // line_start and line_end is inclusive
 // col_start and col_end is exclusive
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LineInfo {
     pub line_start: usize,
     pub line_end: usize,
@@ -106,8 +106,12 @@ where
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
-    // FileNotFound(String),
     LexerError {
+        file_path: String,
+        line_info: LineInfo,
+        msg: String,
+    },
+    LexerNote {
         file_path: String,
         line_info: LineInfo,
         msg: String,
@@ -132,6 +136,9 @@ pub enum CompileError {
         line_info: LineInfo,
         msg: String,
     },
+    SemNoteWithoutPath {
+        msg: String,
+    },
     SemHelp {
         msg: String,
     },
@@ -146,7 +153,7 @@ impl CompileError {
     pub fn is_empty(&self) -> bool {
         match self {
             CompileError::Errors(errs) => errs.is_empty(),
-            _ => true,
+            _ => false,
         }
     }
     pub fn chain(self, other: CompileError) -> Self {

@@ -3,6 +3,7 @@ use std::{
     collections::HashMap,
     fmt::{self, Write},
     fs,
+    io::{self, IsTerminal},
     rc::Rc,
 };
 
@@ -11,6 +12,7 @@ use color_print::{cprint, cprintln, cwrite};
 use crate::{
     ast,
     common::{CompileError, HasLineInfo, LineInfo},
+    context::{self, Context},
     lexer::Token,
     scope,
 };
@@ -28,6 +30,11 @@ pub fn print_error(err: CompileError) {
             line_info,
             msg,
         } => print_diagnostic(DiagKind::Error, &file_path, line_info, &msg),
+        CompileError::LexerNote {
+            file_path,
+            line_info,
+            msg,
+        } => print_diagnostic(DiagKind::Note, &file_path, line_info, &msg),
         CompileError::ParserError {
             file_path,
             line_info,
@@ -53,6 +60,7 @@ pub fn print_error(err: CompileError) {
             line_info,
             msg,
         } => print_diagnostic(DiagKind::Note, &file_path, line_info, &msg),
+        CompileError::SemNoteWithoutPath { msg } => print_note(&msg),
         CompileError::SemHelp { msg } => print_help(&msg),
         CompileError::SemCyclic {
             file_path: _,
@@ -64,11 +72,7 @@ pub fn print_error(err: CompileError) {
 fn interpolate_char(c1: char, c2: char) -> char {
     // This function handles \t and other kind of whitespaces
     // But ignores normal ' '
-    if c1 != ' ' && c1.is_whitespace() {
-        c1
-    } else {
-        c2
-    }
+    if c1 != ' ' && c1.is_whitespace() { c1 } else { c2 }
 }
 
 fn num_digits(x: usize) -> usize {
@@ -141,10 +145,12 @@ fn process_err_msg(msg: &str) -> String {
     result
 }
 
+fn print_note(msg: &str) {
+    cprint!("<rgb(7,172,242),s>note</>: <s>{}</>", process_err_msg(msg));
+}
+
 fn print_help(msg: &str) {
-    // cprint!("<g,s>help</>: ");
-    cprint!("<rgb(0,230,0),s>help</>: ");
-    cprintln!("<s>{}</>", process_err_msg(msg));
+    cprint!("<rgb(0,230,0),s>help</>: <s>{}</>", process_err_msg(msg));
 }
 
 fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &str) {
@@ -188,11 +194,7 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
                 let col = j + 1;
                 let c = line.chars().nth(j).unwrap_or(' ');
                 if line_info.col_start <= col && col < line_info.col_end {
-                    let _ = cwrite!(
-                        &mut underline,
-                        "<y!>{}</>",
-                        interpolate_char(c, underline_char)
-                    );
+                    let _ = cwrite!(&mut underline, "<y!>{}</>", interpolate_char(c, underline_char));
                 } else {
                     underline.push(interpolate_char(c, ' '));
                 }
@@ -203,11 +205,7 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
                 let col = j + 1;
                 let c = line.chars().nth(j).unwrap_or(' ');
                 if line_info.col_start <= col {
-                    let _ = cwrite!(
-                        &mut underline,
-                        "<y!>{}</>",
-                        interpolate_char(c, underline_char)
-                    );
+                    let _ = cwrite!(&mut underline, "<y!>{}</>", interpolate_char(c, underline_char));
                 } else {
                     underline.push(interpolate_char(c, ' '));
                 }
@@ -218,11 +216,7 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
                 let col = j + 1;
                 let c = line.chars().nth(j).unwrap_or(' ');
                 if col < line_info.col_end {
-                    let _ = cwrite!(
-                        &mut underline,
-                        "<y!>{}</>",
-                        interpolate_char(c, underline_char)
-                    );
+                    let _ = cwrite!(&mut underline, "<y!>{}</>", interpolate_char(c, underline_char));
                 } else {
                     underline.push(interpolate_char(c, ' '));
                 }
@@ -231,20 +225,12 @@ fn print_diagnostic(kind: DiagKind, file_path: &str, line_info: LineInfo, msg: &
             let count = line.chars().count().max(line_info.col_end - 1);
             for j in 0..count {
                 let c = line.chars().nth(j).unwrap_or(' ');
-                let _ = cwrite!(
-                    &mut underline,
-                    "<y!>{}</>",
-                    interpolate_char(c, underline_char)
-                );
+                let _ = cwrite!(&mut underline, "<y!>{}</>", interpolate_char(c, underline_char));
             }
         }
 
         cprintln!("<m!,s>{:>line_column_width$}</> <b!>|</> {}", lineno, line);
-        cprintln!(
-            "<m!,s>{: >line_column_width$}</> <b!>|</> {}",
-            "",
-            underline
-        );
+        cprintln!("<m!,s>{: >line_column_width$}</> <b!>|</> {}", "", underline);
     }
 }
 
@@ -276,8 +262,6 @@ pub fn print_scopes<'a>(scopes: &HashMap<String, Rc<RefCell<scope::Scope<'a>>>>)
 }
 
 fn print_scope<'a>(name: &str, scope: Ref<'_, scope::Scope<'a>>, is_last_vec: &mut Vec<bool>) {
-    // TODO: show payload
-
     for (i, &is_last) in is_last_vec.iter().enumerate() {
         if i == is_last_vec.len() - 1 {
             if is_last {
@@ -296,8 +280,8 @@ fn print_scope<'a>(name: &str, scope: Ref<'_, scope::Scope<'a>>, is_last_vec: &m
         scope::State::NotVisited(_) => print!("not evaluated"),
         scope::State::VisitInProg => print!("evaluation in progress"),
         scope::State::Visited(ctx) => {
-            print!("{}", ctx.to_string());
-            if let Some(value) = &ctx.value {
+            print!("{}", ctx);
+            if let context::Value::Imm(value) = &ctx.value {
                 let repr = value.to_string();
                 if !repr.is_empty() {
                     print!(" = {}", repr);
@@ -314,10 +298,18 @@ fn print_scope<'a>(name: &str, scope: Ref<'_, scope::Scope<'a>>, is_last_vec: &m
     }
 }
 
-pub fn print_ast(name: &str, ast: &impl PrintableNode) {
-    let mut printer = AstPrinter::new();
-    let node = ast.print_ast(name, &mut printer);
-    print_tree_node(&node, &mut Vec::new());
+// TREENODE code begin
+
+pub struct TreeNode {
+    value: String,
+    children: Vec<TreeNode>,
+}
+
+impl Write for TreeNode {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.value.push_str(s);
+        Ok(())
+    }
 }
 
 fn print_tree_node(node: &TreeNode, is_last_vec: &mut Vec<bool>) {
@@ -343,16 +335,336 @@ fn print_tree_node(node: &TreeNode, is_last_vec: &mut Vec<bool>) {
     }
 }
 
-pub struct TreeNode {
-    value: String,
-    children: Vec<TreeNode>,
+// TREENODE code end
+// IRPRINTER code begin
+
+pub struct IrPrinter {
+    node_stack: Vec<TreeNode>,
 }
 
-impl Write for TreeNode {
+impl Write for IrPrinter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.value.push_str(s);
+        write!(self.node_stack.last_mut().unwrap(), "{}", s)
+    }
+}
+
+pub fn print_ir_of_all_scopes<'a>(scopes: &HashMap<String, Rc<RefCell<scope::Scope<'a>>>>) {
+    for (_, scope) in scopes {
+        print_ir_of_scope(scope.borrow());
+    }
+}
+
+fn print_ir_of_scope<'a>(scope: Ref<'_, scope::Scope<'a>>) {
+    match &scope.state {
+        scope::State::NotVisited(_) => {
+            println!("{}: not evaluated", scope.sym_path)
+        }
+        scope::State::VisitInProg => {
+            println!("{}: evaluation in progress", scope.sym_path)
+        }
+        scope::State::Visited(ctx) => {
+            if let context::Value::Reference(_) = ctx.value {
+                // } else if let context::Value::Block(_) = ctx.value {
+            } else {
+                print_ir(&scope.sym_path.to_string(), ctx);
+                // println!();
+            }
+        }
+    }
+
+    for (_, child) in scope.children.iter() {
+        print_ir_of_scope(child.borrow());
+    }
+}
+
+pub fn print_ir(name: &str, ctx: &Context) {
+    let mut printer = IrPrinter::new();
+    let node = printer.print_context(name, ctx).unwrap().unwrap();
+    print_tree_node(&node, &mut Vec::new());
+}
+
+impl<'a> IrPrinter {
+    fn new() -> Self {
+        Self { node_stack: Vec::new() }
+    }
+
+    pub fn print_context(&mut self, name: &str, ctx: &Context<'a>) -> Result<Option<TreeNode>, fmt::Error> {
+        // Start a level
+        let node = TreeNode {
+            value: String::new(),
+            children: Vec::new(),
+        };
+        // Write the meta information
+        self.node_stack.push(node);
+        if !name.is_empty() {
+            write!(self, "{}: ", name)?;
+        }
+        if io::stdout().is_terminal() {
+            if ctx.is_lvalue {
+                write!(self, "\x1b[92mlvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ", ctx.taipe)?;
+            } else {
+                write!(self, "\x1b[94mprvalue\x1b[0m \x1b[38;5;215m{}\x1b[0m ", ctx.taipe)?;
+            }
+        } else {
+            if ctx.is_lvalue {
+                write!(self, "lvalue {} ", ctx.taipe)?;
+            } else {
+                write!(self, "prvalue {} ", ctx.taipe)?;
+            }
+        }
+        self.visit_value(&ctx.value)?;
+        // End the level
+        let node = self.node_stack.pop().unwrap();
+        if let Some(parent) = self.node_stack.last_mut() {
+            parent.children.push(node);
+            Ok(None)
+        } else {
+            Ok(Some(node))
+        }
+    }
+
+    pub fn print_value(&mut self, name: &str, value: &context::Value<'a>) -> Result<Option<TreeNode>, fmt::Error> {
+        // Start a level
+        let node = TreeNode {
+            value: String::new(),
+            children: Vec::new(),
+        };
+        // Write the meta information
+        self.node_stack.push(node);
+        if !name.is_empty() {
+            write!(self, "{}: ", name)?;
+        }
+        self.visit_value(value)?;
+        // End the level
+        let node = self.node_stack.pop().unwrap();
+        if let Some(parent) = self.node_stack.last_mut() {
+            parent.children.push(node);
+            Ok(None)
+        } else {
+            Ok(Some(node))
+        }
+    }
+
+    fn visit_value(&mut self, value: &context::Value<'a>) -> fmt::Result {
+        match value {
+            context::Value::Imm(imm) => {
+                write!(self, "Imm = {}", imm)?;
+            }
+            context::Value::Array(values) => {
+                write!(self, "Array")?;
+                for (i, value) in values.iter().enumerate() {
+                    self.print_value(&format!("[{}]", i), value)?;
+                }
+            }
+            context::Value::Tuple(values) => {
+                write!(self, "Tuple")?;
+                for (i, value) in values.iter().enumerate() {
+                    self.print_value(&format!("[{}]", i), value)?;
+                }
+            }
+            context::Value::Reference(scope) => {
+                write!(self, "Reference = {}", scope.borrow().sym_path)?;
+            }
+            context::Value::Negate { line_info: _, ctx } => {
+                write!(self, "Negate")?;
+                self.print_context("value", ctx)?;
+            }
+            context::Value::FlipBits { line_info: _, ctx } => {
+                write!(self, "FlipBits")?;
+                self.print_context("value", ctx)?;
+            }
+            context::Value::Deref { line_info: _, ctx } => {
+                write!(self, "Deref")?;
+                self.print_context("value", ctx)?;
+            }
+            context::Value::AddrOf { line_info: _, ctx } => {
+                write!(self, "AddrOf")?;
+                self.print_context("value", ctx)?;
+            }
+            context::Value::Not { line_info: _, ctx } => {
+                write!(self, "Not")?;
+                self.print_context("value", ctx)?;
+            }
+            context::Value::Add { line_info: _, lhs, rhs } => {
+                write!(self, "Add")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Sub { line_info: _, lhs, rhs } => {
+                write!(self, "Sub")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Mul { line_info: _, lhs, rhs } => {
+                write!(self, "Mul")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Div { line_info: _, lhs, rhs } => {
+                write!(self, "Div")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Rem { line_info: _, lhs, rhs } => {
+                write!(self, "Rem")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Shl { line_info: _, lhs, rhs } => {
+                write!(self, "Shl")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Shr { line_info: _, lhs, rhs } => {
+                write!(self, "Shr")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::BitAnd { line_info: _, lhs, rhs } => {
+                write!(self, "BitAnd")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::BitXor { line_info: _, lhs, rhs } => {
+                write!(self, "BitXor")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::BitOr { line_info: _, lhs, rhs } => {
+                write!(self, "BitOr")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Lt { line_info: _, lhs, rhs } => {
+                write!(self, "Lt")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Le { line_info: _, lhs, rhs } => {
+                write!(self, "Le")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Eq { line_info: _, lhs, rhs } => {
+                write!(self, "Eq")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Ne { line_info: _, lhs, rhs } => {
+                write!(self, "Ne")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Ge { line_info: _, lhs, rhs } => {
+                write!(self, "Ge")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Gt { line_info: _, lhs, rhs } => {
+                write!(self, "Gt")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::LogicAnd { line_info: _, lhs, rhs } => {
+                write!(self, "LogicAnd")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::LogicOr { line_info: _, lhs, rhs } => {
+                write!(self, "LogicOr")?;
+                self.print_context("lhs", lhs)?;
+                self.print_context("rhs", rhs)?;
+            }
+            context::Value::Index {
+                line_info: _,
+                lhs: container,
+                index,
+            } => {
+                write!(self, "Index")?;
+                self.print_context("container", container)?;
+                self.print_context("index", index)?;
+            }
+            context::Value::Call {
+                line_info: _,
+                fun_scope,
+                args,
+            } => {
+                write!(self, "Call = {}", fun_scope.borrow().sym_path)?;
+                for (arg_name, arg_ctx) in args {
+                    self.print_context(arg_name, arg_ctx)?;
+                }
+            }
+            context::Value::Assign(lhs_ctxes, rhs_ctxes) => {
+                write!(self, "Assign")?;
+                for (i, ctx) in lhs_ctxes.iter().enumerate() {
+                    self.print_context(&format!("lhs[{}]", i), ctx)?;
+                }
+                for (i, ctx) in rhs_ctxes.iter().enumerate() {
+                    self.print_context(&format!("rhs[{}]", i), ctx)?;
+                }
+            }
+            context::Value::IfElse {
+                line_info: _,
+                cond,
+                then_ctx,
+                else_ctx,
+            } => {
+                write!(self, "IfElse")?;
+                self.print_context("condition", cond)?;
+                self.print_context("then", then_ctx)?;
+                self.print_context("else", else_ctx)?;
+            }
+            context::Value::If {
+                line_info: _,
+                cond,
+                then_ctx,
+            } => {
+                write!(self, "If")?;
+                self.print_context("condition", cond)?;
+                self.print_context("then", then_ctx)?;
+            }
+            context::Value::While {
+                line_info: _,
+                cond,
+                body_ctx,
+            } => {
+                write!(self, "While")?;
+                self.print_context("condition", cond)?;
+                self.print_context("body", body_ctx)?;
+            }
+            context::Value::Block(ctxs) => {
+                write!(self, "Block")?;
+                for (i, ctx) in ctxs.iter().enumerate() {
+                    self.print_context(&format!("[{}]", i), ctx)?;
+                }
+            }
+            context::Value::Ret(ctx) => {
+                write!(self, "Ret")?;
+                self.print_context("value", ctx)?;
+            }
+            context::Value::RetVoid => {
+                write!(self, "RetVoid")?;
+            }
+            context::Value::Eval(ctx) => {
+                write!(self, "Eval")?;
+                self.print_context("expr", ctx)?;
+            }
+            context::Value::Cast(ctx) => {
+                write!(self, "Cast")?;
+                self.print_context("from", ctx)?;
+            }
+        }
         Ok(())
     }
+}
+
+// IRPRINTER code end
+// AST code begin
+
+pub fn print_ast(name: &str, ast: &impl PrintableNode) {
+    let mut printer = AstPrinter::new();
+    let node = ast.print_ast(name, &mut printer);
+    print_tree_node(&node, &mut Vec::new());
 }
 
 pub struct AstPrinter {
@@ -411,11 +723,7 @@ fn remove_whitespace(s: &str) -> String {
 
 macro_rules! define_printer {
     ($name:ident, $visitor:ident, $node:ident) => {
-        pub fn $name(
-            &mut self,
-            name: &str,
-            ast: &crate::ast::$node,
-        ) -> Result<Option<TreeNode>, fmt::Error> {
+        pub fn $name(&mut self, name: &str, ast: &crate::ast::$node) -> Result<Option<TreeNode>, fmt::Error> {
             // Start a level
             let node = TreeNode {
                 value: String::new(),
@@ -445,9 +753,7 @@ macro_rules! define_printer {
 
 impl AstPrinter {
     fn new() -> Self {
-        Self {
-            node_stack: Vec::new(),
-        }
+        Self { node_stack: Vec::new() }
     }
 
     fn visit_decl(&mut self, decl: &ast::Decl) -> fmt::Result {
@@ -470,10 +776,19 @@ impl AstPrinter {
                     self.print_object("object", object)?;
                 }
             }
-            ast::Decl::Using {
-                line_info: _,
-                items,
+            ast::Decl::DeclWithDirective {
+                name,
+                taipe,
+                eq_token,
+                directive,
             } => {
+                write!(self, "::DeclWithDirective")?;
+                self.print_tok("name", name)?;
+                self.print_type("type", taipe)?;
+                self.print_tok("eq_token", eq_token)?;
+                self.print_tok("directive", directive)?;
+            }
+            ast::Decl::Using { line_info: _, items } => {
                 write!(self, "::Using")?;
                 self.print_toks("items", items)?;
             }
@@ -483,17 +798,11 @@ impl AstPrinter {
 
     fn visit_object(&mut self, object: &ast::Object) -> fmt::Result {
         match object {
-            ast::Object::ExternModule {
-                line_info: _,
-                value,
-            } => {
+            ast::Object::ExternModule { line_info: _, value } => {
                 write!(self, "::ExternModule")?;
                 self.print_tok("value", value)?;
             }
-            ast::Object::Module {
-                line_info: _,
-                decls,
-            } => {
+            ast::Object::Module { line_info: _, decls } => {
                 write!(self, "::Module")?;
                 self.print_list("decls", decls, Self::print_decl)?;
             }
@@ -512,10 +821,7 @@ impl AstPrinter {
                     self.print_stmt("body", body)?;
                 }
             }
-            ast::Object::Compound {
-                line_info: _,
-                field,
-            } => {
+            ast::Object::Compound { line_info: _, field } => {
                 write!(self, "::Compound")?;
                 self.print_field("field", field)?;
             }
@@ -533,7 +839,11 @@ impl AstPrinter {
 
     fn visit_field(&mut self, field: &ast::Field) -> fmt::Result {
         match field {
-            ast::Field::Compound { token, fields } => {
+            ast::Field::Compound {
+                line_info: _,
+                token,
+                fields,
+            } => {
                 write!(self, "::Compound")?;
                 self.print_tok("token", token)?;
                 self.print_list("fields", fields, Self::print_field)?;
@@ -598,10 +908,7 @@ impl AstPrinter {
                 self.print_expr("expr", expr)?;
                 self.print_stmt("then_body", then_body)?;
             }
-            ast::Stmt::Block {
-                line_info: _,
-                stmts,
-            } => {
+            ast::Stmt::Block { line_info: _, stmts } => {
                 write!(self, "::Block")?;
                 self.print_list("stmts", stmts, Self::print_stmt)?;
             }
@@ -683,24 +990,15 @@ impl AstPrinter {
                     self.print_expr("expr", expr)?;
                 }
             }
-            ast::Type::Fat {
-                line_info: _,
-                taipe,
-            } => {
+            ast::Type::Fat { line_info: _, taipe } => {
                 write!(self, "::Fat")?;
                 self.print_type("type", taipe)?;
             }
-            ast::Type::Paren {
-                line_info: _,
-                taipe,
-            } => {
+            ast::Type::Paren { line_info: _, taipe } => {
                 write!(self, "::Paren")?;
                 self.print_type("type", taipe)?;
             }
-            ast::Type::Tuple {
-                line_info: _,
-                types,
-            } => {
+            ast::Type::Tuple { line_info: _, types } => {
                 write!(self, "::Tuple")?;
                 self.print_list("types", types, Self::print_type)?;
             }
@@ -714,6 +1012,10 @@ impl AstPrinter {
 
     fn visit_expr(&mut self, expr: &ast::Expr) -> fmt::Result {
         match expr {
+            ast::Expr::Block { line_info: _, stmts } => {
+                write!(self, "::Block")?;
+                self.print_list("stmts", stmts, Self::print_stmt)?;
+            }
             ast::Expr::Assign {
                 lhses: lhs,
                 op,
@@ -771,19 +1073,24 @@ impl AstPrinter {
                 write!(self, "::Paren")?;
                 self.print_expr("expr", expr)?;
             }
-            ast::Expr::Tuple {
-                line_info: _,
-                exprs,
-            } => {
+            ast::Expr::Tuple { line_info: _, exprs } => {
                 write!(self, "::Tuple")?;
                 self.print_list("exprs", exprs, Self::print_expr)?;
             }
-            ast::Expr::ArrayLit {
-                line_info: _,
-                items,
-            } => {
+            ast::Expr::ArrayLit { line_info: _, items } => {
                 write!(self, "::ArrayLit")?;
                 self.print_list("items", items, Self::print_expr)?;
+            }
+            ast::Expr::Compeval {
+                line_info: _,
+                trivial,
+                expr,
+            } => {
+                write!(self, "::Compeval")?;
+                if let Some(trivial) = trivial {
+                    self.print_tok("trivial", trivial)?;
+                }
+                self.print_expr("expr", expr)?;
             }
         }
         Ok(())
@@ -859,3 +1166,5 @@ impl AstPrinter {
         }
     }
 }
+
+// AST code end
