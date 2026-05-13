@@ -551,7 +551,113 @@ impl<'a> Analyzer<'a> {
                 let _ = self.compeval_trivial(*ctx, line_info)?;
                 Ok(Context::from_void())
             }
-            context::Value::Cast(ctx) => todo!(),
+            context::Value::Cast(from) => {
+                let from = self.compeval_trivial(*from, line_info)?;
+                let to = ctx.taipe;
+
+                if from.taipe.is_signed_integer() {
+                    let context::Value::Imm(ref from_imm) = from.value else {
+                        unreachable!("probably some analyzer bug")
+                    };
+                    let from_value: i128 = match from_imm {
+                        context::Imm::Int8(value) => *value as i128,
+                        context::Imm::Int16(value) => *value as i128,
+                        context::Imm::Int32(value) => *value as i128,
+                        context::Imm::Int64(value) => *value as i128,
+                        context::Imm::Int128(value) => *value as i128,
+                        _ => unreachable!("probably some analyzer bug")
+                    };
+                    let to_imm = match to.remove_const() {
+                        context::Type::Int8 => context::Imm::Int8(from_value as i8),
+                        context::Type::Int16 => context::Imm::Int16(from_value as i16),
+                        context::Type::Int32 => context::Imm::Int32(from_value as i32),
+                        context::Type::Int64 => context::Imm::Int64(from_value as i64),
+                        context::Type::Int128 => context::Imm::Int128(from_value as i128),
+                        context::Type::Uint8 => context::Imm::Uint8(from_value as u8),
+                        context::Type::Uint16 => context::Imm::Uint16(from_value as u16),
+                        context::Type::Uint32 => context::Imm::Uint32(from_value as u32),
+                        context::Type::Uint64 => context::Imm::Uint64(from_value as u64),
+                        context::Type::Uint128 => context::Imm::Uint128(from_value as u128),
+                        context::Type::Float32 => context::Imm::Float32(from_value as f32),
+                        context::Type::Float64 => context::Imm::Float64(from_value as f64),
+                        _ => unreachable!("probably some analyzer bug")
+                    };
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: to,
+                        value: context::Value::Imm(to_imm)
+                    })
+                } else if from.taipe.is_unsigned_integer() {
+                    let context::Value::Imm(ref from_imm) = from.value else {
+                        unreachable!("probably some analyzer bug")
+                    };
+                    let from_value: u128 = match from_imm {
+                        context::Imm::Uint8(value) => *value as u128,
+                        context::Imm::Uint16(value) => *value as u128,
+                        context::Imm::Uint32(value) => *value as u128,
+                        context::Imm::Uint64(value) => *value as u128,
+                        context::Imm::Uint128(value) => *value as u128,
+                        _ => unreachable!("probably some analyzer bug")
+                    };
+                    let to_imm = match to.remove_const() {
+                        context::Type::Int8 => context::Imm::Int8(from_value as i8),
+                        context::Type::Int16 => context::Imm::Int16(from_value as i16),
+                        context::Type::Int32 => context::Imm::Int32(from_value as i32),
+                        context::Type::Int64 => context::Imm::Int64(from_value as i64),
+                        context::Type::Int128 => context::Imm::Int128(from_value as i128),
+                        context::Type::Uint8 => context::Imm::Uint8(from_value as u8),
+                        context::Type::Uint16 => context::Imm::Uint16(from_value as u16),
+                        context::Type::Uint32 => context::Imm::Uint32(from_value as u32),
+                        context::Type::Uint64 => context::Imm::Uint64(from_value as u64),
+                        context::Type::Uint128 => context::Imm::Uint128(from_value as u128),
+                        context::Type::Float32 => context::Imm::Float32(from_value as f32),
+                        context::Type::Float64 => context::Imm::Float64(from_value as f64),
+                        _ => unreachable!("probably some analyzer bug")
+                    };
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: to,
+                        value: context::Value::Imm(to_imm)
+                    })
+                } else if from.taipe.is_float() {
+                    let context::Value::Imm(ref from_imm) = from.value else {
+                        unreachable!("probably some analyzer bug")
+                    };
+                    let from_value: f64 = match from_imm {
+                        context::Imm::Float32(value) => *value as f64,
+                        context::Imm::Float64(value) => *value as f64,
+                        _ => unreachable!("probably some analyzer bug")
+                    };
+                    let to_imm = match to.remove_const() {
+                        context::Type::Int8 => context::Imm::Int8(from_value as i8),
+                        context::Type::Int16 => context::Imm::Int16(from_value as i16),
+                        context::Type::Int32 => context::Imm::Int32(from_value as i32),
+                        context::Type::Int64 => context::Imm::Int64(from_value as i64),
+                        context::Type::Int128 => context::Imm::Int128(from_value as i128),
+                        context::Type::Uint8 => context::Imm::Uint8(from_value as u8),
+                        context::Type::Uint16 => context::Imm::Uint16(from_value as u16),
+                        context::Type::Uint32 => context::Imm::Uint32(from_value as u32),
+                        context::Type::Uint64 => context::Imm::Uint64(from_value as u64),
+                        context::Type::Uint128 => context::Imm::Uint128(from_value as u128),
+                        context::Type::Float32 => context::Imm::Float32(from_value as f32),
+                        context::Type::Float64 => context::Imm::Float64(from_value as f64),
+                        _ => unreachable!("probably some analyzer bug")
+                    };
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: to,
+                        value: context::Value::Imm(to_imm)
+                    })
+                } else if from.taipe.is_array() && to.is_fat_ptr() {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: to,
+                        value: from.value
+                    })
+                } else {
+                    unreachable!("probably some analyzer bug")
+                }
+            },
         }
     }
 
@@ -649,7 +755,46 @@ impl<'a> Analyzer<'a> {
                 })
             }
             ast::Expr::Binary { left, op, right } => self.visit_binary(left, op, right),
-            ast::Expr::Cast { expr, taipe } => todo!("implement casting"),
+            ast::Expr::Cast { expr, taipe } => {
+                let ctx = self.visit_expr(expr)?;
+                let taipe = self.visit_type(taipe)?;
+                
+                // Conversions that are defined:
+                // * from: {integer} to: iX
+                // * from: {integer} to: uX
+                // * from: {integer} to: fX
+                // * from: uX        to: iX
+                // * from: iX        to: uX
+                // * from: iX        to: fX
+                // * from: uX        to: fX
+                // * from: fX        to: iX
+                // * from: fX        to: uX
+                // * from: [N]T      to: []T
+
+                // directly change varint and do not keep it for later
+                if ctx.taipe.is_varint() && (taipe.is_integer() || taipe.is_float()) {
+                    let context::Value::Imm(ref imm) = ctx.value else {
+                        unreachable!("probably some analyzer bug")
+                    };
+                    let new_imm = self.transform_varint(&taipe, imm, expr, None)?;
+                    return Ok(Context {
+                        is_lvalue: false,
+                        taipe,
+                        value: context::Value::Imm(new_imm)
+                    })
+                }
+
+                let result = self.is_castable(&ctx.taipe, &taipe);
+                if result {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe,
+                        value: context::Value::Cast(Box::new(ctx))
+                    })
+                } else {
+                    Err(self.make_err(format!("cannot cast expression of type '{}' to type '{}'", ctx, taipe), node))
+                }
+            }
             ast::Expr::Unary { op, expr } => self.visit_unary(op, expr),
             ast::Expr::Member { expr, name } => {
                 let ctx = self.visit_expr(expr)?;
@@ -753,8 +898,8 @@ impl<'a> Analyzer<'a> {
                 let index = self.visit_expr(index_node)?;
                 if !index.taipe.is_integer() {
                     return Err(self
-                        .make_err("argument of index operator should be an integer type", node)
-                        .chain(self.make_note(format!("but got '{}'", index.taipe), index_node)));
+                               .make_err("argument of index operator should be an integer type", node)
+                               .chain(self.make_note(format!("but got '{}'", index.taipe), index_node)));
                 }
                 match ctx.taipe.remove_const() {
                     context::Type::Array { count: _, taipe } => Ok(Context {
@@ -853,6 +998,28 @@ impl<'a> Analyzer<'a> {
                 }
                 Ok(ctx)
             }
+        }
+    }
+
+    fn is_castable(&self, from: &context::Type<'a>, to: &context::Type<'a>) -> bool {
+        // TODO: Casting of non-primitive types should be based on
+        // size, alignment and offset of individual members
+        if from.is_integer() && to.is_integer() {
+            true
+        } else if from.is_integer() && to.is_float() {
+            true
+        } else if from.is_float() && to.is_integer() {
+            true
+        } else if from.is_array() && to.is_fat_ptr() {
+            let context::Type::Array { count: _, taipe: arr_type } = from.remove_const() else {
+                unreachable!("not supposed to happen")
+            };
+            let context::Type::Fat(fat_type) = to.remove_const() else {
+                unreachable!("not supposed to happen")
+            };
+            arr_type == fat_type
+        } else {
+            false
         }
     }
 
@@ -1080,44 +1247,45 @@ impl<'a> Analyzer<'a> {
         rhs: &mut Context<'a>,
         right: &'a ast::Expr,
     ) -> CompileResult<()> {
-        fn resolve_value_promotion_ex<'a>(
-            analyzer: &Analyzer<'a>,
-            lhs: &mut Context<'a>,
-            left: &'a ast::Expr,
-            rhs: &mut Context<'a>,
-            right: &'a ast::Expr,
-            should_check_another_time: bool,
-        ) -> CompileResult<()> {
-            if lhs.taipe.is_varint() && rhs.taipe.is_varint() {
-                lhs.taipe = analyzer.type_int.clone();
-                rhs.taipe = analyzer.type_int.clone();
+        self.resolve_value_promotion_impl(lhs, left, rhs, right, true)
+    }
+
+    fn resolve_value_promotion_impl(
+        &self,
+        lhs: &mut Context<'a>,
+        left: &'a ast::Expr,
+        rhs: &mut Context<'a>,
+        right: &'a ast::Expr,
+        should_check_another_time: bool,
+    ) -> CompileResult<()> {
+        if lhs.taipe.is_varint() && rhs.taipe.is_varint() {
+            lhs.taipe = self.type_int.clone();
+            rhs.taipe = self.type_int.clone();
+            let context::Value::Imm(ref lhs_value) = lhs.value else {
+                unreachable!("probably some analyzer bug");
+            };
+            let context::Value::Imm(ref rhs_value) = rhs.value else {
+                unreachable!("probably some analyzer bug");
+            };
+            lhs.value = context::Value::Imm(self.transform_varint_to_int(lhs_value, left)?);
+            rhs.value = context::Value::Imm(self.transform_varint_to_int(rhs_value, right)?);
+            Ok(())
+        } else if lhs.taipe.is_varint() {
+            if rhs.taipe.is_integer() || rhs.taipe.is_float() {
                 let context::Value::Imm(ref lhs_value) = lhs.value else {
                     unreachable!("probably some analyzer bug");
                 };
-                let context::Value::Imm(ref rhs_value) = rhs.value else {
-                    unreachable!("probably some analyzer bug");
-                };
-                lhs.value = context::Value::Imm(analyzer.transform_varint_to_int(lhs_value, left)?);
-                rhs.value = context::Value::Imm(analyzer.transform_varint_to_int(rhs_value, right)?);
-                Ok(())
-            } else if lhs.taipe.is_varint() {
-                if rhs.taipe.is_integer() || rhs.taipe.is_float() {
-                    let context::Value::Imm(ref lhs_value) = lhs.value else {
-                        unreachable!("probably some analyzer bug");
-                    };
-                    // Convert varint to respective type if it is worth it
-                    lhs.value = context::Value::Imm(analyzer.transform_varint(&rhs.taipe, lhs_value, left, None)?);
-                    lhs.taipe = rhs.taipe.clone();
-                    return Ok(());
-                }
-                Ok(())
-            } else if should_check_another_time {
-                resolve_value_promotion_ex(analyzer, rhs, right, lhs, left, false)
-            } else {
-                Ok(())
+                // Convert varint to respective type if it is worth it
+                lhs.value = context::Value::Imm(self.transform_varint(&rhs.taipe, lhs_value, left, None)?);
+                lhs.taipe = rhs.taipe.clone();
+                return Ok(());
             }
+            Ok(())
+        } else if should_check_another_time {
+            self.resolve_value_promotion_impl(rhs, right, lhs, left, false)
+        } else {
+            Ok(())
         }
-        resolve_value_promotion_ex(self, lhs, left, rhs, right, true)
     }
 
     fn visit_binary(&mut self, left: &'a ast::Expr, op: &Token, right: &'a ast::Expr) -> CompileResult<Context<'a>> {

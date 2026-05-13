@@ -191,8 +191,20 @@ y : (__bool, __i32) = #zero;
 
 // TODO: implement literals
 
+casted_value :: 69.0; // as __int;
+
 main :: fun () -> __i64 {
-    return compeval (69 | 420);
+    return 0;
+
+    // // Error!
+    // a: [10]__i32 = #zero;
+    // b := a as []__i64;
+
+    // return 123 as __i32 as __i64; // varint is directly converted
+    // return 123 as __bool; // Error!
+
+    // // compeval test
+    // return compeval (69 | 420);
 }
 
 // This is a comment at the end of a line

@@ -874,6 +874,7 @@ impl Parser {
         while let Some(tok) = self.peek()
             && tok.kind == As
         {
+            self.get_token()?;
             let taipe = self.parse_type()?;
             expr = ast::Expr::Cast {
                 expr: Box::new(expr),

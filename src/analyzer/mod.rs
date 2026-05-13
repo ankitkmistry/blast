@@ -226,7 +226,7 @@ impl<'a> Analyzer<'a> {
             return Err(self.make_err(
                 format!(
                     "cannot return from a '{}' function",
-                    context::Type::Noreturn.to_string()
+                    context::Type::Noreturn
                 ),
                 token,
             ));
@@ -245,7 +245,7 @@ impl<'a> Analyzer<'a> {
         if let Some(expr) = expr {
             if ret.is_void() {
                 return Err(self.make_err("invalid expression", expr).chain(self.make_note(
-                    format!("function expects return type '{}'", ret.to_string()),
+                    format!("function expects return type '{}'", ret),
                     &ret_line_info,
                 )));
             }
@@ -276,7 +276,7 @@ impl<'a> Analyzer<'a> {
                 return Err(self
                     .make_err("expected <expression> for 'return'", token)
                     .chain(self.make_note(
-                        format!("function expects return type '{}'", ret.to_string()),
+                        format!("function expects return type '{}'", ret),
                         &ret_line_info,
                     )));
             }
@@ -367,8 +367,8 @@ impl<'a> Analyzer<'a> {
             return Err(self.make_err(
                 format!(
                     "expected value of type '{}' but got value of type '{}'",
-                    context::Type::Bool.to_string(),
-                    cond.to_string()
+                    context::Type::Bool,
+                    cond
                 ),
                 expr,
             ));
@@ -423,8 +423,8 @@ impl<'a> Analyzer<'a> {
             Err(self.make_err(
                 format!(
                     "expected '{}' but got '{}'",
-                    context::Type::Void.to_string(),
-                    then_body_result.to_string()
+                    context::Type::Void,
+                    then_body_result
                 ),
                 then_body,
             ))
@@ -443,8 +443,8 @@ impl<'a> Analyzer<'a> {
             return Err(self.make_err(
                 format!(
                     "expected value of type '{}' but got value of type '{}'",
-                    context::Type::Bool.to_string(),
-                    cond.to_string()
+                    context::Type::Bool,
+                    cond
                 ),
                 expr,
             ));
@@ -520,8 +520,8 @@ impl<'a> Analyzer<'a> {
                 return Err(self.make_err(
                     format!(
                         "expected '{}' but got '{}'",
-                        then_body_result.to_string(),
-                        else_body_result.to_string(),
+                        then_body_result,
+                        else_body_result,
                     ),
                     &line_info,
                 ));
@@ -559,8 +559,8 @@ impl<'a> Analyzer<'a> {
                 Err(self.make_err(
                     format!(
                         "expected '{}' but got '{}'",
-                        context::Type::Void.to_string(),
-                        then_body_result.to_string()
+                        context::Type::Void,
+                        then_body_result
                     ),
                     then_body,
                 ))
@@ -723,7 +723,7 @@ impl<'a> Analyzer<'a> {
                         // context::Type::Typedef => todo!(),
                         _ => {
                             return Err(self.make_err(
-                                format!("cannot use '.' operator on '{}'", ctx.taipe.to_string()),
+                                format!("cannot use '.' operator on '{}'", ctx.taipe),
                                 &items[..index].to_vec(),
                             ));
                         }
@@ -731,7 +731,7 @@ impl<'a> Analyzer<'a> {
                     index += 1;
                 }
                 if !ctx.taipe.is_typedef() {
-                    return Err(self.make_err(format!("expression is not a type: '{}'", ctx.to_string()), node));
+                    return Err(self.make_err(format!("expression is not a type: '{}'", ctx), node));
                 }
                 // Post checks
                 let context::Value::Imm(taipe) = ctx.value else {
@@ -753,7 +753,7 @@ impl<'a> Analyzer<'a> {
                     match &taipe {
                         context::Type::Module | context::Type::Void => {
                             return Err(
-                                self.make_err(format!("'{}' cannot be a parameter type", taipe.to_string()), param)
+                                self.make_err(format!("'{}' cannot be a parameter type", taipe), param)
                             );
                         }
                         context::Type::Typedef => {
@@ -784,7 +784,7 @@ impl<'a> Analyzer<'a> {
                                 self.make_warning(
                                     format!(
                                         "'const' is redundant here, '{}' is always a constant",
-                                        taipe.to_string()
+                                        taipe
                                     ),
                                     token,
                                 )
@@ -823,7 +823,7 @@ impl<'a> Analyzer<'a> {
                 if !length_ctx.taipe.is_unsigned_integer() {
                     return Err(self
                         .make_err("argument of index operator should be an unsigned integer type", expr)
-                        .chain(self.make_note(format!("but got '{}'", length_ctx.taipe.to_string()), expr)));
+                        .chain(self.make_note(format!("but got '{}'", length_ctx.taipe), expr)));
                 }
                 let context::Value::Imm(length) = length_ctx.value else {
                     return Err(self.make_err("value cannot be evaluated at compile time", expr));
@@ -847,7 +847,7 @@ impl<'a> Analyzer<'a> {
                 let taipe = self.visit_type(node)?;
                 match &taipe {
                     context::Type::Module | context::Type::Typedef => {
-                        return Err(self.make_err(format!("fat pointer to '{}' is invalid", taipe.to_string()), node));
+                        return Err(self.make_err(format!("fat pointer to '{}' is invalid", taipe), node));
                     }
                     _ => Ok(context::Type::Fat(Box::new(taipe))),
                 }
@@ -865,7 +865,7 @@ impl<'a> Analyzer<'a> {
                     let taipe = self.visit_type(node)?;
                     match &taipe {
                         context::Type::Module | context::Type::Typedef | context::Type::Void => {
-                            return Err(self.make_err(format!("'{}' cannot be a tuple item", taipe.to_string()), node));
+                            return Err(self.make_err(format!("'{}' cannot be a tuple item", taipe), node));
                         }
                         _ => vec.push(taipe),
                     }
@@ -952,12 +952,12 @@ impl<'a> Analyzer<'a> {
             }
             _ => Err(self
                 .make_err(
-                    format!("type does not have a default value: '{}'", top_type.to_string()),
+                    format!("type does not have a default value: '{}'", top_type),
                     line_info,
                 )
                 .chain(self.make_note_no_path(format!(
                     "error occured because this type does not have a default value: '{}'",
-                    cur_type.to_string()
+                    cur_type
                 )))),
         }
     }
@@ -1020,18 +1020,18 @@ impl<'a> Analyzer<'a> {
             }
             _ => Err(self
                 .make_err(
-                    format!("type does not have a zero value: '{}'", top_type.to_string()),
+                    format!("type does not have a zero value: '{}'", top_type),
                     line_info,
                 )
                 .chain(self.make_note_no_path(format!(
                     "error occured because this type does not have a zero value: '{}'",
-                    cur_type.to_string()
+                    cur_type
                 )))),
         }
     }
 
     fn traverse_cfg(&mut self, cfg: &ControlGraph<'a>, node_id: ControlNodeId) -> CompileResult<()> {
-        // debug!("in: {}", self.cur_scope.borrow().sym_path.to_string());
+        // debug!("in: {}", self.cur_scope.borrow().sym_path);
         let result = self.traverse_cfg_impl(cfg, node_id, &mut HashSet::new(), HashMap::new(), 0);
         // debug!("");
         result
@@ -1161,10 +1161,10 @@ impl<'a> Analyzer<'a> {
         // (usize, usize) -> (size, alignment)
         // size (in bytes) -> always a multiple of alignment
         // alignment (in bytes) -> always a power of 2
-        self.resolve_layout_ex(taipe, line_info.get_line_info())
+        self.resolve_layout_impl(taipe, line_info.get_line_info())
     }
 
-    fn resolve_layout_ex(&mut self, taipe: &context::Type<'a>, line_info: LineInfo) -> CompileResult<Layout> {
+    fn resolve_layout_impl(&mut self, taipe: &context::Type<'a>, line_info: LineInfo) -> CompileResult<Layout> {
         let layout = match taipe {
             context::Type::Bool => Layout { size: 1, alignment: 1 },
             context::Type::Char => Layout { size: 1, alignment: 1 },
@@ -1178,7 +1178,7 @@ impl<'a> Analyzer<'a> {
             },
             context::Type::Float32 => Layout { size: 4, alignment: 4 },
             context::Type::Float64 => Layout { size: 8, alignment: 8 },
-            context::Type::Const(taipe) => self.resolve_layout_ex(taipe, line_info)?,
+            context::Type::Const(taipe) => self.resolve_layout_impl(taipe, line_info)?,
             context::Type::Basic(scope) => self.resolve_layout_scope(scope)?,
             context::Type::Function { ret: _, params: _ } | context::Type::Pointer(_) => {
                 // On a low level, a function is nothing but a pointer
@@ -1192,7 +1192,7 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Type::Array { count, taipe } => {
-                let Layout { size, alignment } = self.resolve_layout_ex(taipe, line_info)?;
+                let Layout { size, alignment } = self.resolve_layout_impl(taipe, line_info)?;
                 Layout {
                     size: count * size,
                     alignment,
@@ -1218,7 +1218,7 @@ impl<'a> Analyzer<'a> {
             | context::Type::Void
             | context::Type::Noreturn => {
                 return Err(self.make_err(
-                    format!("type has no memory layout, problem type is '{}'", taipe.to_string()),
+                    format!("type has no memory layout, problem type is '{}'", taipe),
                     &line_info,
                 ));
             }
@@ -1239,7 +1239,7 @@ impl<'a> Analyzer<'a> {
         let offset_start = cur_offset;
         for taipe in types {
             // Set the offset of field
-            let layout = self.resolve_layout_ex(taipe, line_info)?;
+            let layout = self.resolve_layout_impl(taipe, line_info)?;
             // Advance the offset
             cur_offset += layout.size;
             // Add the padding
@@ -1377,7 +1377,7 @@ impl<'a> Analyzer<'a> {
                 taipe,
                 scope: _,
             } => {
-                let layout = self.resolve_layout_ex(&taipe, get_line_info_of_field(name));
+                let layout = self.resolve_layout_impl(&taipe, get_line_info_of_field(name));
                 let layout = match layout {
                     Ok(layout) => layout,
                     Err(CompileError::SemCyclic {
@@ -1418,7 +1418,7 @@ impl<'a> Analyzer<'a> {
             && rhs.taipe.is_void()
         {
             return Err(self.make_err(
-                format!("cannot assign value of type '{}'", rhs.to_string()),
+                format!("cannot assign value of type '{}'", rhs),
                 rhs_line_info,
             ));
         }
@@ -1554,20 +1554,20 @@ impl<'a> Analyzer<'a> {
             () => {
                 return Err(self
                     .make_err(
-                        format!("cannot assign to a constant of type: '{}'", lhs.to_string()),
+                        format!("cannot assign to a constant of type: '{}'", lhs),
                         &lhs_line_info,
                     )
-                    .chain(self.make_note(format!("type of value is '{}'", rhs.to_string()), &rhs_line_info)));
+                    .chain(self.make_note(format!("type of value is '{}'", rhs), &rhs_line_info)));
             };
         }
         macro_rules! return_err {
             () => {
                 return Err(self
                     .make_err(
-                        format!("cannot assign value of type '{}'", rhs.to_string()),
+                        format!("cannot assign value of type '{}'", rhs),
                         &rhs_line_info,
                     )
-                    .chain(self.make_note(format!("cannot assign to '{}'", lhs.to_string()), &lhs_line_info)));
+                    .chain(self.make_note(format!("cannot assign to '{}'", lhs), &lhs_line_info)));
             };
         }
         // const qualifier in rhs does not matter at all during assignment
@@ -1663,7 +1663,7 @@ impl<'a> Analyzer<'a> {
                 return_err!();
             }
             (context::Type::Noreturn, _) => {
-                return Err(self.make_err(format!("cannot assign to: '{}'", lhs.to_string()), &lhs_line_info));
+                return Err(self.make_err(format!("cannot assign to: '{}'", lhs), &lhs_line_info));
             }
             (_, context::Type::Noreturn) => {
                 // noreturn type can be coerced to any type
@@ -1696,7 +1696,7 @@ impl<'a> Analyzer<'a> {
                 .make_err(
                     format!(
                         "'{}' has no member named '{}'",
-                        scope.borrow().sym_path.to_string(),
+                        scope.borrow().sym_path,
                         &name.text
                     ),
                     name,

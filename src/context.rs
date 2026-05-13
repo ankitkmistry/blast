@@ -169,6 +169,20 @@ impl<'a> Type<'a> {
             _ => false,
         }
     }
+    pub fn is_array(&self) -> bool {
+        match self {
+            Type::Const(taipe) => taipe.is_array(),
+            Type::Array { count: _, taipe: _ } => true,
+            _ => false,
+        }
+    }
+    pub fn is_fat_ptr(&self) -> bool {
+        match self {
+            Type::Const(taipe) => taipe.is_fat_ptr(),
+            Type::Fat(_) => true,
+            _ => false,
+        }
+    }
     pub fn is_const(&self) -> bool {
         match self {
             Type::Const(_) => true,
@@ -710,9 +724,13 @@ pub enum Value<'a> {
     RetVoid,
     Eval(Box<Context<'a>>),
     // Cast instructions
-    // from: fX         to: fY
-    // from: iX         to: iY
-    // from: [N]T       to: []T
+    // * from: uX     to: iX
+    // * from: iX     to: uX
+    // * from: fX     to: iX
+    // * from: fX     to: uX
+    // * from: iX     to: fX
+    // * from: uX     to: fX
+    // * from: [N]T   to: []T
     Cast(Box<Context<'a>>),
 }
 

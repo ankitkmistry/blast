@@ -869,7 +869,7 @@ impl<'a> Analyzer<'a> {
             let mut fields = compound.offsets.iter().collect::<Vec<_>>();
             fields.sort_by_key(|&(_, &data)| data.offset);
             for (name, field_data) in fields {
-                debug!("  offset of {} = {:?}", name, field_data);
+                debug!("  field '{}' = {:?}", name, field_data);
             }
             debug!("");
         }
