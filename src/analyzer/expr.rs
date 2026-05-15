@@ -1,16 +1,19 @@
 use std::{collections::HashSet, rc::Rc};
+use bigdecimal::BigDecimal;
+use num_bigint::{BigInt, ToBigInt};
+use num_traits::{ToPrimitive};
+use std::str::FromStr;
 
 use indexmap::IndexMap;
 use log::debug;
-use num_bigint::ToBigInt;
 
 use super::Analyzer;
 use crate::{
     ast,
     cfg::{ControlInfo, ControlNode},
-    common::{CompileError, CompileResult, HasLineInfo, LineInfo, get_plural},
+    common::{get_plural, CompileError, CompileResult, HasLineInfo, LineInfo},
     context::{self, Context},
-    lexer::{Token, TokenKind, TokenValue},
+    lexer::{Token, TokenKind, TokenSuffix, TokenValue},
     scope::{self, HasSrcInfo},
 };
 
@@ -835,11 +838,14 @@ impl<'a> Analyzer<'a> {
                         let Some(index) = name.value.clone() else {
                             unreachable!("probably some lexer bug");
                         };
-                        let TokenValue::Int(index) = index else {
+                        let TokenValue::Int { integral: index, suffix } = index else {
                             unreachable!("probably some lexer bug");
                         };
+                        if suffix.is_some() {
+                            return Err(self.make_err("suffix is not allowed in this context", name));
+                        }
                         // comptime: bounds checking
-                        if index.num >= items.len().to_bigint().unwrap() {
+                        if index >= items.len().to_bigint().unwrap() {
                             return Err(self.make_err(
                                 format!("index out of bounds, tuple length: {}, index: '{}'", items.len(), index),
                                 name,
@@ -941,22 +947,106 @@ impl<'a> Analyzer<'a> {
                     let Some(tok_val) = token.value.as_ref() else {
                         unreachable!("probably some lexer bug");
                     };
-                    let TokenValue::Int(tok_val) = tok_val else {
+                    let TokenValue::Int { integral, suffix } = tok_val else {
                         unreachable!("probably some lexer bug");
                     };
-                    // TODO: check suffix
+                    let imm = context::Imm::VarInt(integral.clone());
+                    let (taipe, name) = match suffix {
+                        Some(suffix) => match suffix {
+                            TokenSuffix::I8 => (&context::Type::Int8, None),
+                            TokenSuffix::I16 => (&context::Type::Int16, None),
+                            TokenSuffix::I32 => (&context::Type::Int32, None),
+                            TokenSuffix::I64 => (&context::Type::Int64, None),
+                            TokenSuffix::I128 => (&context::Type::Int128, None),
+                            TokenSuffix::U8 => (&context::Type::Uint8, None),
+                            TokenSuffix::U16 => (&context::Type::Uint16, None),
+                            TokenSuffix::U32 => (&context::Type::Uint32, None),
+                            TokenSuffix::U64 => (&context::Type::Uint64, None),
+                            TokenSuffix::U128 => (&context::Type::Uint128, None),
+                            TokenSuffix::ISize => (&self.type_isize, Some("isize")),
+                            TokenSuffix::USize => (&self.type_usize, Some("usize")),
+                            _ => unreachable!("probably some lexer bug"),
+                        },
+                        None => (&context::Type::VarInt, None),
+                    };
+                    let imm = self.transform_varint(taipe, &imm, token, name)?;
                     Ok(Context {
                         is_lvalue: false,
-                        taipe: context::Type::VarInt,
-                        value: context::Value::Imm(context::Imm::VarInt(tok_val.clone())),
+                        taipe: taipe.clone(),
+                        value: context::Value::Imm(imm),
                     })
                 }
-                // TODO: get value from token
-                TokenKind::FloatLit => Ok(Context {
-                    is_lvalue: false,
-                    taipe: context::Type::Float64,
-                    value: context::Value::Imm(context::Imm::Float64(0.0)),
-                }),
+                TokenKind::FloatLit => {
+                    let Some(tok_val) = token.value.as_ref() else {
+                        unreachable!("probably some lexer bug");
+                    };
+                    let TokenValue::Float { integral, fractional, mantissa, suffix } = tok_val else {
+                        unreachable!("probably some lexer bug");
+                    };
+                    let Some(mantissa) = mantissa.to_i64() else {
+                        return Err(self.make_err(
+                            format!(
+                                "'{}' cannot hold this value: '{}' as mantissa of the floating point literal",
+                                context::Type::Int64,
+                                mantissa,
+                            ),
+                            token,
+                        ))
+                    };
+                    let num = {
+                        let mut num_str = integral.to_string();
+                        num_str.push_str(&fractional.to_string());
+                        BigInt::from_str(&num_str).expect("not supposed to happen")
+                    };
+                    let scale = fractional.to_string().len() as i64 - mantissa;
+                    let decimal = BigDecimal::from_bigint(num, scale);
+                    let (taipe, imm) = match suffix {
+                        Some(suffix) => match suffix {
+                            TokenSuffix::F32 => if let Some(value) = decimal.to_f32() {
+                                (context::Type::Float32, context::Imm::Float32(value))
+                            } else {
+                                return Err(self.make_err(
+                                    format!(
+                                        "'{}' cannot hold this value: '{}'",
+                                        context::Type::Float32,
+                                        decimal,
+                                    ),
+                                    token,
+                                ))
+                            },
+                            TokenSuffix::F64 => if let Some(value) = decimal.to_f64() {
+                                (context::Type::Float64, context::Imm::Float64(value))
+                            } else {
+                                return Err(self.make_err(
+                                    format!(
+                                        "'{}' cannot hold this value: '{}'",
+                                        context::Type::Float64,
+                                        decimal,
+                                    ),
+                                    token,
+                                ))
+                            },
+                            _ => unreachable!("probably some lexer bug"),
+                        },
+                        None => if let Some(value) = decimal.to_f64() {
+                            (context::Type::Float64, context::Imm::Float64(value))
+                        } else {
+                            return Err(self.make_err(
+                                format!(
+                                    "'{}' cannot hold this value: '{}'",
+                                    context::Type::Float64,
+                                    decimal,
+                                ),
+                                token,
+                            ))
+                        },
+                    };
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe,
+                        value: context::Value::Imm(imm),
+                    })
+                },
                 TokenKind::Ident => self.get_name(&token),
                 _ => unreachable!("probably some parser bug"),
             },

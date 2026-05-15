@@ -1,9 +1,10 @@
 use std::{cell::RefCell, cmp::Ordering, fmt, rc::Rc};
 
 use indexmap::IndexMap;
+use num_bigint::BigInt;
 
 use crate::{
-    common::{Int, LineInfo},
+    common::LineInfo,
     scope,
 };
 
@@ -305,7 +306,7 @@ impl<'a> fmt::Display for Type<'a> {
 pub enum Imm<'a> {
     Bool(bool),
     Char(char),
-    VarInt(Int),
+    VarInt(BigInt),
     Int8(i8),
     Int16(i16),
     Int32(i32),

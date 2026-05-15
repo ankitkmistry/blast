@@ -105,9 +105,10 @@ constants :: module {
 
 floats : [constants.floats_count * 2 + 1]__f32;
 
-// comptime overflow check
+// overflow check
 i :: 7265465651321354631;
 j :: 4654654651321354631;
+f :: 1e-4654654651321354631;
 // k :: i + j;
 
 // Pointers
@@ -191,7 +192,7 @@ y : (__bool, __i32) = #zero;
 
 // TODO: implement literals
 
-casted_value :: 69.0; // as __int;
+casted_value :: 6969e-2; // as __int;
 
 main :: fun () -> __i64 {
     return 0;

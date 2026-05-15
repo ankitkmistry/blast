@@ -1916,8 +1916,8 @@ impl<'a> Analyzer<'a> {
     ) -> CompileResult<context::Imm<'a>> {
         match rhs {
             context::Imm::VarInt(num) => {
-                let num = &num.num;
                 let opt = match lhs {
+                    context::Type::VarInt => return Ok(rhs.clone()),
                     context::Type::Int8 => num.to_i8().map(|num| context::Imm::Int8(num)),
                     context::Type::Int16 => num.to_i16().map(|num| context::Imm::Int16(num)),
                     context::Type::Int32 => num.to_i32().map(|num| context::Imm::Int32(num)),

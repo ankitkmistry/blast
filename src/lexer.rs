@@ -1,6 +1,8 @@
 use std::{collections::HashMap, sync::LazyLock};
 
-use crate::common::{CompileError, CompileResult, HasLineInfo, Int, LineInfo};
+use num_bigint::BigInt;
+
+use crate::common::{CompileError, CompileResult, HasLineInfo, LineInfo};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
@@ -151,11 +153,26 @@ impl TokenKind {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum TokenSuffix {
+    I8, I16, I32, I64, I128, ISize,
+    U8, U16, U32, U64, U128, USize,
+    F32, F64
+}
+
 #[derive(Clone, Debug)]
 pub enum TokenValue {
     String(String),
-    Int(Int),
-    // TODO: float
+    Int {
+        integral: BigInt,
+        suffix: Option<TokenSuffix>,
+    },
+    Float {
+        integral: BigInt,
+        fractional: BigInt,
+        mantissa: BigInt,
+        suffix: Option<TokenSuffix>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -170,6 +187,14 @@ impl HasLineInfo for Token {
     fn get_line_info(&self) -> LineInfo {
         self.line_info
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum NumberRadix {
+    Binary,
+    Octal,
+    Decimal,
+    Hex,
 }
 
 pub struct Lexer {
@@ -249,7 +274,7 @@ impl Lexer {
                 return Ok(self.make_token($kind))
             };
             ($kind:ident, $value:expr) => {
-                return Ok(self.make_token_with_val($kind, $value))
+                return Ok(self.make_token_with_val($kind, Some($value)))
             };
         }
         use TokenKind::*;
@@ -331,139 +356,41 @@ impl Lexer {
                 }
                 '"' => {
                     let str = self.expect_string("", '"', false, false)?;
-                    token!(StringLit, Some(TokenValue::String(str)))
+                    token!(StringLit, TokenValue::String(str))
                 }
                 '`' => {
                     let str = self.expect_string("", '`', true, false)?;
-                    token!(StringLit, Some(TokenValue::String(str)))
+                    token!(StringLit, TokenValue::String(str))
                 }
-                '1'..='9' => {
-                    let num_start = self.index - 1;
-                    self.expect_decimal(false)?;
-                    if let Some(c) = self.peek()
-                        && c == '.'
-                    {
-                        // decimal float
-                        self.advance();
-                        self.expect_float('e', false)?;
-                        self.check_float_suffix();
-                        token!(FloatLit)
-                    } else {
-                        let suffix_start = self.index;
-                        if self.check_int_suffix() {
-                            return self.make_int_tok_with_suffix(num_start, suffix_start, 10);
-                        } else {
-                            let buf = self
-                                .text
-                                .chars()
-                                .skip(num_start)
-                                .take(suffix_start - num_start)
-                                .collect::<String>()
-                                .bytes()
-                                .collect::<Vec<_>>();
-                            token!(IntLit, Some(TokenValue::Int(Int::parse_arbitrary(&buf, 10))))
+                '0'..='9' => {
+                    if c == '0' {
+                        if let Some(c) = self.peek() {
+                            match c {
+                                // binary
+                                'b' | 'B' => {
+                                    self.advance();
+                                    let integral = self.expect_number(NumberRadix::Binary)?;
+                                    let suffix = self.check_int_suffix();
+                                    token!(IntLit, TokenValue::Int { integral, suffix })
+                                },
+                                // octal
+                                'o' | 'O' => {
+                                    self.advance();
+                                    let integral = self.expect_number(NumberRadix::Octal)?;
+                                    let suffix = self.check_int_suffix();
+                                    token!(IntLit, TokenValue::Int { integral, suffix })
+                                },
+                                // hex
+                                'x' | 'X' => {
+                                    self.advance();
+                                    return self.get_number_token(NumberRadix::Hex, 'p');
+                                },
+                                _ => {},
+                            }
                         }
                     }
-                }
-                '0' => {
-                    let num_start = self.index - 1;
-                    match self.peek() {
-                        Some(c) => match c {
-                            // binary
-                            'b' | 'B' => {
-                                self.advance();
-                                self.expect_binary()?;
-                                let suffix_start = self.index;
-                                if self.check_int_suffix() {
-                                    return self.make_int_tok_with_suffix(num_start, suffix_start, 2);
-                                } else {
-                                    let buf = self
-                                        .text
-                                        .chars()
-                                        .skip(num_start)
-                                        .take(suffix_start - num_start)
-                                        .collect::<String>()
-                                        .bytes()
-                                        .collect::<Vec<_>>();
-                                    token!(IntLit, Some(TokenValue::Int(Int::parse_arbitrary(&buf, 2))))
-                                }
-                            }
-                            // hex
-                            'x' | 'X' => {
-                                self.advance();
-                                self.expect_hex()?;
-                                if let Some(c) = self.peek()
-                                    && c == '.'
-                                {
-                                    // hex float
-                                    self.advance();
-                                    self.expect_float('p', true)?;
-                                    self.check_float_suffix();
-                                    token!(FloatLit)
-                                } else {
-                                    let suffix_start = self.index;
-                                    if self.check_int_suffix() {
-                                        return self.make_int_tok_with_suffix(num_start, suffix_start, 16);
-                                    } else {
-                                        let buf = self
-                                            .text
-                                            .chars()
-                                            .skip(num_start)
-                                            .take(suffix_start - num_start)
-                                            .collect::<String>()
-                                            .bytes()
-                                            .collect::<Vec<_>>();
-                                        token!(IntLit, Some(TokenValue::Int(Int::parse_arbitrary(&buf, 16))))
-                                    }
-                                }
-                            }
-                            // octal
-                            'o' | 'O' => {
-                                self.advance();
-                                self.expect_octal()?;
-                                let suffix_start = self.index;
-                                if self.check_int_suffix() {
-                                    return self.make_int_tok_with_suffix(num_start, suffix_start, 8);
-                                } else {
-                                    let buf = self
-                                        .text
-                                        .chars()
-                                        .skip(num_start)
-                                        .take(suffix_start - num_start)
-                                        .collect::<String>()
-                                        .bytes()
-                                        .collect::<Vec<_>>();
-                                    token!(IntLit, Some(TokenValue::Int(Int::parse_arbitrary(&buf, 8))))
-                                }
-                            }
-                            // decimal float
-                            '.' => {
-                                self.advance();
-                                self.expect_float('e', false)?;
-                                self.check_float_suffix();
-                                token!(FloatLit)
-                            }
-                            // decimal
-                            _ => {
-                                self.expect_decimal(false)?;
-                                let suffix_start = self.index;
-                                if self.check_int_suffix() {
-                                    return self.make_int_tok_with_suffix(num_start, suffix_start, 10);
-                                } else {
-                                    let buf = self
-                                        .text
-                                        .chars()
-                                        .skip(num_start)
-                                        .take(suffix_start - num_start)
-                                        .collect::<String>()
-                                        .bytes()
-                                        .collect::<Vec<_>>();
-                                    token!(IntLit, Some(TokenValue::Int(Int::parse_arbitrary(&buf, 10))))
-                                }
-                            }
-                        },
-                        None => token!(IntLit, Some(TokenValue::Int(Int::from_arbitrary(0)))),
-                    }
+                    self.index -= 1;
+                    return self.get_number_token(NumberRadix::Decimal, 'e');
                 }
                 ' ' | '\t' | '\r' | '\n' => {
                     self.start = self.index;
@@ -564,11 +491,6 @@ impl Lexer {
         }
     }
 
-    fn make_int_tok_with_suffix(&mut self, num_start: usize, suffix_start: usize, radix: u32) -> CompileResult<Token> {
-        let buf = self.text[num_start..suffix_start].bytes().collect::<Vec<_>>();
-        Ok(self.make_token_with_val(TokenKind::IntLit, Some(TokenValue::Int(Int::parse(&buf, radix)))))
-    }
-
     fn get_ident_kind(text: &str) -> TokenKind {
         KEYWORDS
             .get(text)
@@ -584,7 +506,6 @@ impl Lexer {
             .skip(self.start)
             .take(self.index - self.start)
             .collect();
-        // let text = self.text[self.start..self.index].to_owned();
         let result = Token {
             line_info: self.line_info,
             kind: if kind == TokenKind::Ident {
@@ -614,14 +535,6 @@ impl Lexer {
     fn peek(&self) -> Option<char> {
         self.peek_at(0)
     }
-
-    // fn cur(&self) -> Option<char> {
-    //     if self.index == 0 {
-    //         None
-    //     } else {
-    //         self.text.chars().nth(self.index - 1)
-    //     }
-    // }
 
     fn getchar(&mut self) -> CompileResult<char> {
         match self.advance() {
@@ -686,148 +599,116 @@ impl Lexer {
         ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F')
     }
 
-    fn check_float_suffix(&mut self) -> bool {
-        self.check("f16") || self.check("f32") || self.check("f64")
+    fn check_float_suffix(&mut self) -> Option<TokenSuffix> {
+        if      self.check("f32") { Some(TokenSuffix::F32) }
+        else if self.check("f64") { Some(TokenSuffix::F64) }
+        else                      { None }
     }
 
-    fn check_int_suffix(&mut self) -> bool {
-        self.check("i8")
-            || self.check("i16")
-            || self.check("i32")
-            || self.check("i64")
-            || self.check("i128")
-            || self.check("isize")
-            || self.check("u8")
-            || self.check("u16")
-            || self.check("u32")
-            || self.check("u64")
-            || self.check("u128")
-            || self.check("usize")
+    fn check_int_suffix(&mut self) -> Option<TokenSuffix> {
+        if      self.check("i8")    { Some(TokenSuffix::I8) }
+        else if self.check("i16")   { Some(TokenSuffix::I16) }
+        else if self.check("i32")   { Some(TokenSuffix::I32) }
+        else if self.check("i64")   { Some(TokenSuffix::I64) }
+        else if self.check("i128")  { Some(TokenSuffix::I128) }
+        else if self.check("isize") { Some(TokenSuffix::ISize) }
+        else if self.check("u8")    { Some(TokenSuffix::U8) }
+        else if self.check("u16")   { Some(TokenSuffix::U16) }
+        else if self.check("u32")   { Some(TokenSuffix::U32) }
+        else if self.check("u64")   { Some(TokenSuffix::U64) }
+        else if self.check("u128")  { Some(TokenSuffix::U128) }
+        else if self.check("usize") { Some(TokenSuffix::USize) }
+        else                        { None }
     }
 
-    fn expect_binary(&mut self) -> CompileResult<()> {
-        let Some(c) = self.advance() else {
-            return Err(self.make_error_cur("expected binary digit"));
-        };
-        if !Self::is_binary(c) {
-            return Err(self.make_error_cur("expected binary digit"));
-        }
-        loop {
-            match self.peek() {
-                Some(c) => {
-                    if !Self::is_binary(c) {
-                        break;
+    fn get_number_token(&mut self, radix: NumberRadix, exp: char) -> CompileResult<Token> {
+        let integral = self.expect_number(radix)?;
+        if let Some(c) = self.peek() {
+            match c {
+                '.' => {
+                    // decimal float
+                    self.getchar()?;
+                    let fractional = self.expect_number(radix)?;
+                    let mut mantissa = BigInt::ZERO;
+                    if let Some(c) = self.peek()
+                        && c.eq_ignore_ascii_case(&exp)
+                    {
+                        self.getchar()?;
+                        let c = self.getchar()?;
+                        if c != '+' && c != '-' {
+                            return Err(self.make_error_cur("expected '+' or '-'"));
+                        }
+                        mantissa = self.expect_number(radix)?;
+                        if c == '-' {
+                            mantissa *= -1;
+                        }
                     }
-                    self.advance();
-                }
-                None => break,
-            }
-        }
-        if let Some(c) = self.peek()
-            && Self::is_decimal(c)
-        {
-            self.advance();
-            return Err(self.make_error_cur("expected binary digit"));
-        }
-        Ok(())
-    }
-
-    fn expect_octal(&mut self) -> CompileResult<()> {
-        let Some(c) = self.advance() else {
-            return Err(self.make_error_cur("expected octal digit"));
-        };
-        if !Self::is_octal(c) {
-            return Err(self.make_error_cur("expected octal digit"));
-        }
-        loop {
-            match self.peek() {
-                Some(c) => {
-                    if !Self::is_octal(c) {
-                        break;
+                    let suffix = self.check_float_suffix();
+                    let value = TokenValue::Float { integral, fractional, mantissa, suffix };
+                    return Ok(self.make_token_with_val(TokenKind::FloatLit, Some(value)));
+                },
+                c => {
+                    if c == exp {
+                        self.getchar()?;
+                        let c = self.getchar()?;
+                        if c != '+' && c != '-' {
+                            return Err(self.make_error_cur("expected '+' or '-'"));
+                        }
+                        let mut mantissa = self.expect_number(radix)?;
+                        if c == '-' {
+                            mantissa *= -1;
+                        }
+                        let suffix = self.check_float_suffix();
+                        let value = TokenValue::Float {
+                            integral,
+                            fractional: BigInt::ZERO,
+                            mantissa,
+                            suffix
+                        };
+                        return Ok(self.make_token_with_val(TokenKind::FloatLit, Some(value)));
+                    } else {
+                        let suffix = self.check_int_suffix();
+                        return Ok(self.make_token_with_val(TokenKind::IntLit, Some(TokenValue::Int { integral, suffix })));
                     }
-                    self.advance();
-                }
-                None => break,
-            }
-        }
-        if let Some(c) = self.peek()
-            && Self::is_decimal(c)
-        {
-            self.advance();
-            return Err(self.make_error_cur("expected octal digit"));
-        }
-        Ok(())
-    }
-
-    fn expect_decimal(&mut self, do_start: bool) -> CompileResult<()> {
-        if do_start {
-            let c = self.getchar()?;
-            if !Self::is_decimal(c) {
-                return Err(self.make_error_cur("expected decimal digit"));
-            }
-        }
-        loop {
-            match self.peek() {
-                Some(c) => {
-                    if !Self::is_decimal(c) {
-                        break;
-                    }
-                    self.advance();
-                }
-                None => break,
-            }
-        }
-        Ok(())
-    }
-
-    fn expect_hex(&mut self) -> CompileResult<()> {
-        let Some(c) = self.advance() else {
-            return Err(self.make_error_cur("expected hex digit"));
-        };
-        if !Self::is_hex(c) {
-            return Err(self.make_error_cur("expected hex digit"));
-        }
-        loop {
-            match self.peek() {
-                Some(c) => {
-                    if !Self::is_hex(c) {
-                        break;
-                    }
-                    self.advance();
-                }
-                None => break,
-            }
-        }
-        Ok(())
-    }
-
-    fn expect_float(&mut self, exp: char, is_hex: bool) -> CompileResult<()> {
-        if is_hex {
-            self.expect_hex()?;
-            if let Some(c) = self.peek()
-                && c.eq_ignore_ascii_case(&exp)
-            {
-                self.advance().unwrap();
-                let c = self.getchar()?;
-                if c != '+' && c != '-' {
-                    return Err(self.make_error_cur("expected '+' or '-'"));
-                }
-                self.expect_decimal(true)?;
+                },
             }
         } else {
-            self.expect_decimal(true)?;
-            if let Some(c) = self.peek()
-                && c.eq_ignore_ascii_case(&exp)
-            {
-                self.advance().unwrap();
-                let c = self.getchar()?;
-                if c != '+' && c != '-' {
-                    return Err(self.make_error_cur("expected '+' or '-'"));
+            let suffix = self.check_int_suffix();
+            return Ok(self.make_token_with_val(TokenKind::IntLit, Some(TokenValue::Int { integral, suffix })));
+        }
+    }
+
+    fn expect_number(&mut self, radix: NumberRadix) -> CompileResult<BigInt> {
+        match radix {
+            NumberRadix::Binary => self.expect_number_impl(2, Self::is_binary),
+            NumberRadix::Octal => self.expect_number_impl(8, Self::is_octal),
+            NumberRadix::Decimal => self.expect_number_impl(10, Self::is_decimal),
+            NumberRadix::Hex => self.expect_number_impl(16, Self::is_hex),
+        }
+    }
+
+    fn expect_number_impl<F>(&mut self, base: u32, digit_checker: F) -> CompileResult<BigInt>
+    where F: Fn(char) -> bool
+    {
+        let mut number = BigInt::ZERO;
+        let c = self.getchar()?;
+        if !digit_checker(c) {
+            return Err(self.make_error_cur("expected decimal digit"));
+        }
+        number = number * base + c.to_digit(base).unwrap();
+        loop {
+            match self.peek() {
+                Some(c) => {
+                    if !digit_checker(c) {
+                        break;
+                    }
+                    number = number * base + c.to_digit(base).unwrap();
+                    self.advance();
                 }
-                self.expect_decimal(true)?;
+                None => break,
             }
         }
-        Ok(())
+        Ok(number)
     }
 
     fn expect_string(

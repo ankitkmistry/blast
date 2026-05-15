@@ -3,9 +3,6 @@ use std::collections::{BTreeSet, HashSet};
 use std::ops::Deref;
 use std::{error::Error, fmt};
 
-use num_bigint::{BigInt, ToBigInt};
-use num_traits::ToPrimitive;
-
 // line_start and line_end is inclusive
 // col_start and col_end is exclusive
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -190,65 +187,6 @@ impl Default for Layout {
             size: 1,
             alignment: 1,
         }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Int {
-    pub num: BigInt,
-}
-
-impl Int {
-    pub fn new() -> Self {
-        Self { num: BigInt::ZERO }
-    }
-
-    pub fn parse(buf: &[u8], radix: u32) -> Self {
-        Self::parse_helper(buf, radix)
-    }
-
-    pub fn parse_arbitrary(buf: &[u8], radix: u32) -> Self {
-        Self::parse_helper(buf, radix)
-    }
-
-    fn parse_helper(buf: &[u8], radix: u32) -> Self {
-        Self {
-            num: BigInt::parse_bytes(buf, radix).unwrap(),
-        }
-    }
-
-    pub fn from_arbitrary(num: u64) -> Self {
-        Self::from_helper(num)
-    }
-
-    fn from_helper(num: u64) -> Self {
-        Self {
-            num: num.to_bigint().unwrap(),
-        }
-    }
-
-    pub fn to_usize(&self) -> Option<usize> {
-        self.num.to_usize()
-    }
-
-    pub fn to_f32(&self) -> Option<f32> {
-        self.num.to_f32()
-    }
-
-    pub fn to_f64(&self) -> Option<f64> {
-        self.num.to_f64()
-    }
-}
-
-impl fmt::Display for Int {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.num)
-    }
-}
-
-impl Default for Int {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
