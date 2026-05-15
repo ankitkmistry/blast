@@ -304,13 +304,8 @@ impl<'a> Analyzer<'a> {
                         }
                     }
                     TokenKind::DirectiveDefault => {
-                        // TODO: Get default init value
                         cfg_assign = true;
-                        Context {
-                            is_lvalue: false,
-                            taipe: lhs,
-                            value: context::Value::from_nil(),
-                        }
+                        self.get_default_value(&lhs, taipe)?
                     }
                     _ => unreachable!("probably some parser bug"),
                 };
@@ -803,8 +798,8 @@ impl<'a> Analyzer<'a> {
                     // name : type;
                     // ---------------------------------
                     assert!(eq_token.is_none());
-                    // TODO: If no value is provided then default value should be evaluated
-                    let rhs = (self.get_zero_value(&lhs.0, taipe)?, name.get_line_info());
+                    // If no value is provided then default value should be evaluated
+                    let rhs = (self.get_default_value(&lhs.0, taipe)?, name.get_line_info());
                     self.resolve_assign(Some(lhs), None, Some(rhs))?
                 };
                 // Check the type of the fields

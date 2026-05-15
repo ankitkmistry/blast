@@ -1083,7 +1083,7 @@ impl<'a> Analyzer<'a> {
                     assert!(trivial.kind == TokenKind::DirectiveTrivial);
                     ctx = self.compeval_trivial(ctx, line_info)?;
                 } else {
-                    // TODO: change this
+                    // TODO: change this to non_trivial
                     ctx = self.compeval_trivial(ctx, line_info)?;
                 }
                 Ok(ctx)

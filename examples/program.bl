@@ -190,7 +190,7 @@ y : (__bool, __i32) = #zero;
 // print :: fun (str: []__char, newline: __bool = true, stderr: __bool = false) {
 // }
 
-// TODO: implement literals
+// TODO: implement struct literals
 
 casted_value :: 6969e-2; // as __int;
 
