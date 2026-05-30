@@ -3,10 +3,7 @@ use std::{cell::RefCell, cmp::Ordering, fmt, rc::Rc};
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 
-use crate::{
-    common::LineInfo,
-    scope,
-};
+use crate::{common::LineInfo, scope};
 
 #[derive(Clone)]
 pub struct Param<'a> {
@@ -577,8 +574,12 @@ pub enum Value<'a> {
     Imm(Imm<'a>),
     Array(Vec<Value<'a>>),
     Tuple(Vec<Value<'a>>),
-    /// Anything that can be referenced by an identifier
     Reference(Rc<RefCell<scope::Scope<'a>>>),
+    /// Anything that can be referenced by an identifier
+    UserReference {
+        line_info: LineInfo,
+        scope: Rc<RefCell<scope::Scope<'a>>>,
+    },
     // Unary Instructions
     Negate {
         line_info: LineInfo,
@@ -721,6 +722,11 @@ pub enum Value<'a> {
         body_ctx: Box<Context<'a>>,
     },
     Block(Vec<Context<'a>>),
+    /// This represents a variable declaration, so that the
+    /// compile time evaluator can track the variables that are changed.
+    /// This also records the initial value of the declaration.
+    /// This node is generated from Decls in Analyzer::visit_stmt().
+    VarDecl(Rc<RefCell<scope::Scope<'a>>>),
     Ret(Box<Context<'a>>),
     RetVoid,
     Eval(Box<Context<'a>>),

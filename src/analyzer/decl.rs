@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use indexmap::IndexMap;
-use log::{debug, info};
+use log::debug;
 
 use crate::{
     ast,
@@ -221,7 +221,7 @@ impl<'a> Analyzer<'a> {
         &mut self,
         node: &'a ast::Decl,
         should_visit_children: bool,
-    ) -> CompileResult<Context<'a>> {
+    ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
         macro_rules! colon_compulsory {
             ($token:expr) => {
                 // Check the colon thing
@@ -270,7 +270,7 @@ impl<'a> Analyzer<'a> {
                     State::VisitInProg => unreachable!("probably some analyzer bug"),
                     State::Visited(ctx) => {
                         if !ctx.taipe.is_module() {
-                            return Ok(Context::from_scope(&ctx.taipe, &scope));
+                            return Ok(Rc::clone(&scope));
                         }
                     }
                 }
@@ -339,10 +339,9 @@ impl<'a> Analyzer<'a> {
                         });
                     }
                 }
-
-                let result = Context::from_scope(&ctx.taipe, &scope);
+                
                 scope.borrow_mut().state = scope::State::Visited(ctx);
-                Ok(result)
+                Ok(Rc::clone(&scope))
             }
             ast::Decl::Decl {
                 name,
@@ -376,7 +375,7 @@ impl<'a> Analyzer<'a> {
                     State::VisitInProg => unreachable!("probably some analyzer bug"),
                     State::Visited(ctx) => {
                         if !ctx.taipe.is_module() {
-                            return Ok(Context::from_scope(&ctx.taipe, &scope));
+                            return Ok(Rc::clone(&scope));
                         }
                     }
                 }
@@ -396,7 +395,6 @@ impl<'a> Analyzer<'a> {
                         return Err(self.make_err("value must be specified", node));
                     }
                     let ctx = self.resolve_assign(Some((type_ctx, taipe.get_line_info())), None, None)?;
-                    let result = Context::from_scope(&ctx.taipe, &scope);
                     scope.borrow_mut().kind = if ctx.taipe.is_typedef() {
                         scope::ScopeKind::Typedef
                     } else if ctx.taipe.is_const() {
@@ -423,7 +421,7 @@ impl<'a> Analyzer<'a> {
                     }
 
                     scope.borrow_mut().state = State::Visited(ctx);
-                    return Ok(result);
+                    return Ok(Rc::clone(&scope));
                 };
                 match object {
                     ast::Object::ExternModule { line_info: _, value } => {
@@ -445,14 +443,12 @@ impl<'a> Analyzer<'a> {
                         let old_cur_scope = Rc::clone(&self.cur_scope);
                         self.cur_scope = Rc::clone(&scope);
                         // Mark it evaluated if not already
-                        let ctx = if let scope::State::Visited(ctx) = &scope.borrow().state {
-                            Context::from_module(&scope)
+                        if let scope::State::Visited(ctx) = &scope.borrow().state {
                         } else {
                             // Predeclare all declarations (only if not already visited)
                             self.pre_declare_decls(decls)?;
                             scope.borrow_mut().state = State::Visited(Context::from_module(&scope));
-                            Context::from_module(&scope)
-                        };
+                        }
                         if should_visit_children {
                             // Visit every decl
                             for decl in decls {
@@ -482,7 +478,7 @@ impl<'a> Analyzer<'a> {
                         }
                         // Restore old scope
                         self.cur_scope = old_cur_scope;
-                        Ok(ctx)
+                        Ok(Rc::clone(&scope))
                     }
                     // TODO: type punning syntax
                     // A :: struct {
@@ -502,8 +498,7 @@ impl<'a> Analyzer<'a> {
                                 return Err(self.make_err("expected 'typedef'", node));
                             };
                         }
-                        let ctx = self.visit_compound(scope, field)?;
-                        Ok(ctx)
+                        self.visit_compound(scope, field)
                     }
                     ast::Object::Fun {
                         line_info,
@@ -600,7 +595,6 @@ impl<'a> Analyzer<'a> {
                         };
                         // Resolve assignment
                         let ctx = self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, *line_info)))?;
-                        let result = Context::from_scope(&ctx.taipe, &scope);
                         // Mark it visited
                         scope.borrow_mut().state = scope::State::Visited(ctx);
                         scope.borrow_mut().payload = scope::Payload::Function(scope::Function {
@@ -649,7 +643,7 @@ impl<'a> Analyzer<'a> {
                         }
                         // Restore old scope
                         self.cur_scope = old_cur_scope;
-                        Ok(result)
+                        Ok(Rc::clone(&scope))
                         // --- FUNCTION CODE END
                     }
                     ast::Object::Typedef(node) => {
@@ -673,7 +667,7 @@ impl<'a> Analyzer<'a> {
                         // Complete the visit
                         let ctx = Context::from_type(taipe);
                         scope.borrow_mut().state = scope::State::Visited(ctx);
-                        Ok(Context::from_scope(&context::Type::Typedef, &scope))
+                        Ok(Rc::clone(&scope))
                     }
                     ast::Object::Expr(expr) => {
                         // Visit type
@@ -691,10 +685,9 @@ impl<'a> Analyzer<'a> {
                         // If this is a global constant or variable then trivially evaluate the
                         // expression.
                         if self.get_cur_scope().get_enclosing_function().is_none() {
-                            rhs = self.compeval_trivial(rhs, expr)?;
+                            rhs = self.compeval_trivial(rhs)?;
                         }
                         let ctx = self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, expr.get_line_info())))?;
-                        let result = Context::from_scope(&ctx.taipe, &scope);
                         // Complete the visit
                         if ctx.taipe.is_typedef() {
                             scope.borrow_mut().kind = scope::ScopeKind::Typedef;
@@ -727,7 +720,7 @@ impl<'a> Analyzer<'a> {
                         }
 
                         scope.borrow_mut().state = scope::State::Visited(ctx);
-                        Ok(result)
+                        Ok(Rc::clone(&scope))
                     }
                 }
             }
@@ -789,7 +782,7 @@ impl<'a> Analyzer<'a> {
                         }
                         Err(err) => return Err(err),
                     };
-                    let rhs = self.compeval_trivial(rhs, expr)?;
+                    let rhs = self.compeval_trivial(rhs)?;
                     // Resolve assignment
                     self.resolve_assign(Some(lhs), eq_token.as_ref(), Some((rhs, expr.get_line_info())))?
                 } else {
@@ -833,17 +826,12 @@ impl<'a> Analyzer<'a> {
         &mut self,
         scope: Rc<RefCell<scope::Scope<'a>>>,
         field: &'a ast::Field,
-    ) -> CompileResult<Context<'a>> {
+    ) -> CompileResult<Rc<RefCell<scope::Scope<'a>>>> {
         // Begin new scope
         let old_cur_scope = Rc::clone(&self.cur_scope);
         self.cur_scope = Rc::clone(&scope);
         // Mark it evaluated
         let ctx = Context {
-            is_lvalue: true,
-            taipe: context::Type::Typedef,
-            value: context::Value::Imm(context::Imm::Type(context::Type::Basic(Rc::clone(&scope)))),
-        };
-        let result = Context {
             is_lvalue: true,
             taipe: context::Type::Typedef,
             value: context::Value::Imm(context::Imm::Type(context::Type::Basic(Rc::clone(&scope)))),
@@ -870,6 +858,6 @@ impl<'a> Analyzer<'a> {
         }
         // Restore old scope
         self.cur_scope = old_cur_scope;
-        Ok(result)
+        Ok(Rc::clone(&scope))
     }
 }

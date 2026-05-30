@@ -1,4 +1,4 @@
-use std::{collections::HashSet, rc::Rc};
+use std::{collections::{HashMap, HashSet}, rc::Rc};
 use bigdecimal::BigDecimal;
 use num_bigint::{BigInt, ToBigInt};
 use num_traits::{ToPrimitive};
@@ -14,14 +14,20 @@ use crate::{
     common::{get_plural, CompileError, CompileResult, HasLineInfo, LineInfo},
     context::{self, Context},
     lexer::{Token, TokenKind, TokenSuffix, TokenValue},
-    scope::{self, HasSrcInfo},
+    scope::{self, HasSrcInfo, SymbolPath},
 };
 
 impl<'a> Analyzer<'a> {
     pub(crate) fn compeval_trivial(
         &self,
         ctx: Context<'a>,
-        line_info: &impl HasLineInfo,
+    ) -> CompileResult<Context<'a>> {
+        self.compeval_trivial_impl(ctx, &mut HashMap::new())
+    }
+    pub(crate) fn compeval_trivial_impl(
+        &self,
+        ctx: Context<'a>,
+        var_state: &mut HashMap<SymbolPath, Context<'a>>,
     ) -> CompileResult<Context<'a>> {
         macro_rules! return_err {
             (compeval_not_trivial: $line_info:expr) => {
@@ -54,7 +60,7 @@ impl<'a> Analyzer<'a> {
                         taipe: taipe.clone(),
                         value,
                     };
-                    let new_value = self.compeval_trivial(ctx, line_info)?.value;
+                    let new_value = self.compeval_trivial_impl(ctx, var_state)?.value;
                     new_values.push(new_value);
                 }
                 Ok(Context {
@@ -77,7 +83,7 @@ impl<'a> Analyzer<'a> {
                         taipe: types[i].clone(),
                         value,
                     };
-                    let new_value = self.compeval_trivial(ctx, line_info)?.value;
+                    let new_value = self.compeval_trivial_impl(ctx, var_state)?.value;
                     new_values.push(new_value);
                 }
                 Ok(Context {
@@ -87,41 +93,50 @@ impl<'a> Analyzer<'a> {
                 })
             }
             context::Value::Reference(scope) => {
-                // TODO: Change the line_info situation here for accurate error output
                 let scope = scope.borrow();
-                match &scope.state {
-                    scope::State::NotVisited(_) | scope::State::VisitInProg => {
-                        unreachable!("probably some analyzer bug")
-                    }
-                    scope::State::Visited(ctx) => {
-                        match &ctx.value {
-                            context::Value::Imm(_)
-                            | context::Value::Array(_)
-                            | context::Value::Tuple(_)
-                            | context::Value::Reference(_) => {
-                                match scope.kind {
-                                    scope::ScopeKind::Module => todo!(),
-                                    scope::ScopeKind::Compound => todo!(),
-                                    scope::ScopeKind::Field => todo!(),
-                                    scope::ScopeKind::Function => todo!(),
-                                    scope::ScopeKind::Param => todo!(),
-                                    scope::ScopeKind::Typedef => todo!(),
-                                    scope::ScopeKind::Const => Ok(ctx.clone()),
-                                    // Invalid cases
-                                    scope::ScopeKind::Variable => todo!(),
-                                    // Unreachable cases
-                                    scope::ScopeKind::Block | scope::ScopeKind::None => {
-                                        unreachable!("probably some analyzer bug")
-                                    }
-                                }
-                            }
-                            _ => return_err!(compeval_not_trivial: *line_info),
+                let scope::State::Visited(ctx) = &scope.state else {
+                    unreachable!("probably some analyzer bug");
+                };
+                if scope.is_block() {
+                    self.compeval_trivial_impl(ctx.clone(), var_state)
+                } else {
+                    unreachable!("probably some analyzer bug")
+                }
+            },
+            context::Value::UserReference { line_info, scope } => {
+                let scope = scope.borrow();
+                let scope::State::Visited(ctx) = &scope.state else {
+                    unreachable!("probably some analyzer bug");
+                };
+                match scope.kind {
+                    scope::ScopeKind::Module => todo!(),
+                    scope::ScopeKind::Compound => todo!(),
+                    scope::ScopeKind::Field => todo!(),
+                    scope::ScopeKind::Function => todo!(),
+                    scope::ScopeKind::Param => todo!(),
+                    scope::ScopeKind::Typedef => todo!(),
+                    scope::ScopeKind::Variable => {
+                        if let Some(ctx) = var_state.get(&scope.sym_path).cloned() {
+                            Ok(ctx)
+                        } else {
+                            // Invalid cases
+                            return_err!(compeval_not_trivial: line_info)
                         }
-                    }
+                    },
+                    scope::ScopeKind::Const => {
+                        if let Some(ctx) = var_state.get(&scope.sym_path).cloned() {
+                            Ok(ctx)
+                        } else {
+                            Ok(ctx.clone())
+                        }
+                    },
+                    scope::ScopeKind::Block | scope::ScopeKind::None => {
+                        unreachable!("probably some analyzer bug")
+                    },
                 }
             }
             context::Value::Negate { line_info, ctx } => {
-                let ctx = self.compeval_trivial(*ctx, &line_info)?;
+                let ctx = self.compeval_trivial_impl(*ctx, var_state)?;
                 assert!(ctx.taipe.is_signed_integer() || ctx.taipe.is_float());
                 if let context::Value::Imm(imm) = ctx.value {
                     Ok(Context {
@@ -134,7 +149,7 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::FlipBits { line_info, ctx } => {
-                let ctx = self.compeval_trivial(*ctx, &line_info)?;
+                let ctx = self.compeval_trivial_impl(*ctx, var_state)?;
                 assert!(ctx.taipe.is_integer());
                 if let context::Value::Imm(imm) = ctx.value {
                     Ok(Context {
@@ -149,7 +164,7 @@ impl<'a> Analyzer<'a> {
             context::Value::Deref { line_info, ctx } => todo!(),
             context::Value::AddrOf { line_info, ctx } => todo!(),
             context::Value::Not { line_info, ctx } => {
-                let ctx = self.compeval_trivial(*ctx, &line_info)?;
+                let ctx = self.compeval_trivial_impl(*ctx, var_state)?;
                 assert!(ctx.taipe.is_bool());
                 if let context::Value::Imm(context::Imm::Bool(b)) = ctx.value {
                     Ok(Context {
@@ -162,8 +177,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::Add { line_info, lhs, rhs } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                 assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
                 let res_type = lhs.taipe.remove_const();
                 if let context::Value::Imm(lhs) = lhs.value
@@ -182,8 +197,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::Sub { line_info, lhs, rhs } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                 assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
                 let res_type = lhs.taipe.remove_const();
                 if let context::Value::Imm(lhs) = lhs.value
@@ -202,8 +217,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::Mul { line_info, lhs, rhs } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                 assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
                 let res_type = lhs.taipe.remove_const();
                 if let context::Value::Imm(lhs) = lhs.value
@@ -222,8 +237,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::Div { line_info, lhs, rhs } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                 assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
                 let res_type = lhs.taipe.remove_const();
                 if let context::Value::Imm(lhs) = lhs.value
@@ -242,8 +257,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::Rem { line_info, lhs, rhs } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                 assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
                 let res_type = lhs.taipe.remove_const();
                 if let context::Value::Imm(lhs) = lhs.value
@@ -262,8 +277,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::Shl { line_info, lhs, rhs } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                 assert!(lhs.taipe.is_integer() && rhs.taipe.is_unsigned_integer());
                 // TODO: to be changed
                 assert!(rhs.taipe == context::Type::Uint32);
@@ -281,8 +296,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::Shr { line_info, lhs, rhs } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                 assert!(lhs.taipe.is_integer() && rhs.taipe.is_unsigned_integer());
                 // TODO: to be changed
                 assert!(rhs.taipe == context::Type::Uint32);
@@ -300,8 +315,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::BitAnd { line_info, lhs, rhs } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                 assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
                 assert!(lhs.taipe.is_integer() && rhs.taipe.is_integer());
                 let res_type = lhs.taipe.remove_const();
@@ -318,8 +333,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::BitXor { line_info, lhs, rhs } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                 assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
                 assert!(lhs.taipe.is_integer() && rhs.taipe.is_integer());
                 let res_type = lhs.taipe.remove_const();
@@ -336,8 +351,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::BitOr { line_info, lhs, rhs } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                 assert!(lhs.taipe.remove_const() == rhs.taipe.remove_const());
                 assert!(lhs.taipe.is_integer() && rhs.taipe.is_integer());
                 let res_type = lhs.taipe.remove_const();
@@ -361,11 +376,11 @@ impl<'a> Analyzer<'a> {
             context::Value::Gt { line_info, lhs, rhs } => todo!(),
             context::Value::LogicAnd { line_info, lhs, rhs } => {
                 assert!(lhs.taipe.is_bool() && rhs.taipe.is_bool());
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
                 assert!(lhs.taipe.is_bool());
                 if let context::Value::Imm(context::Imm::Bool(lhs)) = lhs.value {
                     if lhs {
-                        let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                        let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                         assert!(rhs.taipe.is_bool());
                         if let context::Value::Imm(context::Imm::Bool(rhs)) = rhs.value {
                             if rhs {
@@ -385,13 +400,13 @@ impl<'a> Analyzer<'a> {
             }
             context::Value::LogicOr { line_info, lhs, rhs } => {
                 assert!(lhs.taipe.is_bool() && rhs.taipe.is_bool());
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
                 assert!(lhs.taipe.is_bool());
                 if let context::Value::Imm(context::Imm::Bool(lhs)) = lhs.value {
                     if lhs {
                         Ok(Context::from_bool(true))
                     } else {
-                        let rhs = self.compeval_trivial(*rhs, &line_info)?;
+                        let rhs = self.compeval_trivial_impl(*rhs, var_state)?;
                         assert!(rhs.taipe.is_bool());
                         if let context::Value::Imm(context::Imm::Bool(rhs)) = rhs.value {
                             if rhs {
@@ -408,8 +423,8 @@ impl<'a> Analyzer<'a> {
                 }
             }
             context::Value::Index { line_info, lhs, index } => {
-                let lhs = self.compeval_trivial(*lhs, &line_info)?;
-                let index_ctx = self.compeval_trivial(*index, &line_info)?;
+                let lhs = self.compeval_trivial_impl(*lhs, var_state)?;
+                let index_ctx = self.compeval_trivial_impl(*index, var_state)?;
                 let context::Value::Imm(index_imm) = index_ctx.value else {
                     return_err!(compeval_not_trivial: line_info);
                 };
@@ -433,13 +448,13 @@ impl<'a> Analyzer<'a> {
                         let Some(value) = values.into_iter().nth(index) else {
                             unreachable!("probably some analyzer bug");
                         };
-                        Ok(self.compeval_trivial(
+                        Ok(self.compeval_trivial_impl(
                             Context {
                                 is_lvalue: ctx.is_lvalue,
                                 taipe: *taipe,
                                 value,
                             },
-                            &line_info,
+                            var_state
                         )?)
                     }
                     context::Value::Tuple(values) => {
@@ -457,13 +472,13 @@ impl<'a> Analyzer<'a> {
                         let Some(value) = values.into_iter().nth(index) else {
                             unreachable!("probably some analyzer bug");
                         };
-                        Ok(self.compeval_trivial(
+                        Ok(self.compeval_trivial_impl(
                             Context {
                                 is_lvalue: ctx.is_lvalue,
                                 taipe,
                                 value,
                             },
-                            &line_info,
+                            var_state
                         )?)
                     }
                     _ => return_err!(compeval_not_trivial: line_info),
@@ -476,20 +491,37 @@ impl<'a> Analyzer<'a> {
             } => Err(self
                 .make_err("could not evaluate expression trivially at compile time", &line_info)
                 .chain(self.make_note_no_path("function call may have side effects"))),
-            context::Value::Assign(lhses, rhses) => todo!(),
+            context::Value::Assign(lhses, rhses) => {
+                assert!(lhses.len() == rhses.len());
+                for (lhs, rhs) in lhses.into_iter().zip(rhses.into_iter()) {
+                    let rhs = self.compeval_trivial_impl(rhs, var_state)?;
+                    // let lhs = self.compeval_trivial_impl(lhs, var_state)?;
+                    
+                    let context::Value::UserReference { line_info, scope } = lhs.value else {
+                        // TODO: extend support for assignment
+                        unreachable!("probably some analyzer bug");
+                    };
+                    let scope = scope.borrow();
+                    let assign_result = var_state.insert(scope.sym_path.clone(), rhs);
+                    if assign_result.is_none() {
+                        return_err!(compeval_not_trivial: line_info)
+                    }
+                }
+                Ok(Context::from_void())
+            },
             context::Value::IfElse {
                 line_info,
                 cond,
                 then_ctx,
                 else_ctx,
             } => {
-                let cond = self.compeval_trivial(*cond, &line_info)?;
+                let cond = self.compeval_trivial_impl(*cond, var_state)?;
                 assert!(cond.taipe.is_bool());
                 if let context::Value::Imm(context::Imm::Bool(cond)) = cond.value {
                     if cond {
-                        self.compeval_trivial(*then_ctx, &line_info)
+                        self.compeval_trivial_impl(*then_ctx, var_state)
                     } else {
-                        self.compeval_trivial(*else_ctx, &line_info)
+                        self.compeval_trivial_impl(*else_ctx, var_state)
                     }
                 } else {
                     return_err!(compeval_not_trivial: line_info);
@@ -500,11 +532,11 @@ impl<'a> Analyzer<'a> {
                 cond,
                 then_ctx,
             } => {
-                let cond = self.compeval_trivial(*cond, &line_info)?;
+                let cond = self.compeval_trivial_impl(*cond, var_state)?;
                 assert!(cond.taipe.is_bool());
                 if let context::Value::Imm(context::Imm::Bool(cond)) = cond.value {
                     if cond {
-                        self.compeval_trivial(*then_ctx, &line_info)
+                        self.compeval_trivial_impl(*then_ctx, var_state)
                     } else {
                         Ok(Context::from_void())
                     }
@@ -520,12 +552,12 @@ impl<'a> Analyzer<'a> {
                 let mut cond = *cond;
                 let body_ctx = *body_ctx;
                 loop {
-                    cond = self.compeval_trivial(cond, &line_info)?;
+                    cond = self.compeval_trivial_impl(cond, var_state)?;
                     assert!(cond.taipe.is_bool());
                     if let context::Value::Imm(context::Imm::Bool(cond)) = cond.value {
                         if cond {
                             // FIXME: performance here: clone()
-                            let _ = self.compeval_trivial(body_ctx.clone(), &line_info)?;
+                            let _ = self.compeval_trivial_impl(body_ctx.clone(), var_state)?;
                         } else {
                             break;
                         }
@@ -538,24 +570,36 @@ impl<'a> Analyzer<'a> {
             context::Value::Block(ctxs) => {
                 let ctx_count = ctxs.len();
                 for (i, ctx) in ctxs.into_iter().enumerate() {
-                    let ctx = self.compeval_trivial(ctx, line_info)?;
+                    let ctx = self.compeval_trivial_impl(ctx, var_state)?;
                     if i >= ctx_count - 1 {
                         return Ok(ctx);
                     }
                 }
                 Ok(Context::from_void())
             }
+            context::Value::VarDecl(scope) => {
+                let scope = scope.borrow();
+                match &scope.state {
+                    scope::State::NotVisited(_) => unreachable!("probably some analyzer bug"),
+                    scope::State::VisitInProg => unreachable!("probably some analyzer bug"),
+                    scope::State::Visited(ctx) => {
+                        let ctx = self.compeval_trivial_impl(ctx.clone(), var_state)?;
+                        var_state.insert(scope.sym_path.clone(), ctx);
+                        Ok(Context::from_void())
+                    },
+                }
+            }
             context::Value::Ret(ctx) => {
-                let _ = self.compeval_trivial(*ctx, line_info)?;
+                let _ = self.compeval_trivial_impl(*ctx, var_state)?;
                 Ok(Context::from_noreturn())
             }
             context::Value::RetVoid => Ok(Context::from_noreturn()),
             context::Value::Eval(ctx) => {
-                let _ = self.compeval_trivial(*ctx, line_info)?;
+                let _ = self.compeval_trivial_impl(*ctx, var_state)?;
                 Ok(Context::from_void())
             }
             context::Value::Cast(from) => {
-                let from = self.compeval_trivial(*from, line_info)?;
+                let from = self.compeval_trivial_impl(*from, var_state)?;
                 let to = ctx.taipe;
 
                 if from.taipe.is_signed_integer() {
@@ -666,7 +710,7 @@ impl<'a> Analyzer<'a> {
 
     pub(crate) fn visit_expr(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
         let ctx = self.visit_expr_impl(node)?;
-        if let context::Value::Reference(ref scope) = ctx.value {
+        if let context::Value::UserReference { line_info: _, ref scope } = ctx.value {
             // cfg: insert variable used node
             //      only if it is a local variable or constant
             let should_insert_cfg = match scope.borrow().kind {
@@ -690,7 +734,7 @@ impl<'a> Analyzer<'a> {
     }
     fn visit_expr_lhs_of_assign(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
         let ctx = self.visit_expr_impl(node)?;
-        if let context::Value::Reference(ref scope) = ctx.value {
+        if let context::Value::UserReference { line_info: _, ref scope } = ctx.value {
             // cfg: insert variable assigned node
             //      only if it is a local variable or constant
             let should_insert_cfg = match scope.borrow().kind {
@@ -714,7 +758,10 @@ impl<'a> Analyzer<'a> {
     }
     fn visit_expr_impl(&mut self, node: &'a ast::Expr) -> CompileResult<Context<'a>> {
         match node {
-            ast::Expr::Block { line_info, stmts } => self.visit_block(*line_info, stmts),
+            ast::Expr::Block { line_info, stmts } => {
+                // TODO: Block expressions should never create a block scope
+                self.visit_block(*line_info, stmts)
+            },
             ast::Expr::Assign { lhses, op, rhses } => {
                 match op.kind {
                     // TODO: implement augmented assignment
@@ -875,7 +922,7 @@ impl<'a> Analyzer<'a> {
                         })
                     }
                     context::Type::Module => {
-                        let context::Value::Reference(module) = ctx.value else {
+                        let context::Value::UserReference { line_info: _, scope: module } = ctx.value else {
                             unreachable!("probably some analyzer bug");
                         };
                         self.get_member(&module, &name)
@@ -1074,17 +1121,17 @@ impl<'a> Analyzer<'a> {
             }
             ast::Expr::ArrayLit { line_info: _, items } => todo!(),
             ast::Expr::Compeval {
-                line_info,
+                line_info: _,
                 trivial,
                 expr,
             } => {
                 let mut ctx = self.visit_expr(expr)?;
                 if let Some(trivial) = trivial {
                     assert!(trivial.kind == TokenKind::DirectiveTrivial);
-                    ctx = self.compeval_trivial(ctx, line_info)?;
+                    ctx = self.compeval_trivial(ctx)?;
                 } else {
                     // TODO: change this to non_trivial
-                    ctx = self.compeval_trivial(ctx, line_info)?;
+                    ctx = self.compeval_trivial(ctx)?;
                 }
                 Ok(ctx)
             }
@@ -1162,7 +1209,7 @@ impl<'a> Analyzer<'a> {
     ) -> CompileResult<Context<'a>> {
         // For better error messages
         let mut errs = CompileError::Errors(Vec::new());
-        if let context::Value::Reference(scope_rc) = fun_ctx.value {
+        if let context::Value::UserReference { line_info: _, scope: scope_rc } = fun_ctx.value {
             let scope = scope_rc.borrow();
             let scope::Payload::Function(ref data) = scope.payload else {
                 unreachable!("probably some analyzer bug");

@@ -465,6 +465,9 @@ impl<'a> IrPrinter {
             context::Value::Reference(scope) => {
                 write!(self, "Reference = {}", scope.borrow().sym_path)?;
             }
+            context::Value::UserReference { line_info: _, scope } => {
+                write!(self, "UserReference = {}", scope.borrow().sym_path)?;
+            }
             context::Value::Negate { line_info: _, ctx } => {
                 write!(self, "Negate")?;
                 self.print_context("value", ctx)?;
@@ -637,6 +640,9 @@ impl<'a> IrPrinter {
                 for (i, ctx) in ctxs.iter().enumerate() {
                     self.print_context(&format!("[{}]", i), ctx)?;
                 }
+            }
+            context::Value::VarDecl(scope) => {
+                write!(self, "VarDecl = {}", scope.borrow().sym_path)?;
             }
             context::Value::Ret(ctx) => {
                 write!(self, "Ret")?;

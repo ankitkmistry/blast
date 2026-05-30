@@ -194,6 +194,16 @@ y : (__bool, __i32) = #zero;
 
 casted_value :: 6969e-2; // as __int;
 
+runtime_value :: 2;
+
+compeval_test :: fun () {
+    value_from_block :: compeval #trivial {
+        x := 7 + runtime_value;
+        x = x + 8;
+        yield x + 128;
+    };
+}
+
 main :: fun () -> __i64 {
     return 0;
 

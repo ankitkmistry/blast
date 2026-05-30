@@ -66,6 +66,7 @@ fn gen_ctx<'a>(
         context::Value::Array(values) => todo!(),
         context::Value::Tuple(values) => todo!(),
         context::Value::Reference(ref_cell) => todo!(),
+        context::Value::UserReference { line_info, scope } => todo!(),
         context::Value::Negate { line_info, ctx } => {
             let value = gen_ctx(ctx, builder, module);
             if let Some(value) = value {
@@ -232,6 +233,7 @@ fn gen_ctx<'a>(
             }
             None
         }
+        context::Value::VarDecl(_) => None,
         context::Value::Ret(ctx) => {
             let value = gen_ctx(ctx, builder, module);
             if let Some(value) = value {

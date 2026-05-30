@@ -269,6 +269,13 @@ impl<'a> Scope<'a> {
         result
     }
 
+    pub fn is_const(&self) -> bool {
+        match self.kind {
+            ScopeKind::Const => true,
+            _ => false,
+        }
+    }
+
     pub fn is_variable(&self) -> bool {
         match self.kind {
             ScopeKind::Variable => true,

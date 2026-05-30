@@ -4,6 +4,7 @@ use std::{
     rc::Rc,
 };
 
+use log::debug;
 use num_traits::cast::ToPrimitive;
 
 use crate::{
@@ -193,8 +194,16 @@ impl<'a> Analyzer<'a> {
             ast::Stmt::Break { token, label } => self.visit_break(token, label.as_ref()),
             ast::Stmt::Return { token, expr } => self.visit_return(token, expr.as_ref()),
             ast::Stmt::Decl(decl) => {
-                let _ = self.visit_decl(decl, false)?;
-                Ok(Context::from_void())
+                let scope = self.visit_decl(decl, false)?;
+                if scope.borrow().is_variable() || scope.borrow().is_const() {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: context::Type::Void,
+                        value: context::Value::VarDecl(scope),
+                    })
+                } else {
+                    Ok(Context::from_void())
+                }
             }
             ast::Stmt::Expr(expr) => {
                 let ctx = self.visit_expr(expr)?;
@@ -714,7 +723,7 @@ impl<'a> Analyzer<'a> {
                     let name = &items[index];
                     ctx = match ctx.taipe.remove_const() {
                         context::Type::Module => {
-                            let context::Value::Reference(module) = ctx.value else {
+                            let context::Value::UserReference { line_info: _, scope: module } = ctx.value else {
                                 unreachable!("probably some analyzer bug");
                             };
                             self.get_member(&module, &name)?
@@ -735,6 +744,7 @@ impl<'a> Analyzer<'a> {
                 }
                 // Post checks
                 let context::Value::Imm(taipe) = ctx.value else {
+                    debug!("line_info: {}", node.get_line_info());
                     unreachable!("not supposed to happen");
                 };
                 let context::Imm::Type(taipe) = taipe else {
@@ -819,7 +829,7 @@ impl<'a> Analyzer<'a> {
                     return Err(self.make_err("array length must be specified", node));
                 };
                 let length_ctx = self.visit_expr(expr)?;
-                let length_ctx = self.compeval_trivial(length_ctx, expr)?;
+                let length_ctx = self.compeval_trivial(length_ctx)?;
                 if !length_ctx.taipe.is_unsigned_integer() {
                     return Err(self
                         .make_err("argument of index operator should be an unsigned integer type", expr)
@@ -1689,7 +1699,7 @@ impl<'a> Analyzer<'a> {
 
     fn get_member(&mut self, scope: &Rc<RefCell<scope::Scope<'a>>>, name: &Token) -> CompileResult<Context<'a>> {
         let mut searched_names = HashSet::new();
-        if let Some(ctx) = self.resolve_member(&scope, &name.text, &mut searched_names)? {
+        if let Some(ctx) = self.resolve_member(&scope, &name.text, name.get_line_info(), &mut searched_names)? {
             Ok(ctx)
         } else {
             Err(self
@@ -1709,6 +1719,7 @@ impl<'a> Analyzer<'a> {
         &mut self,
         scope: &Rc<RefCell<scope::Scope<'a>>>,
         name: &str,
+        line_info: LineInfo,
         searched_names: &mut HashSet<String>,
     ) -> CompileResult<Option<Context<'a>>> {
         if let Some(child) = scope.borrow().children.get(name) {
@@ -1728,7 +1739,14 @@ impl<'a> Analyzer<'a> {
                             value: context::Value::Imm(context::Imm::Type(context::Type::Basic(Rc::clone(child)))),
                         }));
                     } else {
-                        return Ok(Some(Context::from_scope(&ctx.taipe, child)));
+                        return Ok(Some(Context {
+                            is_lvalue: true,
+                            taipe: ctx.taipe.clone(),
+                            value: context::Value::UserReference {
+                                line_info,
+                                scope: Rc::clone(child),
+                            },
+                        }));
                     }
                 }
             };
@@ -1736,7 +1754,7 @@ impl<'a> Analyzer<'a> {
             let old_cur_scope = Rc::clone(&self.cur_scope);
             self.cur_scope = Rc::clone(&scope);
             // Visit the decl (and not the subsequent children)
-            let ctx = match node {
+            let scope = match node {
                 scope::ScopeNode::Decl(decl) => self.visit_decl(decl, false)?,
                 scope::ScopeNode::Field(_) => {
                     // unreachable!("probably some analyzer bug")
@@ -1748,7 +1766,29 @@ impl<'a> Analyzer<'a> {
             };
             // Restore old scope
             self.cur_scope = old_cur_scope;
-            Ok(Some(ctx))
+            // Return the scope referenced by the user
+            Ok(Some(match &scope.borrow().state {
+                State::NotVisited(_) => unreachable!("probably some analyzer bug"),
+                State::VisitInProg => unreachable!("probably some analyzer bug"),
+                State::Visited(ctx) => {
+                    if ctx.taipe.is_typedef() {
+                        Context {
+                            is_lvalue: true,
+                            taipe: context::Type::Typedef,
+                            value: context::Value::Imm(context::Imm::Type(context::Type::Basic(Rc::clone(&scope)))),
+                        }
+                    } else {
+                        Context {
+                            is_lvalue: true,
+                            taipe: ctx.taipe.clone(),
+                            value: context::Value::UserReference {
+                                line_info,
+                                scope: Rc::clone(&scope),
+                            },
+                        }
+                    }
+                }
+            }))
         } else {
             // For better errors
             for name in scope.borrow().children.keys() {
@@ -1779,13 +1819,13 @@ impl<'a> Analyzer<'a> {
         let mut scope = Rc::clone(&self.cur_scope);
         let mut inner_fn: Option<Rc<RefCell<scope::Scope<'a>>>> = None;
         loop {
-            match self.resolve_member(&scope, name, searched_names) {
+            match self.resolve_member(&scope, name, line_info, searched_names) {
                 Ok(Some(ctx)) => {
                     if ctx.taipe.is_typedef() {
                         // Typedef is encoded by Type::Basic so ignore that case
                         return Ok(Some(ctx));
                     } else {
-                        let context::Value::Reference(ref scope) = ctx.value else {
+                        let context::Value::UserReference { line_info: _, ref scope } = ctx.value else {
                             unreachable!("probably some bug in resolve_member");
                         };
 
