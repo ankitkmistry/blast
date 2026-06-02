@@ -147,12 +147,17 @@ pub enum CompileError {
 }
 
 impl CompileError {
+    pub fn new() -> Self {
+        Self::Errors(Vec::new())
+    }
+    
     pub fn is_empty(&self) -> bool {
         match self {
             CompileError::Errors(errs) => errs.is_empty(),
             _ => false,
         }
     }
+
     pub fn chain(self, other: CompileError) -> Self {
         let mut vec = Vec::new();
         if let CompileError::Errors(mut errs) = self {

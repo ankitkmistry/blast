@@ -8,6 +8,8 @@ use crate::{
 };
 use clap::{self, ArgAction, command};
 
+pub(crate) mod supar;
+
 pub(crate) mod analyzer;
 pub(crate) mod ast;
 pub(crate) mod cfg;
