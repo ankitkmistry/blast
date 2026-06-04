@@ -250,12 +250,12 @@ impl fmt::Display for Token {
 }
 
 pub fn print_scopes(pool: &ScopePool, scopes: &IndexMap<String, ScopeId>) {
-    for (name, &scope_id) in scopes {
+    for (name, scope_id) in scopes {
         print_scope(pool, name, scope_id, &mut Vec::new());
     }
 }
 
-fn print_scope(pool: &ScopePool, name: &str, scope_id: ScopeId, is_last_vec: &mut Vec<bool>) {
+fn print_scope(pool: &ScopePool, name: &str, scope_id: &ScopeId, is_last_vec: &mut Vec<bool>) {
     for (i, &is_last) in is_last_vec.iter().enumerate() {
         if i == is_last_vec.len() - 1 {
             if is_last {
@@ -294,7 +294,7 @@ fn print_scope(pool: &ScopePool, name: &str, scope_id: ScopeId, is_last_vec: &mu
     println!();
 
     let children = &pool.get_scope(scope_id).children;
-    for (i, (name, &child)) in children.iter().enumerate() {
+    for (i, (name, child)) in children.iter().enumerate() {
         is_last_vec.push(i + 1 >= children.len());
         print_scope(pool, name, child, is_last_vec);
         is_last_vec.pop();
@@ -341,26 +341,25 @@ fn print_tree_node(node: &TreeNode, is_last_vec: &mut Vec<bool>) {
 // TREENODE code end
 // IRPRINTER code begin
 
-pub struct IrPrinter<'a> {
-    pool: &'a ScopePool,
+pub struct IrPrinter {
     node_stack: Vec<TreeNode>,
 }
 
-impl<'a> Write for IrPrinter<'a> {
+impl Write for IrPrinter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         write!(self.node_stack.last_mut().unwrap(), "{}", s)
     }
 }
 
 pub fn print_ir_of_all_scopes(pool: &ScopePool, scopes: &IndexMap<String, ScopeId>) {
-    for (_, &scope_id) in scopes {
+    for (_, scope_id) in scopes {
         print_ir_of_scope(pool, scope_id);
     }
 }
 
-fn print_ir_of_scope(pool: &ScopePool, scope_id: ScopeId) {
+fn print_ir_of_scope(pool: &ScopePool, scope_id: &ScopeId) {
     let scope = pool.get_scope(scope_id);
-    let name = scope.sym_path.to_string();
+    let name = scope.id.sym_path.to_string();
     let ctx: Option<&Context> = match &scope.payload {
         // TODO: show struct layout
         // scope::Payload::Compound(compound_info) => todo!(),
@@ -375,24 +374,24 @@ fn print_ir_of_scope(pool: &ScopePool, scope_id: ScopeId) {
     if let Some(ctx) = ctx {
         if let context::Value::Reference(_) = ctx.value {
         } else {
-            print_ir(pool, &name, ctx);
+            print_ir(&name, ctx);
         }
     }
     
-    for &child in scope.children.values() {
+    for child in scope.children.values() {
         print_ir_of_scope(pool, child);
     }
 }
 
-pub fn print_ir(pool: &ScopePool, name: &str, ctx: &Context) {
-    let mut printer = IrPrinter::new(pool);
+pub fn print_ir(name: &str, ctx: &Context) {
+    let mut printer = IrPrinter::new();
     let node = printer.print_context(name, ctx).unwrap().unwrap();
     print_tree_node(&node, &mut Vec::new());
 }
 
-impl<'a> IrPrinter<'a> {
-    fn new(pool: &'a ScopePool) -> Self {
-        Self { pool, node_stack: Vec::new() }
+impl IrPrinter {
+    fn new() -> Self {
+        Self { node_stack: Vec::new() }
     }
 
     pub fn print_context(&mut self, name: &str, ctx: &Context) -> Result<Option<TreeNode>, fmt::Error> {
@@ -470,10 +469,10 @@ impl<'a> IrPrinter<'a> {
                 }
             }
             context::Value::Reference(scope_id) => {
-                write!(self, "Reference = {}", self.pool.get_scope(*scope_id).sym_path)?;
+                write!(self, "Reference = {}", scope_id.sym_path)?;
             }
             context::Value::UserReference { line_info: _, scope_id } => {
-                write!(self, "UserReference = {}", self.pool.get_scope(*scope_id).sym_path)?;
+                write!(self, "UserReference = {}", scope_id.sym_path)?;
             }
             context::Value::Negate { line_info: _, ctx } => {
                 write!(self, "Negate")?;
@@ -599,7 +598,7 @@ impl<'a> IrPrinter<'a> {
                 fun_scope_id,
                 args,
             } => {
-                write!(self, "Call = {}", self.pool.get_scope(*fun_scope_id).sym_path)?;
+                write!(self, "Call = {}", fun_scope_id.sym_path)?;
                 for (arg_name, arg_ctx) in args {
                     self.print_context(arg_name, arg_ctx)?;
                 }
@@ -649,7 +648,7 @@ impl<'a> IrPrinter<'a> {
                 }
             }
             context::Value::VarDecl(scope_id) => {
-                write!(self, "VarDecl = {}", self.pool.get_scope(*scope_id).sym_path)?;
+                write!(self, "VarDecl = {}", scope_id.sym_path)?;
             }
             context::Value::Ret(ctx) => {
                 write!(self, "Ret")?;

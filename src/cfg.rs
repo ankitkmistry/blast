@@ -8,7 +8,7 @@ use crate::{common::LineInfo, scope::ScopeId};
 // Control Flow Analysis structures
 // ------------------------------------------------------------
 
-#[derive(Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub enum ControlInfo {
     VarDeclared {
         scope_id: ScopeId,
@@ -23,7 +23,7 @@ pub enum ControlInfo {
     },
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ControlNode {
     /// Start node of a control graph
     Start,

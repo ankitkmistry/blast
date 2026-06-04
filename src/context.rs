@@ -267,8 +267,7 @@ impl fmt::Display for Type {
             Type::Float32 => write!(f, "__f32"),
             Type::Float64 => write!(f, "__f64"),
             Type::Const(taipe) => write!(f, "const {}", taipe),
-            // Type::Basic(scope_id) => write!(f, "{}", todo!("scope.borrow().sym_path")),
-            Type::Basic(scope_id) => write!(f, "{}", "change this"),
+            Type::Basic(scope_id) => write!(f, "{}", scope_id.sym_path),
             Type::Function { ret, params } => write!(
                 f,
                 "fun ({}) -> {}",

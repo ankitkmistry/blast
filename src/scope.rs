@@ -49,9 +49,10 @@ impl SymbolPath {
     // }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScopeId {
     pub index: usize,
+    pub sym_path: SymbolPath,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -189,7 +190,6 @@ pub struct Scope {
     pub id: ScopeId,
     pub kind: ScopeKind,
     pub file_path: Option<String>,
-    pub sym_path: SymbolPath,
     pub name: String,
     pub line_info: LineInfo,
     pub payload: Payload,
