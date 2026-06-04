@@ -8,7 +8,14 @@ use std::str::FromStr;
 use indexmap::IndexMap;
 
 use crate::{
-    ast, common::{fuzzy_search_best, get_plural, CompileError, CompileResult, HasLineInfo, Layout, LineInfo, Settings}, errors, lexer::{Token, TokenKind, TokenSuffix, TokenValue}, supar::{cfg::{ControlGraph, ControlInfo, ControlNode, ControlNodeId}, context::Context}
+    ast,
+    common::{fuzzy_search_best, get_plural, CompileError, CompileResult, HasLineInfo, Layout, LineInfo, Settings},
+    lexer::{Token, TokenKind, TokenSuffix, TokenValue},
+    supar::{
+        cfg::{ControlGraph, ControlInfo, ControlNode, ControlNodeId},
+        context::Context
+    },
+    errors,
 };
 
 // ------------------------------------------------------------
@@ -253,33 +260,33 @@ impl Scope {
         }
     }
 
-    pub fn get_type(&self) -> context::Type {
+    pub fn get_type(&self) -> &context::Type {
         match self.kind {
-            ScopeKind::Module => context::Type::Module,
-            ScopeKind::Compound => context::Type::Typedef,
+            ScopeKind::Module => &context::Type::Module,
+            ScopeKind::Compound => &context::Type::Typedef,
             ScopeKind::Function => {
                 let Payload::Function(ref info) = self.payload else {
                     unreachable!("probably some analyzer bug");
                 };
-                info.taipe.clone()
+                &info.taipe
             },
             ScopeKind::Param => {
                 let Payload::Param(ref info) = self.payload else {
                     unreachable!("probably some analyzer bug");
                 };
-                info.taipe.clone()
+                &info.taipe
             },
             ScopeKind::Variable => {
                 match self.payload {
-                    Payload::Global(ref info) => info.ctx.taipe.clone(),
-                    Payload::Local(ref info) => info.taipe.clone(),
+                    Payload::Global(ref info) => &info.ctx.taipe,
+                    Payload::Local(ref info) => &info.taipe,
                     _ => unreachable!("probably some analyzer bug"),
                 }
             },
             ScopeKind::Const => {
                 match self.payload {
-                    Payload::Global(ref info) => info.ctx.taipe.clone(),
-                    Payload::Local(ref info) => info.taipe.clone(),
+                    Payload::Global(ref info) => &info.ctx.taipe,
+                    Payload::Local(ref info) => &info.taipe,
                     _ => unreachable!("probably some analyzer bug"),
                 }
             },
@@ -288,7 +295,7 @@ impl Scope {
                 let Payload::Block(ref info) = self.payload else {
                     unreachable!("probably some analyzer bug");
                 };
-                info.ctx.taipe.clone()
+                &info.ctx.taipe
             },
             ScopeKind::None => unreachable!("probably some analyzer bug"),
         }
@@ -571,7 +578,8 @@ mod context {
                 Type::Float32 => write!(f, "__f32"),
                 Type::Float64 => write!(f, "__f64"),
                 Type::Const(taipe) => write!(f, "const {}", taipe),
-                Type::Basic(scope) => write!(f, "{}", todo!("scope.borrow().sym_path")),
+                // Type::Basic(scope_id) => write!(f, "{}", todo!("scope.borrow().sym_path")),
+                Type::Basic(scope_id) => write!(f, "{}", "change this"),
                 Type::Function { ret, params } => write!(
                     f,
                     "fun ({}) -> {}",
@@ -1072,22 +1080,6 @@ mod context {
                 value: self.value,
             }
         }
-
-        // Construction functions
-        pub fn from_module(module_id: ScopeId) -> Self {
-            Self {
-                is_lvalue: true,
-                taipe: Type::Module,
-                value: Value::Reference(module_id),
-            }
-        }
-        pub fn from_scope(taipe: &Type, scope_id: ScopeId) -> Self {
-            Self {
-                is_lvalue: true,
-                taipe: taipe.clone(),
-                value: Value::Reference(scope_id),
-            }
-        }
         // Creating immediate values
         pub fn from_bool(value: bool) -> Self {
             Self {
@@ -1226,7 +1218,6 @@ mod context {
             write!(f, "{}", self.taipe)
         }
     }
-
 }
 
 
@@ -1513,7 +1504,7 @@ impl<'a> Supanalyzer<'a> {
         }
         // Finally start the visitation
         for decl in final_decls {
-            self.visit_decl(&decl, true);
+            self.visit_decl(&decl);
         }
         Ok(())
     }
@@ -1627,7 +1618,7 @@ impl<'a> Supanalyzer<'a> {
         }
     }
     
-    fn visit_decl(&mut self, node: &'a ast::Decl, should_visit_children: bool) -> CompileResult<ScopeId> {
+    fn visit_decl(&mut self, node: &'a ast::Decl) -> CompileResult<ScopeId> {
         macro_rules! colon_compulsory {
             ($token:expr) => {
                 // Check the colon thing
@@ -2691,7 +2682,7 @@ impl<'a> Supanalyzer<'a> {
             ast::Stmt::Break { token, label } => self.visit_break(token, label.as_ref()),
             ast::Stmt::Return { token, expr } => self.visit_return(token, expr.as_ref()),
             ast::Stmt::Decl(decl) => {
-                let scope_id = self.visit_decl(decl, false)?;
+                let scope_id = self.visit_decl(decl)?;
                 let scope = self.get_scope(scope_id);
                 if scope.is_variable() || scope.is_const() {
                     Ok(Context {
@@ -6448,7 +6439,7 @@ impl<'a> Supanalyzer<'a> {
                     } else {
                         return Ok(Some(Context {
                             is_lvalue: true,
-                            taipe: self.get_scope(child_id).get_type(),
+                            taipe: self.get_scope(child_id).get_type().clone(),
                             value: context::Value::UserReference {
                                 line_info,
                                 scope_id: child_id,
@@ -6462,7 +6453,7 @@ impl<'a> Supanalyzer<'a> {
             self.current_scope_id = scope_id;
             // Visit the decl (and not the subsequent children)
             let child_id = match node {
-                ScopeNode::Decl(decl) => self.visit_decl(decl, false)?,
+                ScopeNode::Decl(decl) => self.visit_decl(decl)?,
                 ScopeNode::Field(_) => {
                     // unreachable!("probably some analyzer bug")
                     return Ok(None);
@@ -6487,7 +6478,7 @@ impl<'a> Supanalyzer<'a> {
                     } else {
                         Context {
                             is_lvalue: true,
-                            taipe: self.get_scope(child_id).get_type(),
+                            taipe: self.get_scope(child_id).get_type().clone(),
                             value: context::Value::UserReference {
                                 line_info,
                                 scope_id: child_id,
@@ -6623,7 +6614,7 @@ impl<'a> Supanalyzer<'a> {
     fn get_current_block_mut(&mut self) -> Option<&mut Scope> {
         Some(self.get_scope_mut(self.get_current_block()?.id))
     }
-
+    
     fn get_current_function(&self) -> Option<&Scope> {
         let scope = self.get_current_scope();
         if scope.is_function() {
