@@ -158,16 +158,34 @@ impl CompileError {
         }
     }
 
-    pub fn chain(self, other: CompileError) -> Self {
+    pub fn push_err(&mut self, other: CompileError) {
         let mut vec = Vec::new();
-        if let CompileError::Errors(mut errs) = self {
-            vec.append(&mut errs);
+        if let CompileError::Errors(errs) = self {
+            vec.append(errs);
         } else {
             vec.push(self.clone());
         }
         vec.push(other);
-        CompileError::Errors(vec)
+        *self = CompileError::Errors(vec);
     }
+
+    // pub fn chain(self, other: CompileError) -> Self {
+    //     let mut vec = Vec::new();
+    //     if let CompileError::Errors(mut errs) = self {
+    //         vec.append(&mut errs);
+    //     } else {
+    //         vec.push(self.clone());
+    //     }
+    //     vec.push(other);
+    //     CompileError::Errors(vec)
+    // }
+}
+
+#[macro_export]
+macro_rules! errors {
+    [$($error:expr),* $(,)?] => {
+        CompileError::Errors(vec![$($error,)*])
+    };
 }
 
 impl fmt::Display for CompileError {

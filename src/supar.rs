@@ -8,7 +8,7 @@ use std::str::FromStr;
 use indexmap::IndexMap;
 
 use crate::{
-    ast, common::{fuzzy_search_best, get_plural, CompileError, CompileResult, HasLineInfo, Layout, LineInfo, Settings}, lexer::{Token, TokenKind, TokenSuffix, TokenValue}, supar::{cfg::{ControlGraph, ControlInfo, ControlNode, ControlNodeId}, context::Context}
+    ast, common::{fuzzy_search_best, get_plural, CompileError, CompileResult, HasLineInfo, Layout, LineInfo, Settings}, errors, lexer::{Token, TokenKind, TokenSuffix, TokenValue}, supar::{cfg::{ControlGraph, ControlInfo, ControlNode, ControlNodeId}, context::Context}
 };
 
 // ------------------------------------------------------------
@@ -63,61 +63,72 @@ pub struct ScopeId(usize);
 pub enum ScopeKind {
     Module,
     Compound,
-    Field,
     Function,
     Param,
-    Typedef,
     Variable,
     Const,
+    Typedef,
     Block,
     None,
 }
 
 pub enum Payload {
-    Compound(Compound),
-    Function(Function),
-    Block(Block),
+    Compound(CompoundInfo),
+    Function(FunctionInfo),
+    Global(GlobalInfo),
+    Local(LocalInfo),
+    Typedef(context::Type),
+    Block(BlockInfo),
+    Param(ParamInfo),
     LayoutResolutionInProgress,
     None
 }
 
-// TODO: remove field
-// As the data is never required
-// TODO: revamp field
+pub struct GlobalInfo {
+    pub ctx: Context,
+}
+
+pub struct LocalInfo {
+    pub taipe: context::Type,
+}
 
 #[derive(Clone)]
-pub enum Field {
-    Struct(Vec<Field>),
-    Union(Vec<Field>),
+pub enum FieldInfo {
+    Struct(Vec<FieldInfo>),
+    Union(Vec<FieldInfo>),
     Field {
         file_path: String,
         line_info: LineInfo,
         name: String,
         taipe: context::Type,
-        scope_id: ScopeId,
     },
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 pub struct FieldData {
+    pub name: String,
+    pub taipe: context::Type,
+    pub file_path: String,
+    pub line_info: LineInfo,
+    
     pub offset: usize,
     pub size: usize,
     pub alignment: usize,
 }
 
 #[derive(Clone)]
-struct Compound {
-    pub field: Field,
+struct CompoundInfo {
+    pub field: FieldInfo,
     pub layout: Layout,
-    pub offsets: HashMap<String, FieldData>,
+    pub field_data_table: HashMap<String, FieldData>,
 }
 
-impl Compound {
-    pub fn new(field: Field) -> Self {
-        Compound {
+impl CompoundInfo {
+    pub fn new(field: FieldInfo) -> Self {
+        CompoundInfo {
             field,
             layout: Default::default(),
-            offsets: HashMap::new(),
+            field_data_table: HashMap::new(),
         }
     }
 }
@@ -134,35 +145,39 @@ pub struct ParamInfo {
     pub line_info: LineInfo,
 }
 
-struct Function {
-    pub ctx: Context,
-    pub param_infos: IndexMap<String, ParamInfo>,
+struct FunctionInfo {
+    pub taipe: context::Type,
+    pub ctx: Option<Context>,
+    pub param_table: IndexMap<String, ScopeId>,
+    default_param_count: usize,
     pub loop_stack: IndexMap<String, LoopInfo>,
     pub ret_line_info: Option<LineInfo>,
 }
 
-impl Function {
+impl FunctionInfo {
+    pub fn get_return_type(&self) -> &context::Type {
+        let context::Type::Function { ref ret, params: _ } = self.taipe else {
+            unreachable!("probably some analyzer bug");
+        };
+        ret
+    }
     pub fn get_total_param_count(&self) -> usize {
-        self.param_infos.len()
+        self.param_table.len()
     }
     pub fn get_default_param_count(&self) -> usize {
-        self.param_infos
-            .iter()
-            .filter(|(_, param)| param.default.is_some())
-            .count()
+        self.default_param_count
     }
     pub fn get_min_param_count(&self) -> usize {
-        self.param_infos
-            .iter()
-            .filter(|(_, param)| param.default.is_none())
-            .count()
+        self.get_total_param_count() - self.get_default_param_count()
     }
     pub fn has_default_params(&self) -> bool {
-        self.param_infos.iter().any(|(_, param)| param.default.is_some())
+        self.get_default_param_count() > 0
     }
 }
 
-struct Block {
+struct BlockInfo {
+    /// Context containing the code of the block
+    pub ctx: Context,
     /// Control flow graph of the block
     pub cfg: ControlGraph,
     /// The start node of the graph
@@ -235,6 +250,47 @@ impl Scope {
         match self.kind {
             ScopeKind::Block => true,
             _ => false,
+        }
+    }
+
+    pub fn get_type(&self) -> context::Type {
+        match self.kind {
+            ScopeKind::Module => context::Type::Module,
+            ScopeKind::Compound => context::Type::Typedef,
+            ScopeKind::Function => {
+                let Payload::Function(ref info) = self.payload else {
+                    unreachable!("probably some analyzer bug");
+                };
+                info.taipe.clone()
+            },
+            ScopeKind::Param => {
+                let Payload::Param(ref info) = self.payload else {
+                    unreachable!("probably some analyzer bug");
+                };
+                info.taipe.clone()
+            },
+            ScopeKind::Variable => {
+                match self.payload {
+                    Payload::Global(ref info) => info.ctx.taipe.clone(),
+                    Payload::Local(ref info) => info.taipe.clone(),
+                    _ => unreachable!("probably some analyzer bug"),
+                }
+            },
+            ScopeKind::Const => {
+                match self.payload {
+                    Payload::Global(ref info) => info.ctx.taipe.clone(),
+                    Payload::Local(ref info) => info.taipe.clone(),
+                    _ => unreachable!("probably some analyzer bug"),
+                }
+            },
+            ScopeKind::Typedef => panic!("type has no type"),
+            ScopeKind::Block => {
+                let Payload::Block(ref info) = self.payload else {
+                    unreachable!("probably some analyzer bug");
+                };
+                info.ctx.taipe.clone()
+            },
+            ScopeKind::None => unreachable!("probably some analyzer bug"),
         }
     }
 }
@@ -1185,7 +1241,7 @@ mod cfg {
 
     use crate::{common::LineInfo, supar::ScopeId};
 
-    #[derive(Clone, Hash, PartialEq, Eq)]
+    #[derive(Copy, Clone, Hash, PartialEq, Eq)]
     pub enum ControlInfo {
         VarDeclared {
             scope_id: ScopeId,
@@ -1200,7 +1256,7 @@ mod cfg {
         },
     }
 
-    #[derive(Clone, PartialEq, Eq, Hash)]
+    #[derive(Copy, Clone, PartialEq, Eq, Hash)]
     pub enum ControlNode {
         /// Start node of a control graph
         Start,
@@ -1320,21 +1376,79 @@ pub struct Supanalyzer<'a> {
     type_usize: context::Type,
 
     settings: Settings,
-    saved_errors: Vec<CompileError>,
+    saved_errors: CompileError,
     warnings: Vec<CompileError>,
 }
 
 impl<'a> Supanalyzer<'a> {
     pub fn new(settings: Settings, file_path: &str, name: &str, root: &'a ast::Object) -> Self {
-        todo!()
+        // Create the symbol path
+        let mut sym_path = SymbolPath::new();
+        sym_path.push_name(name);
+        // Create the root scope
+        let scope = Scope {
+            id: ScopeId(0),
+            kind: ScopeKind::Module,
+            file_path: Some(file_path.to_string()),
+            sym_path,
+            name: name.to_string(),
+            line_info: root.get_line_info(),
+            payload: Payload::None,
+            parent: None,
+            children: IndexMap::new(),
+            unique_counter: AtomicU64::new(0),
+            block_counter: AtomicU64::new(0),
+            loop_counter: AtomicU64::new(0),            
+        };
+        let id = scope.id;
+        // Add to the scope pool
+        let mut scope_pool = IndexMap::new();
+        scope_pool.insert(id, scope);
+        // Set eval state
+        let mut scope_eval_state_table = IndexMap::new();
+        scope_eval_state_table.insert(id, ScopeEvalState::NotVisited(ScopeNode::Object(root)));
+        // Add to roots
+        let mut roots = IndexMap::new();
+        roots.insert(name.to_string(), id);
+        
+        let (type_int, type_uint) = match settings.register_size {
+            1 => (context::Type::Int8, context::Type::Uint8),
+            2 => (context::Type::Int16, context::Type::Uint16),
+            4 => (context::Type::Int32, context::Type::Uint32),
+            8 => (context::Type::Int64, context::Type::Uint64),
+            16 => (context::Type::Int128, context::Type::Uint128),
+            _ => panic!("invalid register size"),
+        };
+        let (type_isize, type_usize) = match settings.pointer_size {
+            1 => (context::Type::Int8, context::Type::Uint8),
+            2 => (context::Type::Int16, context::Type::Uint16),
+            4 => (context::Type::Int32, context::Type::Uint32),
+            8 => (context::Type::Int64, context::Type::Uint64),
+            16 => (context::Type::Int128, context::Type::Uint128),
+            _ => panic!("invalid register size"),
+        };
+        
+        Self {
+            scope_pool,
+            roots,
+            scope_eval_state_table,
+            current_scope_id: id,
+            type_int,
+            type_uint,
+            type_isize,
+            type_usize,
+            settings,
+            saved_errors: CompileError::new(),
+            warnings: Vec::new()
+        }
     }
 
     pub fn analyze(mut self) -> CompileResult<SemResult> {
         if let Err(err) = self.sem_analysis() {
-            self.saved_errors.push(err);
-            Err(CompileError::Errors(self.saved_errors))
+            self.saved_errors.push_err(err);
+            Err(self.saved_errors)
         } else if !self.saved_errors.is_empty() {
-            Err(CompileError::Errors(self.saved_errors))
+            Err(self.saved_errors)
         } else {
             Ok(SemResult {
                 scope_pool: self.scope_pool,
@@ -1345,9 +1459,9 @@ impl<'a> Supanalyzer<'a> {
     }
 
     fn sem_analysis(&mut self) -> CompileResult<()> {
-        // Get the top level module declarations
-        let mut module_decls = Vec::new();
-        let mut visited_scopes = Vec::new();
+        // Get the top level declarations of every module
+        let mut final_decls = Vec::new();
+        let mut visited_roots = Vec::new();
         for &root_id in self.roots.values() {
             match self.get_scope_eval_state(root_id) {
                 ScopeEvalState::NotVisited(
@@ -1356,19 +1470,20 @@ impl<'a> Supanalyzer<'a> {
                     )
                 ) => {
                     for decl in decls {
-                        module_decls.push(decl);
+                        final_decls.push(decl);
                     }
-                    visited_scopes.push(root_id);
+                    visited_roots.push(root_id);
                 }
                 _ => unreachable!("not supposed to happen"),
             }
         }
         // Now set every scope visited from which modules are acquired
-        for scope_id in visited_scopes {
-            self.set_scope_eval_state(scope_id, ScopeEvalState::Visited);
+        for root_id in visited_roots {
+            self.set_scope_eval_state(root_id, ScopeEvalState::Visited);
         }
         // Generate all modules
-        for decl in &module_decls {
+        let mut saved_errs = CompileError::new();
+        for decl in &final_decls {
             if let ast::Decl::Decl {
                 name: _,
                 taipe: _,
@@ -1377,29 +1492,27 @@ impl<'a> Supanalyzer<'a> {
             } = decl
             {
                 match object {
-                    ast::Object::ExternModule { line_info, value } => {
-                        todo!("extern modules are not supported yet")
+                    ast::Object::ExternModule { line_info: _, value: _ }
+                    | ast::Object::Module { line_info: _, decls: _ } => {
+                        self.visit_modules_recursively(decl)?;
                     }
-                    ast::Object::Module { line_info: _, decls: _ } => {
-                        self.visit_decl(decl, false)?;
+                    _ => {
+                        // Predeclare decl and accumulate errors
+                        for decl in &final_decls {
+                            if let Err(err) = self.pre_declare_decl(decl) {
+                                saved_errs.push_err(err);
+                            }
+                        }
                     }
-                    _ => {}
                 }
             }
         }
-        // Predeclare module decls and accumulate errors
-        let mut saved_err = CompileError::new();
-        for decl in &module_decls {
-            if let Err(err) = self.pre_declare_decl(decl) {
-                saved_err = saved_err.chain(err);
-            }
-        }
         // Return errors if any
-        if !saved_err.is_empty() {
-            return Err(saved_err)
+        if !saved_errs.is_empty() {
+            return Err(saved_errs)
         }
         // Finally start the visitation
-        for decl in module_decls {
+        for decl in final_decls {
             self.visit_decl(&decl, true);
         }
         Ok(())
@@ -1410,6 +1523,109 @@ impl<'a> Supanalyzer<'a> {
     // ------------------------------------------------------------
 
     // Declaration visit functions
+
+    fn visit_modules_recursively(&mut self, node: &'a ast::Decl) -> CompileResult<ScopeId> {
+        macro_rules! colon_compulsory {
+            ($token:expr) => {
+                // Check the colon thing
+                let Some(eq_token) = $token else {
+                    unreachable!("probably some parser bug");
+                };
+                if eq_token.kind != TokenKind::Colon {
+                    self.saved_errors.push_err(self.make_err("expected ':'", eq_token));
+                }
+            };
+        }
+
+        match node {
+            ast::Decl::Decl { name, taipe, eq_token, object } => {
+                let Some(object) = object else {
+                    unreachable!("probably some analyzer bug");
+                };
+                let scope_id = if let Some(&child) = self.get_current_scope().children.get(&name.text) {
+                    child
+                } else {
+                    self.declare_sym_with_value(node, &name, object)?
+                };
+                // Set in progress
+                match self.get_scope_eval_state(scope_id) {
+                    ScopeEvalState::NotVisited(_) => {
+                        self.set_scope_eval_state(scope_id, ScopeEvalState::VisitInProgress);
+                    }
+                    ScopeEvalState::VisitInProgress => unreachable!("probably some analyzer bug"),
+                    ScopeEvalState::Visited => {
+                        if self.get_scope(scope_id).is_module() {
+                            return Ok(scope_id)
+                        }
+                    },
+                };
+                match object {
+                    ast::Object::ExternModule { line_info: _, value } => {
+                        colon_compulsory!(eq_token);
+                        if self.get_current_function().is_some() {
+                            return Err(self.make_err("module cannot be declared in a function", name));
+                        }
+                        if self.get_current_block().is_some() {
+                            return Err(self.make_err("module cannot be declared in a block", name));
+                        }
+                        self.get_scope_mut(scope_id).kind = ScopeKind::Module;
+                        todo!("extern modules are not supported yet")
+                    }
+                    ast::Object::Module { line_info: _, decls } => {
+                        colon_compulsory!(eq_token);
+                        if self.get_current_function().is_some() {
+                            return Err(self.make_err("module cannot be declared in a function", name));
+                        }
+                        if self.get_current_block().is_some() {
+                            return Err(self.make_err("module cannot be declared in a block", name));
+                        }
+                        self.get_scope_mut(scope_id).kind = ScopeKind::Module;
+                        // Visit type
+                        if let Some(taipe) = taipe {
+                            return Err(errors![
+                                self.make_err("modules do not have a type", taipe),
+                                self.make_help("consider removing the type annotation"),
+                            ]);
+                        }
+                        // Begin new scope
+                        let old_cur_scope_id = self.current_scope_id;
+                        self.current_scope_id = scope_id;
+                        // Mark it evaluated if not already
+                        if let ScopeEvalState::Visited = self.get_scope_eval_state(scope_id) {
+                        } else {
+                            // Predeclare all declarations (only if not already visited)
+                            self.pre_declare_decls(decls)?;
+                            self.set_scope_eval_state(scope_id, ScopeEvalState::Visited);
+                        }
+                        // Visit only modules
+                        for decl in decls {
+                            if let ast::Decl::Decl {
+                                name: _,
+                                taipe: _,
+                                eq_token: _,
+                                object: Some(object),
+                            } = decl {
+                                match object {
+                                    ast::Object::ExternModule { line_info: _, value } => {
+                                        todo!("extern modules are not supported yet")
+                                    }
+                                    ast::Object::Module { line_info: _, decls: _ } => {
+                                        self.visit_modules_recursively(decl)?;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        // Restore old scope
+                        self.current_scope_id = old_cur_scope_id;
+                        Ok(scope_id)
+                    }
+                    _ => unreachable!("probably some analyzer bug"),
+                }
+            }
+            _ => unreachable!("probably some analyzer bug"),
+        }
+    }
     
     fn visit_decl(&mut self, node: &'a ast::Decl, should_visit_children: bool) -> CompileResult<ScopeId> {
         macro_rules! colon_compulsory {
@@ -1419,7 +1635,7 @@ impl<'a> Supanalyzer<'a> {
                     unreachable!("probably some parser bug");
                 };
                 if eq_token.kind != TokenKind::Colon {
-                    self.saved_errors.push(self.make_err("expected ':'", eq_token));
+                    self.saved_errors.push_err(self.make_err("expected ':'", eq_token));
                 }
             };
         }
@@ -1451,6 +1667,8 @@ impl<'a> Supanalyzer<'a> {
                     ScopeEvalState::VisitInProgress => unreachable!("probably some analyzer bug"),
                     ScopeEvalState::Visited => {
                         if self.get_scope(scope_id).is_module() {
+                            // This eliminates checking for modules in this function
+                            // as they are already checked by visit_modules_recursively() function.
                             return Ok(scope_id)
                         }
                     },
@@ -1469,7 +1687,6 @@ impl<'a> Supanalyzer<'a> {
                     let type_ctx = self.visit_type(taipe)?;
                     if type_ctx.is_const() {
                         return Err(self.make_err("value must be specified", node));
-
                     }
                     let ctx = self.resolve_assign(Some((type_ctx, taipe.get_line_info())), None, None)?;
                     self.get_scope_mut(scope_id).kind = if ctx.taipe.is_typedef() {
@@ -1502,60 +1719,14 @@ impl<'a> Supanalyzer<'a> {
                 };
                 match object {
                     ast::Object::ExternModule { line_info: _, value } => {
-                        colon_compulsory!(eq_token);
-                        self.get_scope_mut(scope_id).kind = ScopeKind::Module;
-                        todo!("extern modules are not supported yet")
+                        unreachable!("not supposed to come here as module is already visited")
                     }
                     ast::Object::Module { line_info: _, decls } => {
-                        colon_compulsory!(eq_token);
-                        self.get_scope_mut(scope_id).kind = ScopeKind::Module;
-                        // Visit type
-                        if let Some(taipe) = taipe {
-                            let taipe = self.visit_type(taipe)?;
-                            let context::Type::Module = taipe else {
-                                return Err(self.make_err("expected 'module'", node));
-                            };
-                        }
-                        // Begin new scope
-                        let old_cur_scope_id = self.current_scope_id;
-                        self.current_scope_id = scope_id;
-                        // Mark it evaluated if not already
-                        if let ScopeEvalState::Visited = self.get_scope_eval_state(scope_id) {
-                        } else {
-                            // Predeclare all declarations (only if not already visited)
-                            self.pre_declare_decls(decls)?;
-                            self.set_scope_eval_state(scope_id, ScopeEvalState::Visited);
-                        }
-                        if should_visit_children {
-                            // Visit every decl
-                            for decl in decls {
-                                self.visit_decl(decl, true)?;
-                            }
-                        } else {
-                            // Visit only modules
-                            for decl in decls {
-                                if let ast::Decl::Decl {
-                                    name: _,
-                                    taipe: _,
-                                    eq_token: _,
-                                    object: Some(object),
-                                } = decl
-                                {
-                                    match object {
-                                        ast::Object::ExternModule { line_info: _, value } => {
-                                            todo!("extern modules are not supported yet")
-                                        }
-                                        ast::Object::Module { line_info: _, decls: _ } => {
-                                            self.visit_decl(decl, false)?;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                        // Restore old scope
-                        self.current_scope_id = old_cur_scope_id;
-                        Ok(scope_id)
+                        // // Visit every decl
+                        // for decl in decls {
+                        //     self.visit_decl(decl, true)?;
+                        // }
+                        unreachable!("not supposed to come here as module is already visited")
                     }
                     // TODO: type punning syntax
                     // A :: struct {
@@ -1603,32 +1774,32 @@ impl<'a> Supanalyzer<'a> {
                         // scope, once and for all.
                         let mut param_infos = Vec::new();
                         let mut prev_default_param = None;
+                        let mut default_param_count = 0usize;
                         for param in params {
+                            // Check type
                             let lhs = self.visit_type(&param.taipe)?;
-                            let lhs_line_info = param.get_line_info();
-                            let (eq_token, rhs) = if let Some(expr) = &param.expr {
-                                let Some(eq_token) = param.eq_token.as_ref().clone() else {
+                            let lhs_line_info = param.taipe.get_line_info();
+                            let ctx = if let Some(expr) = &param.expr {
+                                // Set this as previous default parameter
+                                default_param_count += 1;
+                                prev_default_param = Some(param.get_line_info());
+                                let Some(ref eq_token) = param.eq_token else {
                                     unreachable!("probably some parser bug");
                                 };
+                                // Check default value
                                 let rhs = self.visit_expr(expr)?;
                                 let rhs_line_info = expr.get_line_info();
-                                (Some(eq_token), Some((rhs, rhs_line_info)))
+                                self.resolve_assign(Some((lhs, lhs_line_info)), Some(eq_token), Some((rhs, rhs_line_info)))?
                             } else {
-                                (None, None)
-                            };
-                            let provided_default = rhs.is_some();
-                            if provided_default {
-                                prev_default_param = Some(param.get_line_info());
-                            } else {
+                                // Non default parameter are not allowed after default parameter
                                 if let Some(ref prev_default_param) = prev_default_param {
-                                    return Err(self
-                                        .make_err("non-default parameter is not allowed here", param)
-                                        .chain(
-                                            self.make_note("previous default parameter is here", prev_default_param),
-                                        ));
+                                    return Err(errors![
+                                        self.make_err("non-default parameter is not allowed here", param),
+                                        self.make_note("previous default parameter is here", prev_default_param)
+                                    ]);
                                 }
-                            }
-                            let ctx = self.resolve_assign(Some((lhs, lhs_line_info)), eq_token, rhs)?;
+                                self.resolve_assign(Some((lhs, lhs_line_info)), None, None)?
+                            };
                             param_infos.push((
                                 &param.name,
                                 ParamInfo {
@@ -1638,19 +1809,17 @@ impl<'a> Supanalyzer<'a> {
                                 },
                             ));
                         }
+                        // Now create the param scopes
                         let mut param_table = IndexMap::new();
                         let mut param_types = Vec::new();
                         for (name, param) in param_infos {
                             // Prepare param_types for creating function type
-                            let param_type = param.taipe.clone();
                             param_types.push(context::Param {
-                                taipe: param_type.clone(),
+                                taipe: param.taipe.clone(),
                             });
-                            // Prepare param_table for function call information
-                            param_table.insert(name.text.clone(), param);
                             // Generate the param name in the current scope
-                            let param_scope_id = self.declare_param(ScopeEvalState::VisitInProgress, name)?;
-                            self.set_scope_eval_state(param_scope_id, ScopeEvalState::Visited);
+                            let param_scope_id = self.declare_param(param, ScopeEvalState::Visited, name)?;
+                            param_table.insert(name.text.clone(), param_scope_id);
                         }
                         // Visit the return type
                         let ret_type = if let Some(ret) = ret {
@@ -1661,26 +1830,30 @@ impl<'a> Supanalyzer<'a> {
                             context::Type::Void
                         };
                         // Create the context
+                        let taipe = context::Type::Function {
+                            ret: Box::new(ret_type.clone()),
+                            params: param_types,
+                        };
                         let rhs = Context {
                             is_lvalue: true,
-                            taipe: context::Type::Function {
-                                ret: Box::new(ret_type.clone()),
-                                params: param_types,
-                            },
+                            taipe: taipe.clone(),
                             value: context::Value::Reference(scope_id),
                         };
                         // Resolve assignment
-                        let ctx = self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, *line_info)))?;
+                        self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, *line_info)))?;
                         // Mark it visited
                         self.set_scope_eval_state(scope_id, ScopeEvalState::Visited);
-                        self.get_scope_mut(scope_id).payload = Payload::Function(Function {
-                            ctx: Context::from_void(),
-                            param_infos: param_table,
+                        self.get_scope_mut(scope_id).payload = Payload::Function(FunctionInfo {
+                            taipe,
+                            ctx: None,
+                            param_table,
+                            default_param_count,
                             loop_stack: IndexMap::new(),
                             ret_line_info: ret.as_ref().map(|ret| ret.get_line_info()),
                         });
                         if let Some(body) = body {
-                            let ctx = self.visit_stmt(body)?;
+                            let mut ctx = self.visit_stmt(body)?;
+                            // Check the return type
                             if ret_type.is_void() {
                                 if !ctx.taipe.is_void() && !ctx.taipe.is_noreturn() {
                                     return Err(self.make_err(
@@ -1715,8 +1888,13 @@ impl<'a> Supanalyzer<'a> {
                                     .unwrap_or_else(|| self.get_scope(scope_id).get_line_info());
                                 let rhs = ctx;
                                 let rhs_line_info = body.get_line_info();
-                                self.resolve_assign(Some((lhs, lhs_line_info)), None, Some((rhs, rhs_line_info)))?;
+                                ctx = self.resolve_assign(Some((lhs, lhs_line_info)), None, Some((rhs, rhs_line_info)))?;
                             }
+                            // Set the function body
+                            let Payload::Function(ref mut info) = self.get_scope_mut(scope_id).payload else {
+                                unreachable!("not supposed to happen");
+                            };
+                            info.ctx = Some(ctx);
                         }
                         // Restore old scope
                         self.current_scope_id = old_cur_scope_id;
@@ -1725,24 +1903,39 @@ impl<'a> Supanalyzer<'a> {
                     }
                     ast::Object::Typedef(node) => {
                         colon_compulsory!(eq_token);
+                        // Accumulate errors
+                        let mut errs = CompileError::new();
                         self.get_scope_mut(scope_id).kind = ScopeKind::Typedef;
                         // Visit lhs type
                         if let Some(taipe) = taipe {
-                            let taipe = self.visit_type(taipe)?;
-                            let context::Type::Typedef = taipe else {
-                                return Err(self.make_err("expected 'typedef'", node));
+                            match self.visit_type(taipe) {
+                                Ok(taipe) => {
+                                    if let context::Type::Typedef = taipe {} else {
+                                        errs.push_err(self.make_err("expected 'typedef'", node));
+                                    };
+                                },
+                                Err(err) => errs.push_err(err),
                             };
                         }
                         // Visit rhs type
-                        let taipe = self.visit_type(node)?;
-                        if let context::Type::Typedef = taipe {
-                            // context: type -> typedef, value -> typedef
-                            // this cannot happen, there is no type of a type
-                            // parser prevents this
-                            return Err(self.make_err("invalid type alias", node));
-                        }
+                        let taipe = match self.visit_type(node) {
+                            Ok(taipe) => {
+                                if let context::Type::Typedef = &taipe {
+                                    // context: type -> typedef, value -> typedef
+                                    // this cannot happen, there is no type of a type
+                                    // parser prevents this
+                                    errs.push_err(self.make_err("invalid type alias", node));
+                                }
+                                if !errs.is_empty() { return Err(errs); }
+                                taipe
+                            },
+                            Err(err) => {
+                                errs.push_err(err);
+                                return Err(errs);
+                            },
+                        };
                         // Complete the visit
-                        let ctx = Context::from_type(taipe);
+                        self.get_scope_mut(scope_id).payload = Payload::Typedef(taipe);
                         self.set_scope_eval_state(scope_id, ScopeEvalState::Visited);
                         Ok(scope_id)
                     }
@@ -1761,8 +1954,10 @@ impl<'a> Supanalyzer<'a> {
                         }
                         // If this is a global constant or variable then trivially evaluate the
                         // expression.
+                        let mut is_global = false;
                         if self.get_current_function().is_none() {
                             rhs = self.compeval_trivial(rhs)?;
+                            is_global = true;
                         }
                         let ctx = self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, expr.get_line_info())))?;
                         // Complete the visit
@@ -1773,6 +1968,15 @@ impl<'a> Supanalyzer<'a> {
                         } else {
                             self.get_scope_mut(scope_id).kind = ScopeKind::Variable;
                         }
+                        // Set the context
+                        self.get_scope_mut(scope_id).payload = if ctx.taipe.is_typedef() {
+                            Payload::Typedef(ctx.taipe)
+                        } else if is_global {
+                            Payload::Global(GlobalInfo { ctx: ctx })
+                        } else {
+                            // TODO: record the assigment in code context of the block
+                            Payload::Local(LocalInfo { taipe: ctx.taipe })
+                        };
 
                         // cfg: insert variable declared node
                         //      only if it is a local variable or constant
@@ -1915,16 +2119,11 @@ impl<'a> Supanalyzer<'a> {
         let old_cur_scope_id = self.current_scope_id;
         self.current_scope_id = scope_id;
         // Mark it evaluated
-        let ctx = Context {
-            is_lvalue: true,
-            taipe: context::Type::Typedef,
-            value: context::Value::Imm(context::Imm::Type(context::Type::Basic(scope_id))),
-        };
         self.set_scope_eval_state(scope_id, ScopeEvalState::Visited);
         // Visit every field
         let field = self.get_fields(field)?;
         // Set the payload
-        self.get_scope_mut(scope_id).payload = Payload::Compound(Compound::new(field));
+        self.get_scope_mut(scope_id).payload = Payload::Compound(CompoundInfo::new(field));
         // Eval the layout
         let layout = self.resolve_layout_scope(scope_id)?;
         // Print the layout
@@ -1934,10 +2133,14 @@ impl<'a> Supanalyzer<'a> {
             let Payload::Compound(ref compound) = scope.payload else {
                 unreachable!("not supposed to happen")
             };
-            let mut fields = compound.offsets.iter().collect::<Vec<_>>();
-            fields.sort_by_key(|&(_, &data)| data.offset);
+            let mut fields = compound.field_data_table.iter().collect::<Vec<_>>();
+            fields.sort_by_key(|&(_, data)| data.offset);
             for (name, field_data) in fields {
-                debug!("  field '{}' = {:?}", name, field_data);
+                debug!(
+                    "  field '{}' = offset: {}, size: {}, alignment: {}",
+                    name,
+                    field_data.offset, field_data.size, field_data.alignment,
+                );
             }
             debug!("");
         }
@@ -1946,11 +2149,11 @@ impl<'a> Supanalyzer<'a> {
         Ok(scope_id)
     }
     
-    fn get_fields(&mut self, field: &'a ast::Field) -> CompileResult<Field> {
+    fn get_fields(&mut self, field: &'a ast::Field) -> CompileResult<FieldInfo> {
         self.get_fields_impl(field, false)
     }
 
-    fn get_fields_impl(&mut self, field: &'a ast::Field, is_alone: bool) -> CompileResult<Field> {
+    fn get_fields_impl(&mut self, field: &'a ast::Field, is_alone: bool) -> CompileResult<FieldInfo> {
         match field {
             ast::Field::Compound {
                 line_info: _,
@@ -1967,8 +2170,8 @@ impl<'a> Supanalyzer<'a> {
                     vec.push(self.get_fields_impl(field, is_child_alone)?);
                 }
                 match token.kind {
-                    TokenKind::Struct => Ok(Field::Struct(vec)),
-                    TokenKind::Union => Ok(Field::Union(vec)),
+                    TokenKind::Struct => Ok(FieldInfo::Struct(vec)),
+                    TokenKind::Union => Ok(FieldInfo::Union(vec)),
                     _ => unreachable!("probably some parser bug"),
                 }
             }
@@ -1978,9 +2181,6 @@ impl<'a> Supanalyzer<'a> {
                 eq_token,
                 expr,
             } => {
-                let scope_id: ScopeId = self.declare_field(field, name)?;
-                // Set in progress
-                self.set_scope_eval_state(scope_id, ScopeEvalState::VisitInProgress);
                 // Visit type
                 let lhs = (self.visit_type(taipe)?, taipe.get_line_info());
                 let ctx = if let Some(expr) = expr {
@@ -1992,9 +2192,10 @@ impl<'a> Supanalyzer<'a> {
                     let rhs = match self.visit_expr(expr) {
                         Ok(ctx) => ctx,
                         Err(CompileError::SemCyclic { file_path, line_info }) => {
-                            return Err(self
-                                       .make_err("inference is ambiguous, encountered cyclic references", name)
-                                       .chain(self.make_note_with_path("another one declared here", file_path, &line_info)));
+                            return Err(errors![
+                                self.make_err("inference is ambiguous, encountered cyclic references", name),
+                                self.make_note_with_path("another one declared here", file_path, &line_info)
+                            ]);
                         }
                         Err(err) => return Err(err),
                     };
@@ -2025,14 +2226,11 @@ impl<'a> Supanalyzer<'a> {
                     _ => {}
                 }
                 let field_type = ctx.taipe.clone();
-                // Complete the visit
-                self.set_scope_eval_state(scope_id, ScopeEvalState::Visited);
-                Ok(Field::Field {
-                    file_path: self.get_src_path_of_scope(scope_id),
+                Ok(FieldInfo::Field {
+                    file_path: self.get_current_src_path(),
                     line_info: name.get_line_info(),
-                    name: self.get_scope(scope_id).name.clone(),
+                    name: name.text.clone(),
                     taipe: field_type,
-                    scope_id: scope_id,
                 })
             }
         }
@@ -2048,7 +2246,7 @@ impl<'a> Supanalyzer<'a> {
         let mut saved_err = CompileError::new();
         for decl in decls {
             if let Err(err) = self.pre_declare_decl(decl) {
-                saved_err = saved_err.chain(err);
+                saved_err.push_err(err);
             }
         }
         // Return success (or errors if any)
@@ -2082,9 +2280,10 @@ impl<'a> Supanalyzer<'a> {
         if name.kind != TokenKind::Underscore 
             && let Some(prev_scope_id) = self.get_current_scope().children.get(&name.text)
         {
-            return Err(self
-                .make_err("redeclaration of symbol", name)
-                .chain(self.make_note("already declared here", self.get_scope(*prev_scope_id))));
+            return Err(errors![
+                self.make_err("redeclaration of symbol", name),
+                self.make_note("already declared here", self.get_scope(*prev_scope_id))
+            ]);
         }
         
         let sym_name = if name.kind == TokenKind::Underscore {
@@ -2103,6 +2302,7 @@ impl<'a> Supanalyzer<'a> {
             ScopeKind::None,
             &sym_name,
             ScopeEvalState::NotVisited(ScopeNode::Decl(node)),
+            Payload::None,
             name,
         ))
     }
@@ -2141,9 +2341,10 @@ impl<'a> Supanalyzer<'a> {
                 }
             }
             // No module then error
-            return Err(self
-                .make_err("redeclaration of symbol", name)
-                .chain(self.make_note("already declared here", prev_scope)));
+            return Err(errors![
+                self.make_err("redeclaration of symbol", name),
+                self.make_note("already declared here", prev_scope)
+            ]);
         }
 
         let sym_name = if name.kind == TokenKind::Underscore {
@@ -2162,52 +2363,22 @@ impl<'a> Supanalyzer<'a> {
             ScopeKind::None,
             &sym_name,
             ScopeEvalState::NotVisited(ScopeNode::Decl(node)),
+            Payload::None,
             name,
         ))
     }
 
-    fn declare_field(&mut self, field: &'a ast::Field, name: &Token) -> CompileResult<ScopeId> {
+    fn declare_param(&mut self, param_info: ParamInfo, state: ScopeEvalState<'a>, name: &Token) -> CompileResult<ScopeId> {
         // Check for redeclaration
         // Except for '_' declarations
         if name.kind != TokenKind::Underscore
             && let Some(prev_scope_id) = self.get_current_scope().children.get(&name.text)
         {
             // No module then error
-            return Err(self
-                       .make_err("redeclaration of symbol", name)
-                       .chain(self.make_note("already declared here", self.get_scope(*prev_scope_id))));
-        }
-
-        let sym_name = if name.kind == TokenKind::Underscore {
-            format!(
-                "unnamed{}$",
-                self.get_current_scope()
-                    .unique_counter
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            )
-        } else {
-            name.text.clone()
-        };
-
-        Ok(self.add_child_scope(
-            self.current_scope_id,
-            ScopeKind::Field,
-            &sym_name,
-            ScopeEvalState::NotVisited(ScopeNode::Field(field)),
-            field,
-        ))
-    }
-
-    fn declare_param(&mut self, state: ScopeEvalState<'a>, name: &Token) -> CompileResult<ScopeId> {
-        // Check for redeclaration
-        // Except for '_' declarations
-        if name.kind != TokenKind::Underscore
-            && let Some(prev_scope_id) = self.get_current_scope().children.get(&name.text)
-        {
-            // No module then error
-            return Err(self
-                       .make_err("redeclaration of symbol", name)
-                       .chain(self.make_note("already declared here", self.get_scope(*prev_scope_id))));
+            return Err(errors![
+                self.make_err("redeclaration of symbol", name),
+                self.make_note("already declared here", self.get_scope(*prev_scope_id))
+            ]);
         }
 
         let sym_name = if name.kind == TokenKind::Underscore {
@@ -2226,6 +2397,7 @@ impl<'a> Supanalyzer<'a> {
             ScopeKind::Param,
             &sym_name,
             state,
+            Payload::Param(param_info),
             name,
         ))
     }
@@ -2345,7 +2517,7 @@ impl<'a> Supanalyzer<'a> {
                     line_info: self.get_scope(scope_id).get_line_info(),
                 });
             }
-            Payload::Function(_) | Payload::Block(_) => unreachable!("probably some analyzer bug"),
+            _ => unreachable!("probably some analyzer bug"),
         };
 
         self.get_scope_mut(scope_id).payload = Payload::LayoutResolutionInProgress;
@@ -2359,27 +2531,28 @@ impl<'a> Supanalyzer<'a> {
         let layout = match layout_result {
             Ok(layout) => layout,
             Err(CompileError::SemCyclic { file_path, line_info }) => {
-                return Err(self
-                           .make_err(
-                               "memory layout is ambiguous, encountered cyclic references",
-                               self.get_scope(scope_id),
-                           )
-                           .chain(self.make_note_with_path("cycle occurs here", file_path, &line_info)));
+                return Err(errors![
+                    self.make_err(
+                        "memory layout is ambiguous, encountered cyclic references",
+                        self.get_scope(scope_id),
+                    ),
+                    self.make_note_with_path("cycle occurs here", file_path, &line_info)
+                ]);
             }
             Err(err) => return Err(err),
         };
         // Reset the payload
-        self.get_scope_mut(scope_id).payload = Payload::Compound(Compound {
+        self.get_scope_mut(scope_id).payload = Payload::Compound(CompoundInfo {
             field: compound.field,
             layout,
-            offsets,
+            field_data_table: offsets,
         });
         Ok(layout)
     }
 
     fn resolve_layout_field<F>(
         &mut self,
-        field: &Field,
+        field: &FieldInfo,
         mut cur_offset: usize,
         offset_table: &mut HashMap<String, FieldData>,
         get_line_info_of_field: &F,
@@ -2396,7 +2569,7 @@ impl<'a> Supanalyzer<'a> {
         }
 
         match field {
-            Field::Struct(fields) => {
+            FieldInfo::Struct(fields) => {
                 let mut struct_alignment = 1usize;
                 let offset_start = cur_offset;
                 for field in fields {
@@ -2422,7 +2595,7 @@ impl<'a> Supanalyzer<'a> {
                     alignment: struct_alignment,
                 })
             }
-            Field::Union(fields) => {
+            FieldInfo::Union(fields) => {
                 let mut union_alignment = 1usize;
                 let mut union_size = 0usize;
                 // Calculate
@@ -2443,12 +2616,11 @@ impl<'a> Supanalyzer<'a> {
                     alignment: union_alignment,
                 })
             }
-            Field::Field {
+            FieldInfo::Field {
                 file_path,
                 line_info,
                 name,
                 taipe,
-                scope_id: _,
             } => {
                 let layout = self.resolve_layout_impl(&taipe, get_line_info_of_field(self, name));
                 let layout = match layout {
@@ -2468,6 +2640,10 @@ impl<'a> Supanalyzer<'a> {
                 offset_table.insert(
                     name.clone(),
                     FieldData {
+                        name: name.clone(),
+                        taipe: taipe.clone(),
+                        file_path: file_path.clone(),
+                        line_info: *line_info,
                         offset: cur_offset,
                         size: layout.size,
                         alignment: layout.alignment,
@@ -2549,12 +2725,7 @@ impl<'a> Supanalyzer<'a> {
         };
         let ret_line_info = fun_data.ret_line_info
             .unwrap_or_else(|| function.get_line_info());
-        let ret = {
-            let context::Type::Function { ref ret, params: _ } = fun_data.ctx.taipe else {
-                unreachable!("probably some analyzer bug");
-            };
-            *ret.clone()
-        };
+        let ret = fun_data.get_return_type().clone();
         // Cannot return from a noreturn function
         if ret.is_noreturn() {
             return Err(self.make_err(
@@ -2568,10 +2739,13 @@ impl<'a> Supanalyzer<'a> {
         // Check return
         if let Some(expr) = expr {
             if ret.is_void() {
-                return Err(self.make_err("invalid expression", expr).chain(self.make_note(
-                    format!("function expects return type '{}'", ret),
-                    &ret_line_info,
-                )));
+                return Err(errors![
+                    self.make_err("invalid expression", expr),
+                    self.make_note(
+                        format!("function expects return type '{}'", ret),
+                        &ret_line_info,
+                    ),
+                ]);
             }
             let rhs = self.visit_expr(expr)?;
 
@@ -2597,12 +2771,13 @@ impl<'a> Supanalyzer<'a> {
             });
 
             if !ret.is_void() {
-                return Err(self
-                           .make_err("expected <expression> for 'return'", token)
-                           .chain(self.make_note(
-                               format!("function expects return type '{}'", ret),
-                               &ret_line_info,
-                           )));
+                return Err(errors![
+                    self.make_err("expected <expression> for 'return'", token),
+                    self.make_note(
+                        format!("function expects return type '{}'", ret),
+                        &ret_line_info,
+                    ),
+                ]);
             }
             Ok(Context {
                 is_lvalue: false,
@@ -2625,9 +2800,10 @@ impl<'a> Supanalyzer<'a> {
                 for (name, _) in &data.loop_stack {
                     searched_names.insert(name.clone());
                 }
-                return Err(self
-                           .make_err(format!("undefined loop label '{}'", label.text), label)
-                           .chain(self.make_did_you_mean_help(&label.text, &searched_names)));
+                return Err(errors![
+                    self.make_err(format!("undefined loop label '{}'", label.text), label),
+                    self.make_did_you_mean_help(&label.text, &searched_names)
+                ]);
             }
         } else if let Some((_, loop_info)) = data.loop_stack.last() {
             loop_info.cf_break
@@ -2655,9 +2831,10 @@ impl<'a> Supanalyzer<'a> {
                 for (name, _) in &data.loop_stack {
                     searched_names.insert(name.clone());
                 }
-                return Err(self
-                           .make_err(format!("undefined loop label '{}'", label.text), label)
-                           .chain(self.make_did_you_mean_help(&label.text, &searched_names)));
+                return Err(errors![
+                    self.make_err(format!("undefined loop label '{}'", label.text), label),
+                    self.make_did_you_mean_help(&label.text, &searched_names)
+                ]);
             }
         } else if let Some((_, loop_info)) = data.loop_stack.last() {
             loop_info.cf_continue
@@ -2908,26 +3085,27 @@ impl<'a> Supanalyzer<'a> {
                 .block_counter
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         );
+        // Create its own control graph
+        let mut cfg = ControlGraph::new();
+        let cf_start = cfg.insert_vertex(ControlNode::Start);
+        let cf_unreachable = cfg.insert_vertex(ControlNode::Unreachable);
+        let cf_end = cfg.insert_vertex(ControlNode::End);
         // Create a block scope
         let scope_id = self.add_child_scope(
             self.current_scope_id,
             ScopeKind::Block,
             &block_name,
             ScopeEvalState::VisitInProgress,
+            Payload::Block(BlockInfo {
+                ctx: Context::from_void(),
+                cfg,
+                cf_start,
+                cf_end,
+                cf_last: cf_start,
+                cf_unreachable,
+            }),
             &line_info
         );
-        // Create its own control graph
-        let mut cfg = ControlGraph::new();
-        let cf_start = cfg.insert_vertex(ControlNode::Start);
-        let cf_unreachable = cfg.insert_vertex(ControlNode::Unreachable);
-        let cf_end = cfg.insert_vertex(ControlNode::End);
-        self.get_scope_mut(scope_id).payload = Payload::Block(Block {
-            cfg,
-            cf_start,
-            cf_end,
-            cf_last: cf_start,
-            cf_unreachable,
-        });
         scope_id
     }
 
@@ -3009,18 +3187,16 @@ impl<'a> Supanalyzer<'a> {
         // Restore old scope
         self.current_scope_id = old_cur_scope_id;
         // cfg: now traverse the cfg
-        {
-            let Payload::Block(ref data) = self.get_scope(scope_id).payload else {
-                unreachable!("probably some analyzer bug");
-            };
-            // Track all variables by checking their initialization and usage (by performing DFS on the CFG)
-            if let Err(err) = self.traverse_cfg(scope_id, data.cf_start) {
-                self.saved_errors.push(err);
-            }
+        // Track all variables by checking their initialization and usage (by performing DFS on the CFG)
+        if let Err(err) = self.traverse_cfg(scope_id) {
+            self.saved_errors.push_err(err);
         }
         // Create the context
         block_ret_type = block_ret_type.add_const();
-        let ctx = Context {
+        let Payload::Block(ref mut info) = self.get_scope_mut(scope_id).payload else {
+            unreachable!("not supposed to happen");
+        };
+        info.ctx = Context {
             is_lvalue,
             taipe: block_ret_type.clone(),
             value: context::Value::Block(items),
@@ -3036,11 +3212,20 @@ impl<'a> Supanalyzer<'a> {
 
     // Control flow analysis
 
-    fn traverse_cfg(&mut self, scope_id: ScopeId, node_id: ControlNodeId) -> CompileResult<()> {
+    fn traverse_cfg(&mut self, scope_id: ScopeId) -> CompileResult<()> {
         // debug!("in: {}", self.current_scope_id.sym_path);
-        let result = self.traverse_cfg_impl(scope_id, node_id, &mut HashSet::new(), HashMap::new(), 0);
+        let Payload::Block(ref data) = self.get_scope(scope_id).payload else {
+            unreachable!("probably some analyzer bug");
+        };
+        let result = self.traverse_cfg_impl(scope_id, data.cf_start, &mut HashSet::new(), HashMap::new(), 0);
         // debug!("");
         result
+    }
+    fn get_cfg(&self, block_scope_id: ScopeId) -> &ControlGraph {
+        let Payload::Block(ref data) = self.get_scope(block_scope_id).payload else {
+            unreachable!("probably some analyzer bug");
+        };
+        &data.cfg
     }
     fn traverse_cfg_impl(
         &mut self,
@@ -3049,21 +3234,13 @@ impl<'a> Supanalyzer<'a> {
         visited: &mut HashSet<ControlNodeId>,
         mut declared_vars: HashMap<SymbolPath, ControlInfo>,
         mut depth: usize,
-    ) -> CompileResult<()> {
-        let cfg = {
-            let Payload::Block(ref data) = self.get_scope(scope_id).payload else {
-                unreachable!("probably some analyzer bug");
-            };
-            &data.cfg
-        };
-        
+    ) -> CompileResult<()> {        
         // Mark as visited
         visited.insert(node_id);
-        let mut err = CompileError::new();
-
+        let mut errs = CompileError::new();
         // Track variables
         let mut is_end = false;
-        let node = cfg.get_vertex(node_id).unwrap();
+        let node = self.get_cfg(scope_id).get_vertex(node_id).copied().unwrap();
         match node {
             ControlNode::Start => {
                 // debug!("{}start", " ".repeat(depth));
@@ -3080,7 +3257,7 @@ impl<'a> Supanalyzer<'a> {
                     //     line_info.line_start,
                     //     line_info.col_start
                     // );
-                    declared_vars.insert(self.get_scope(*scope_id).sym_path.clone(), info.clone());
+                    declared_vars.insert(self.get_scope(scope_id).sym_path.clone(), info.clone());
                 }
                 ControlInfo::VarUsed { line_info, scope_id } => {
                     // debug!(
@@ -3089,14 +3266,16 @@ impl<'a> Supanalyzer<'a> {
                     //     line_info.line_start,
                     //     line_info.col_start
                     // );
-                    let scope = self.get_scope(*scope_id);
+                    let scope = self.get_scope(scope_id);
                     if let Some(prev_cf_info) = declared_vars.get(&scope.sym_path) {
                         match prev_cf_info {
                             ControlInfo::VarDeclared { scope_id: _ } => {
                                 let msg = format!("'{}' may be uninitialized", scope.name);
-                                err = err
-                                    .chain(self.make_err(msg, line_info))
-                                    .chain(self.make_note("declared here", scope));
+                                errs = errors![
+                                    errs,
+                                    self.make_err(msg, &line_info),
+                                    self.make_note("declared here", scope),
+                                ];
                             }
                             _ => {}
                         }
@@ -3106,8 +3285,8 @@ impl<'a> Supanalyzer<'a> {
                             unreachable!("probably some analyzer bug");
                         };
                         let cf_node = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarUsed {
-                            line_info: *line_info,
-                            scope_id: *scope_id,
+                            line_info,
+                            scope_id: scope_id,
                         }));
                         data.cfg.insert_edge(data.cf_last, cf_node);
                         data.cf_last = cf_node;
@@ -3120,7 +3299,7 @@ impl<'a> Supanalyzer<'a> {
                     //     line_info.line_start,
                     //     line_info.col_start
                     // );
-                    if let Some(prev_cf_info) = declared_vars.get_mut(&self.get_scope(*scope_id).sym_path) {
+                    if let Some(prev_cf_info) = declared_vars.get_mut(&self.get_scope(scope_id).sym_path) {
                         match prev_cf_info {
                             // TODO: implement this
                             // this is not complete as we have to check whether a variable
@@ -3136,8 +3315,8 @@ impl<'a> Supanalyzer<'a> {
                             unreachable!("probably some analyzer bug");
                         };
                         let cf_node = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarAssigned {
-                            line_info: *line_info,
-                            scope_id: *scope_id,
+                            line_info,
+                            scope_id: scope_id,
                         }));
                         data.cfg.insert_edge(data.cf_last, cf_node);
                         data.cf_last = cf_node;
@@ -3158,19 +3337,19 @@ impl<'a> Supanalyzer<'a> {
         }
 
         // Traverse other destination nodes
-        let outgoing = cfg.outgoing(node_id);
+        let outgoing = self.get_cfg(scope_id).outgoing(node_id);
         for dest_node_id in outgoing {
             assert!(!is_end);
             if !visited.contains(&dest_node_id) {
                 if let Err(dest_err) = self.traverse_cfg_impl(scope_id, dest_node_id, visited, declared_vars.clone(), depth)
                 {
                     // Accumulate errors
-                    err = err.chain(dest_err)
+                    errs.push_err(dest_err)
                 };
             }
         }
         // Return the accumulated errors
-        if err.is_empty() { Ok(()) } else { Err(err) }
+        if errs.is_empty() { Ok(()) } else { Err(errs) }
     }
     
     // ------------------------------------------------------------
@@ -3270,7 +3449,6 @@ impl<'a> Supanalyzer<'a> {
                 match scope.kind {
                     ScopeKind::Module => todo!(),
                     ScopeKind::Compound => todo!(),
-                    ScopeKind::Field => todo!(),
                     ScopeKind::Function => todo!(),
                     ScopeKind::Param => todo!(),
                     ScopeKind::Typedef => todo!(),
@@ -3647,9 +3825,10 @@ impl<'a> Supanalyzer<'a> {
                 line_info,
                 fun_scope_id: _,
                 args: _,
-            } => Err(self
-                     .make_err("could not evaluate expression trivially at compile time", &line_info)
-                     .chain(self.make_note_no_path("function call may have side effects"))),
+            } => Err(errors![
+                self.make_err("could not evaluate expression trivially at compile time", &line_info),
+                self.make_note_no_path("function call may have side effects")
+            ]),
             context::Value::Assign(lhses, rhses) => {
                 assert!(lhses.len() == rhses.len());
                 for (lhs, rhs) in lhses.into_iter().zip(rhses.into_iter()) {
@@ -4112,9 +4291,10 @@ impl<'a> Supanalyzer<'a> {
                 let index_node = &items[0];
                 let index = self.visit_expr(index_node)?;
                 if !index.taipe.is_integer() {
-                    return Err(self
-                               .make_err("argument of index operator should be an integer type", node)
-                               .chain(self.make_note(format!("but got '{}'", index.taipe), index_node)));
+                    return Err(errors![
+                        self.make_err("argument of index operator should be an integer type", node),
+                        self.make_note(format!("but got '{}'", index.taipe), index_node)
+                    ]);
                 }
                 match ctx.taipe.remove_const() {
                     context::Type::Array { count: _, taipe } => Ok(Context {
@@ -4345,15 +4525,17 @@ impl<'a> Supanalyzer<'a> {
                 );
                 // Check for duplicate named arguments
                 if let Some((_, line_info, _)) = result {
-                    return Err(self
-                               .make_err("duplicate named argument", name)
-                               .chain(self.make_note("previous named argument is here", &line_info)));
+                    return Err(errors![
+                        self.make_err("duplicate named argument", name),
+                        self.make_note("previous named argument is here", &line_info)
+                    ]);
                 }
             } else {
                 if let Some(ref prev_named_arg) = prev_named_arg {
-                    return Err(self
-                               .make_err("unnamed argument is not allowed here", arg)
-                               .chain(self.make_note("previous named argument is here", prev_named_arg)));
+                    return Err(errors![
+                        self.make_err("unnamed argument is not allowed here", arg),
+                        self.make_note("previous named argument is here", prev_named_arg)
+                    ]);
                 }
                 pos_arg_infos.push((arg_ctx, arg.get_line_info()));
             }
@@ -4382,7 +4564,7 @@ impl<'a> Supanalyzer<'a> {
             if data.has_default_params() {
                 let min_param_count = data.get_min_param_count();
                 if arg_count < min_param_count || arg_count > total_param_count {
-                    errs = errs.chain(self.make_err(
+                    errs.push_err(self.make_err(
                         format!(
                             "expected '{}' to '{}' argument{} but got '{}'",
                             min_param_count,
@@ -4395,7 +4577,7 @@ impl<'a> Supanalyzer<'a> {
                 }
             } else {
                 if arg_count != total_param_count {
-                    errs = errs.chain(self.make_err(
+                    errs.push_err(self.make_err(
                         format!(
                             "expected '{}' argument{} but got '{}'",
                             total_param_count,
@@ -4407,11 +4589,16 @@ impl<'a> Supanalyzer<'a> {
                 }
             }
             // Get the necessary info about params
-            let params = &data.param_infos;
+            let param_table = &data.param_table;
             let mut args_info = IndexMap::new();
             // Check positional argument expression types
             for (i, (arg_ctx, arg_line_info)) in pos_arg_infos.into_iter().enumerate() {
-                let (param_name, param) = params.get_index(i).unwrap();
+                let result = param_table.get_index(i).unwrap();
+                let param_name = result.0;
+                let param_scope_id = *result.1;
+                let Payload::Param(ref param) = self.get_scope(param_scope_id).payload else {
+                    unreachable!("probably some analyzer bug");
+                };
                 let lhs = param.taipe.clone();
                 let lhs_line_info = param.line_info;
                 let rhs = arg_ctx;
@@ -4419,7 +4606,7 @@ impl<'a> Supanalyzer<'a> {
                 let mut ctx = match self.resolve_assign(Some((lhs, lhs_line_info)), None, Some((rhs, rhs_line_info))) {
                     Ok(it) => it,
                     Err(err) => {
-                        errs = errs.chain(err);
+                        errs.push_err(err);
                         Context {
                             is_lvalue: true,
                             taipe: param.taipe.clone(),
@@ -4432,11 +4619,15 @@ impl<'a> Supanalyzer<'a> {
             }
             // Check named argument expression types
             for (name, (arg_ctx, arg_line_info, arg_expr_info)) in named_arg_infos {
-                let Some(param) = params.get(&name) else {
-                    let searched_names = params.iter().map(|(name, _)| name.clone()).collect::<HashSet<_>>();
-                    return Err(self
-                               .make_err(format!("unknown argument: '{}'", name), &arg_line_info)
-                               .chain(self.make_did_you_mean_help(&name, &searched_names)));
+                let Some(&param_scope_id) = self.get_scope(scope_id).children.get(&name) else {
+                    let searched_names = param_table.keys().cloned().collect::<HashSet<_>>();
+                    return Err(errors![
+                        self.make_err(format!("unknown argument: '{}'", name), &arg_line_info),
+                        self.make_did_you_mean_help(&name, &searched_names)
+                    ]);
+                };
+                let Payload::Param(ref param) = self.get_scope(param_scope_id).payload else {
+                    unreachable!("probably some analyzer bug");
                 };
                 let lhs = param.taipe.clone();
                 let lhs_line_info = param.line_info;
@@ -4445,7 +4636,7 @@ impl<'a> Supanalyzer<'a> {
                 let mut ctx = match self.resolve_assign(Some((lhs, lhs_line_info)), None, Some((rhs, rhs_line_info))) {
                     Ok(it) => it,
                     Err(err) => {
-                        errs = errs.chain(err);
+                        errs.push_err(err);
                         Context {
                             is_lvalue: true,
                             taipe: param.taipe.clone(),
@@ -4457,9 +4648,8 @@ impl<'a> Supanalyzer<'a> {
                 let result = args_info.insert(name.clone(), (ctx, rhs_line_info));
                 // Check possible duplicate named and position argument
                 if let Some((_, line_info)) = result {
-                    errs = errs
-                        .chain(self.make_err("duplicate named argument", &arg_line_info))
-                        .chain(self.make_note("previous positional argument is here", &line_info));
+                    errs.push_err(self.make_err("duplicate named argument", &arg_line_info));
+                    errs.push_err(self.make_note("previous positional argument is here", &line_info));
                 }
             }
             let mut args_info = args_info
@@ -4467,7 +4657,11 @@ impl<'a> Supanalyzer<'a> {
                 .map(|(name, (ctx, _))| (name, ctx))
                 .collect::<IndexMap<_, _>>();
             // Check if any value is left out
-            for (name, param) in params.iter() {
+            for name in param_table.keys() {
+                let param_scope_id = *self.get_scope(scope_id).children.get(name).unwrap();
+                let Payload::Param(ref param) = self.get_scope(param_scope_id).payload else {
+                    unreachable!("probably some analyzer bug");
+                };
                 if !args_info.contains_key(name) {
                     if let Some(value) = &param.default {
                         args_info.insert(
@@ -4479,11 +4673,8 @@ impl<'a> Supanalyzer<'a> {
                             },
                         );
                     } else {
-                        errs = errs
-                            .chain(
-                                self.make_err(format!("value of argument '{}' is not provided", name), &call_line_info),
-                            )
-                            .chain(self.make_note("declared here", &param.line_info))
+                        errs.push_err(self.make_err(format!("value of argument '{}' is not provided", name), &call_line_info));
+                        errs.push_err(self.make_note("declared here", &param.line_info));
                     }
                 }
             }
@@ -5576,9 +5767,10 @@ impl<'a> Supanalyzer<'a> {
                 let length_ctx = self.visit_expr(expr)?;
                 let length_ctx = self.compeval_trivial(length_ctx)?;
                 if !length_ctx.taipe.is_unsigned_integer() {
-                    return Err(self
-                               .make_err("argument of index operator should be an unsigned integer type", expr)
-                               .chain(self.make_note(format!("but got '{}'", length_ctx.taipe), expr)));
+                    return Err(errors![
+                        self.make_err("argument of index operator should be an unsigned integer type", expr),
+                        self.make_note(format!("but got '{}'", length_ctx.taipe), expr),
+                    ]);
                 }
                 let context::Value::Imm(length) = length_ctx.value else {
                     return Err(self.make_err("value cannot be evaluated at compile time", expr));
@@ -5707,15 +5899,16 @@ impl<'a> Supanalyzer<'a> {
                     value: context::Value::Tuple(values),
                 })
             }
-            _ => Err(self
-                .make_err(
+            _ => Err(errors![
+                self.make_err(
                     format!("type does not have a default value: '{}'", top_type),
                     line_info,
-                )
-                .chain(self.make_note_no_path(format!(
+                ),
+                self.make_note_no_path(format!(
                     "error occured because this type does not have a default value: '{}'",
                     cur_type
-                )))),
+                ))
+            ])
         }
     }
 
@@ -5775,15 +5968,16 @@ impl<'a> Supanalyzer<'a> {
                     value: context::Value::Tuple(values),
                 })
             }
-            _ => Err(self
-                .make_err(
+            _ => Err(errors![
+                self.make_err(
                     format!("type does not have a zero value: '{}'", top_type),
                     line_info,
-                )
-                .chain(self.make_note_no_path(format!(
+                ),
+                self.make_note_no_path(format!(
                     "error occured because this type does not have a zero value: '{}'",
                     cur_type
-                )))),
+                ))
+            ]),
         }
     }
     
@@ -5935,20 +6129,24 @@ impl<'a> Supanalyzer<'a> {
     ) -> CompileResult<Context> {
         macro_rules! return_err_const {
             () => {
-                return Err(self.make_err(
-                    format!("cannot assign to a constant of type: '{}'", lhs),
-                    &lhs_line_info,
-                )
-                           .chain(self.make_note(format!("type of value is '{}'", rhs), &rhs_line_info)));
+                return Err(errors![
+                    self.make_err(
+                        format!("cannot assign to a constant of type: '{}'", lhs),
+                        &lhs_line_info,
+                    ),
+                    self.make_note(format!("type of value is '{}'", rhs), &rhs_line_info)
+                ]);
             };
         }
         macro_rules! return_err {
             () => {
-                return Err(self.make_err(
-                    format!("cannot assign value of type '{}'", rhs),
-                    &rhs_line_info,
-                )
-                           .chain(self.make_note(format!("cannot assign to '{}'", lhs), &lhs_line_info)));
+                return Err(errors![
+                    self.make_err(
+                        format!("cannot assign value of type '{}'", rhs),
+                        &rhs_line_info,
+                    ),
+                    self.make_note(format!("cannot assign to '{}'", lhs), &lhs_line_info)
+                ]);
             };
         }
         // const qualifier in rhs does not matter at all during assignment
@@ -6210,16 +6408,17 @@ impl<'a> Supanalyzer<'a> {
         if let Some(ctx) = self.resolve_member(scope_id, &name.text, name.get_line_info(), &mut searched_names)? {
             Ok(ctx)
         } else {
-            Err(self
-                .make_err(
+            Err(errors![
+                self.make_err(
                     format!(
                         "'{}' has no member named '{}'",
                         self.get_scope(scope_id).sym_path,
                         &name.text
                     ),
                     name,
-                )
-                .chain(self.make_did_you_mean_help(&name.text, &searched_names)))
+                ),
+                self.make_did_you_mean_help(&name.text, &searched_names)
+            ])
         }
     }
 
@@ -6249,7 +6448,7 @@ impl<'a> Supanalyzer<'a> {
                     } else {
                         return Ok(Some(Context {
                             is_lvalue: true,
-                            taipe: ctx.taipe.clone(),
+                            taipe: self.get_scope(child_id).get_type(),
                             value: context::Value::UserReference {
                                 line_info,
                                 scope_id: child_id,
@@ -6288,7 +6487,7 @@ impl<'a> Supanalyzer<'a> {
                     } else {
                         Context {
                             is_lvalue: true,
-                            taipe: ctx.taipe.clone(),
+                            taipe: self.get_scope(child_id).get_type(),
                             value: context::Value::UserReference {
                                 line_info,
                                 scope_id: child_id,
@@ -6311,9 +6510,10 @@ impl<'a> Supanalyzer<'a> {
         if let Some(ctx) = self.resolve_name(&name.text, name.get_line_info(), &mut searched_names)? {
             Ok(ctx)
         } else {
-            Err(self
-                .make_err("undefined reference", name)
-                .chain(self.make_did_you_mean_help(&name.text, &searched_names)))
+            Err(errors![
+                self.make_err("undefined reference", name),
+                self.make_did_you_mean_help(&name.text, &searched_names)
+            ])
         }
     }
 
@@ -6342,14 +6542,15 @@ impl<'a> Supanalyzer<'a> {
                             if scope.is_variable()
                                 && let Some(outer_fn) = self.get_enclosing_function(scope_id)
                             {
-                                return Err(self
-                                           .make_err(
-                                               "cannot use local variable of outer function from inner function context",
-                                               &line_info,
-                                           )
-                                           .chain(self.make_note("variable is declared here", scope))
-                                           .chain(self.make_note("inner function is declared here", self.get_scope(inner_fn)))
-                                           .chain(self.make_note("outer function is declared here", self.get_scope(outer_fn))));
+                                return Err(errors![
+                                    self.make_err(
+                                        "cannot use local variable of outer function from inner function context",
+                                        &line_info,
+                                    ),
+                                    self.make_note("variable is declared here", scope),
+                                    self.make_note("inner function is declared here", self.get_scope(inner_fn)),
+                                    self.make_note("outer function is declared here", self.get_scope(outer_fn))
+                                ]);
                             }
                             drop(scope);
                         }
@@ -6491,7 +6692,7 @@ impl<'a> Supanalyzer<'a> {
 
     fn use_current_function_data<F, T>(&self, handler: F) -> T
     where
-        F: FnOnce(&Function) -> T,
+        F: FnOnce(&FunctionInfo) -> T,
     {
         let function = self.get_current_function().expect("not in a function");
         let Payload::Function(ref data) = function.payload else {
@@ -6502,7 +6703,7 @@ impl<'a> Supanalyzer<'a> {
 
     fn mut_current_function_data<F, T>(&mut self, handler: F) -> T
     where
-        F: FnOnce(&mut Function) -> T,
+        F: FnOnce(&mut FunctionInfo) -> T,
     {
         let function = self.get_current_function().expect("not in a function").id;
         let Payload::Function(ref mut data) = self.get_scope_mut(function).payload else {
@@ -6513,7 +6714,7 @@ impl<'a> Supanalyzer<'a> {
 
     fn use_current_block_data<F, T>(&self, handler: F) -> T
     where
-        F: FnOnce(&Block) -> T,
+        F: FnOnce(&BlockInfo) -> T,
     {
         let block = self.get_current_block().expect("not in a block");
         let Payload::Block(ref data) = block.payload else {
@@ -6524,7 +6725,7 @@ impl<'a> Supanalyzer<'a> {
 
     fn mut_current_block_data<F, T>(&mut self, handler: F) -> T
     where
-        F: FnOnce(&mut Block) -> T,
+        F: FnOnce(&mut BlockInfo) -> T,
     {
         let block = self.get_current_block().expect("not in a block").id;
         let Payload::Block(ref mut data) = self.get_scope_mut(block).payload else {
@@ -6534,7 +6735,7 @@ impl<'a> Supanalyzer<'a> {
     }
 
     /// Adds a child scope to `parent` with the specified parameters
-    fn add_child_scope(&mut self, parent: ScopeId, kind: ScopeKind, name: &str, eval_state: ScopeEvalState<'a>, line_info: &impl HasLineInfo) -> ScopeId {
+    fn add_child_scope(&mut self, parent: ScopeId, kind: ScopeKind, name: &str, eval_state: ScopeEvalState<'a>, payload: Payload, line_info: &impl HasLineInfo) -> ScopeId {
         // Create the symbol path
         let mut sym_path = self.get_scope(parent).sym_path.clone();
         sym_path.push_name(name);
@@ -6546,7 +6747,7 @@ impl<'a> Supanalyzer<'a> {
             sym_path,
             name: name.to_string(),
             line_info: line_info.get_line_info(),
-            payload: Payload::None,
+            payload,
             parent: Some(parent),
             children: IndexMap::new(),
             unique_counter: AtomicU64::new(0),
