@@ -1,14 +1,12 @@
+use std::{collections::HashMap, fmt, sync::atomic::AtomicU64};
+
 use indexmap::IndexMap;
 
-use crate::{
-    ast,
-    cfg::{ControlGraph, ControlNodeId},
-    common::{HasLineInfo, Layout, LineInfo},
-    context::{self, Context},
-};
-use std::{
-    cell::RefCell, collections::HashMap, fmt, rc::{Rc, Weak}, sync::atomic::AtomicU64
-};
+use crate::{cfg::{ControlGraph, ControlNodeId}, common::{HasLineInfo, Layout, LineInfo}, context::{self, Context}};
+
+// ------------------------------------------------------------
+// Scope things
+// ------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SymbolPath {
@@ -51,46 +49,83 @@ impl SymbolPath {
     // }
 }
 
-#[derive(Clone, Copy)]
-pub enum ScopeNode<'a> {
-    Decl(&'a ast::Decl),
-    Field(&'a ast::Field),
-    Object(&'a ast::Object),
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ScopeId {
+    pub index: usize,
 }
 
-impl<'a> HasLineInfo for ScopeNode<'a> {
-    fn get_line_info(&self) -> LineInfo {
-        match self {
-            ScopeNode::Decl(decl) => decl.get_line_info(),
-            ScopeNode::Field(field) => field.get_line_info(),
-            ScopeNode::Object(object) => object.get_line_info(),
-        }
-    }
-}
-
-pub enum State<'a> {
-    /// Scope is not visited yet
-    NotVisited(ScopeNode<'a>),
-    /// Visitation is in progress
-    VisitInProg,
-    /// Scope has been visited
-    Visited(Context<'a>),
-}
-
-pub enum Payload<'a> {
-    Compound(Compound<'a>),
-    Function(Function<'a>),
-    Block(Block<'a>),
-    LayoutResolutionInProg,
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ScopeKind {
+    Module,
+    Compound,
+    Function,
+    Param,
+    Variable,
+    Const,
+    Typedef,
+    Block,
     None,
 }
 
-pub struct Block<'a> {
-    pub cfg: ControlGraph<'a>,
-    pub cf_start: ControlNodeId,
-    pub cf_end: ControlNodeId,
-    pub cf_last: ControlNodeId,
-    pub cf_unreachable: ControlNodeId,
+pub enum Payload {
+    Compound(CompoundInfo),
+    Function(FunctionInfo),
+    Global(GlobalInfo),
+    Local(LocalInfo),
+    Typedef(context::Type),
+    Block(BlockInfo),
+    Param(ParamInfo),
+    LayoutResolutionInProgress,
+    None
+}
+
+pub struct GlobalInfo {
+    pub ctx: Context,
+}
+
+pub struct LocalInfo {
+    pub taipe: context::Type,
+}
+
+#[derive(Clone)]
+pub enum FieldInfo {
+    Struct(Vec<FieldInfo>),
+    Union(Vec<FieldInfo>),
+    Field {
+        file_path: String,
+        line_info: LineInfo,
+        name: String,
+        taipe: context::Type,
+    },
+}
+
+#[derive(Clone)]
+pub struct FieldData {
+    pub name: String,
+    pub taipe: context::Type,
+    pub file_path: String,
+    pub line_info: LineInfo,
+    
+    pub offset: usize,
+    pub size: usize,
+    pub alignment: usize,
+}
+
+#[derive(Clone)]
+pub struct CompoundInfo {
+    pub field: FieldInfo,
+    pub layout: Layout,
+    pub field_data_table: HashMap<String, FieldData>,
+}
+
+impl CompoundInfo {
+    pub fn new(field: FieldInfo) -> Self {
+        CompoundInfo {
+            field,
+            layout: Default::default(),
+            field_data_table: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -99,114 +134,68 @@ pub struct LoopInfo {
     pub cf_continue: ControlNodeId,
 }
 
-pub struct ParamInfo<'a> {
-    pub taipe: context::Type<'a>,
-    pub default: Option<context::Value<'a>>,
+pub struct ParamInfo {
+    pub taipe: context::Type,
+    pub default: Option<context::Value>,
     pub line_info: LineInfo,
 }
 
-pub struct Function<'a> {
-    pub param_infos: IndexMap<String, ParamInfo<'a>>,
+pub struct FunctionInfo {
+    pub taipe: context::Type,
+    pub ctx: Option<Context>,
+    pub param_table: IndexMap<String, ScopeId>,
+    pub default_param_count: usize,
     pub loop_stack: IndexMap<String, LoopInfo>,
     pub ret_line_info: Option<LineInfo>,
 }
 
-impl<'a> Function<'a> {
+impl FunctionInfo {
+    pub fn get_return_type(&self) -> &context::Type {
+        let context::Type::Function { ref ret, params: _ } = self.taipe else {
+            unreachable!("probably some analyzer bug");
+        };
+        ret
+    }
     pub fn get_total_param_count(&self) -> usize {
-        self.param_infos.len()
+        self.param_table.len()
     }
     pub fn get_default_param_count(&self) -> usize {
-        self.param_infos
-            .iter()
-            .filter(|(_, param)| param.default.is_some())
-            .count()
+        self.default_param_count
     }
     pub fn get_min_param_count(&self) -> usize {
-        self.param_infos
-            .iter()
-            .filter(|(_, param)| param.default.is_none())
-            .count()
+        self.get_total_param_count() - self.get_default_param_count()
     }
     pub fn has_default_params(&self) -> bool {
-        self.param_infos.iter().any(|(_, param)| param.default.is_some())
+        self.get_default_param_count() > 0
     }
 }
 
-#[derive(Clone)]
-pub enum Field<'a> {
-    Struct(Vec<Field<'a>>),
-    Union(Vec<Field<'a>>),
-    Field {
-        file_path: String,
-        line_info: LineInfo,
-        name: String,
-        taipe: context::Type<'a>,
-        scope: Rc<RefCell<Scope<'a>>>,
-    },
+pub struct BlockInfo {
+    /// Context containing the code of the block
+    pub ctx: Context,
+    /// Control flow graph of the block
+    pub cfg: ControlGraph,
+    /// The start node of the graph
+    pub cf_start: ControlNodeId,
+    /// The end node of the graph
+    pub cf_end: ControlNodeId,
+    /// The node that was last added to the graph
+    pub cf_last: ControlNodeId,
+    /// An isolated unreachable node for attaching unreachable code
+    pub cf_unreachable: ControlNodeId,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct FieldData {
-    pub offset: usize,
-    pub size: usize,
-    pub alignment: usize,
-}
-
-#[derive(Clone)]
-pub struct Compound<'a> {
-    pub field: Field<'a>,
-    pub layout: Layout,
-    pub offsets: HashMap<String, FieldData>,
-}
-
-impl<'a> Compound<'a> {
-    pub fn new(field: Field<'a>) -> Self {
-        Compound {
-            field,
-            layout: Default::default(),
-            offsets: HashMap::new(),
-        }
-    }
-}
-
-pub type Map<K, V> = IndexMap<K, V>;
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ScopeKind {
-    Module,
-    Compound,
-    Field,
-    Function,
-    Param,
-    Typedef,
-    Variable,
-    Const,
-    Block,
-    None,
-}
-
-pub struct Scope<'a> {
-    /// Weak reference to the parent scope
-    pub parent: Weak<RefCell<Scope<'a>>>,
-    /// The file path to which this scope belongs to.
-    /// If this is None, then the file path of this scope
-    /// is the file path of the parent scope.
-    pub file_path: Option<String>,
-    /// The symbol path of the scope
-    pub sym_path: SymbolPath,
-    /// The kind of the scope
+pub struct Scope {
+    pub id: ScopeId,
     pub kind: ScopeKind,
-    /// The name of the scope in the form of a token. (to improve error output)
+    pub file_path: Option<String>,
+    pub sym_path: SymbolPath,
     pub name: String,
-    /// The line info of the scope.
     pub line_info: LineInfo,
-    /// The state for the context evaluation of this scope
-    pub state: State<'a>,
-    /// The payload data for this scope.
-    /// For example, a struct scope can have a payload related to field layout, padding, etc.
-    pub payload: Payload<'a>,
-    /// The children of this scope
-    pub children: Map<String, Rc<RefCell<Scope<'a>>>>,
+    pub payload: Payload,
+    
+    pub parent: Option<ScopeId>,
+    pub children: IndexMap<String, ScopeId>,
 
     /// Counter for generating unique names of anonymous scopes
     pub unique_counter: AtomicU64,
@@ -216,57 +205,12 @@ pub struct Scope<'a> {
     pub loop_counter: AtomicU64,
 }
 
-impl<'a> Scope<'a> {
-    pub fn new_root(file_path: &str, node: &'a ast::Object) -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(Self {
-            parent: Weak::new(),
-            file_path: Some(file_path.to_owned()),
-            sym_path: SymbolPath::new(),
-            kind: ScopeKind::Module,
-            name: "".to_string(),
-            line_info: node.get_line_info(),
-            state: State::NotVisited(ScopeNode::Object(node)),
-            payload: Payload::None,
-            children: Map::new(),
-            unique_counter: AtomicU64::new(0),
-            block_counter: AtomicU64::new(0),
-            loop_counter: AtomicU64::new(0),
-        }))
-    }
-
-    pub fn add_child(
-        parent: &Rc<RefCell<Scope<'a>>>,
-        kind: ScopeKind,
-        name: &str,
-        state: State<'a>,
-        line_info: &impl HasLineInfo,
-    ) -> Rc<RefCell<Scope<'a>>> {
-        // Create the symbol path
-        let mut sym_path = parent.borrow().sym_path.clone();
-        sym_path.push_name(name);
-        // Create the child scope
-        let child = Rc::new(RefCell::new(Self {
-            parent: Rc::downgrade(parent),
-            file_path: None,
-            sym_path,
-            kind,
-            name: name.to_string(),
-            line_info: line_info.get_line_info(),
-            state,
-            payload: Payload::None,
-            children: Map::new(),
-            unique_counter: AtomicU64::new(0),
-            block_counter: AtomicU64::new(0),
-            loop_counter: AtomicU64::new(0),
-        }));
-        // Clone it so we can return later
-        let result = Rc::clone(&child);
-        // Finishing up
-        let ret = parent.borrow_mut().children.insert(name.to_owned(), child);
-        if name != "_" {
-            assert!(ret.is_none(), "redeclaration should be prohibited from analyzer");
+impl Scope {
+    pub fn is_module(&self) -> bool {
+        match self.kind {
+            ScopeKind::Module => true,
+            _ => false,
         }
-        result
     }
 
     pub fn is_const(&self) -> bool {
@@ -283,21 +227,17 @@ impl<'a> Scope<'a> {
         }
     }
 
-    pub fn is_function(&self) -> bool {
+    pub fn is_typedef(&self) -> bool {
         match self.kind {
-            ScopeKind::Function => true,
+            ScopeKind::Typedef => true,
             _ => false,
         }
     }
 
-    pub fn get_enclosing_function(&self) -> Option<Rc<RefCell<Scope<'a>>>> {
-        if let Some(parent) = self.parent.upgrade() {
-            match parent.borrow().kind {
-                ScopeKind::Function => Some(Rc::clone(&parent)),
-                _ => parent.borrow().get_enclosing_function(),
-            }
-        } else {
-            None
+    pub fn is_function(&self) -> bool {
+        match self.kind {
+            ScopeKind::Function => true,
+            _ => false,
         }
     }
 
@@ -308,36 +248,50 @@ impl<'a> Scope<'a> {
         }
     }
 
-    pub fn get_enclosing_block(&self) -> Option<Rc<RefCell<Scope<'a>>>> {
-        if let Some(parent) = self.parent.upgrade() {
-            match parent.borrow().kind {
-                ScopeKind::Block => Some(Rc::clone(&parent)),
-                _ => None,
-            }
-        } else {
-            None
+    pub fn get_type(&self) -> &context::Type {
+        match self.kind {
+            ScopeKind::Module => &context::Type::Module,
+            ScopeKind::Compound => &context::Type::Typedef,
+            ScopeKind::Function => {
+                let Payload::Function(ref info) = self.payload else {
+                    unreachable!("probably some analyzer bug");
+                };
+                &info.taipe
+            },
+            ScopeKind::Param => {
+                let Payload::Param(ref info) = self.payload else {
+                    unreachable!("probably some analyzer bug");
+                };
+                &info.taipe
+            },
+            ScopeKind::Variable => {
+                match self.payload {
+                    Payload::Global(ref info) => &info.ctx.taipe,
+                    Payload::Local(ref info) => &info.taipe,
+                    _ => unreachable!("probably some analyzer bug"),
+                }
+            },
+            ScopeKind::Const => {
+                match self.payload {
+                    Payload::Global(ref info) => &info.ctx.taipe,
+                    Payload::Local(ref info) => &info.taipe,
+                    _ => unreachable!("probably some analyzer bug"),
+                }
+            },
+            ScopeKind::Typedef => panic!("type has no type"),
+            ScopeKind::Block => {
+                let Payload::Block(ref info) = self.payload else {
+                    unreachable!("probably some analyzer bug");
+                };
+                &info.ctx.taipe
+            },
+            ScopeKind::None => unreachable!("probably some analyzer bug"),
         }
     }
 }
 
-pub trait HasSrcInfo: HasLineInfo {
-    fn get_src_path(&self) -> String;
-}
-
-impl<'a> HasLineInfo for Scope<'a> {
+impl HasLineInfo for Scope {
     fn get_line_info(&self) -> LineInfo {
         self.line_info
-    }
-}
-
-impl<'a> HasSrcInfo for Scope<'a> {
-    fn get_src_path(&self) -> String {
-        if let Some(path) = &self.file_path {
-            path.clone()
-        } else if let Some(parent) = self.parent.upgrade() {
-            parent.borrow().get_src_path()
-        } else {
-            panic!("all scopes must designated to some source file");
-        }
     }
 }
