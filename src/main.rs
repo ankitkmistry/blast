@@ -107,6 +107,8 @@ fn main() -> ExitCode {
         .init()
         .unwrap();
 
+    unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
+
     if let Err(err) = compile_file("examples/program.bl") {
         printer::print_error(err);
         println!();

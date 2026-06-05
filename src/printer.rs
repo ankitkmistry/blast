@@ -271,15 +271,20 @@ fn print_scope(pool: &ScopePool, name: &str, scope_id: &ScopeId, is_last_vec: &m
     }
     print!("{}: ", name);
     match pool.get_scope(scope_id).kind {
-        scope::ScopeKind::Module => print!("module"),
-        scope::ScopeKind::Compound => print!("compound"),
-        scope::ScopeKind::Function => print!("function"),
-        scope::ScopeKind::Param => print!("param"),
-        scope::ScopeKind::Variable => print!("variable"),
-        scope::ScopeKind::Const => print!("const"),
-        scope::ScopeKind::Typedef => print!("typedef"),
-        scope::ScopeKind::Block => print!("block"),
-        scope::ScopeKind::None => print!("none"),
+        scope::ScopeKind::Module => print!("(module)"),
+        scope::ScopeKind::Compound => print!("(compound)"),
+        scope::ScopeKind::Function => print!("(function) {}", pool.get_scope(scope_id).get_type()),
+        scope::ScopeKind::Param => print!("(param) {}", pool.get_scope(scope_id).get_type()),
+        scope::ScopeKind::Variable => print!("(variable) {}", pool.get_scope(scope_id).get_type()),
+        scope::ScopeKind::Const => print!("(const) {}", pool.get_scope(scope_id).get_type()),
+        scope::ScopeKind::Typedef => {
+            let scope::Payload::Typedef(ref taipe) = pool.get_scope(scope_id).payload else {
+                unreachable!("probably some analyzer bug");
+            };
+            print!("(typedef) = {}", taipe);
+        },
+        scope::ScopeKind::Block => print!("(block)"),
+        scope::ScopeKind::None => print!("(none)"),
     }
     // TODO: show more
     //     scope::State::Visited(ctx) => {

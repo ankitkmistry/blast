@@ -55,6 +55,12 @@ pub struct ScopeId {
     pub sym_path: SymbolPath,
 }
 
+impl fmt::Display for ScopeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.sym_path)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScopeKind {
     Module,
@@ -98,6 +104,25 @@ pub enum FieldInfo {
         name: String,
         taipe: context::Type,
     },
+}
+
+impl FieldInfo {
+    pub fn get_line_info_of(&self, field_name: &str) -> Option<LineInfo> {
+        match self {
+            FieldInfo::Struct(field_infos) | FieldInfo::Union(field_infos) => {
+                for field_info in field_infos {
+                    if let Some(line_info) = field_info.get_line_info_of(field_name) {
+                        return Some(line_info);
+                    }
+                }
+                None
+            },
+            FieldInfo::Field { file_path: _, line_info, name, taipe: _ } => {
+                if field_name == name { Some(*line_info) }
+                else { None }
+            },
+        }
+    }
 }
 
 #[derive(Clone)]
