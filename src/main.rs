@@ -1,23 +1,32 @@
 use std::{fs, path::Path, process::ExitCode};
 
 use crate::{
-    analyzer::Analyzer,
-    common::{CompileResult, Settings},
-    lexer::Lexer,
-    parser::Parser,
+    analyzer::Analyzer, common::{CompileResult, Settings}, lexer::Lexer, parser::Parser
 };
 use clap::{self, ArgAction, command};
 
-pub(crate) mod analyzer;
-pub(crate) mod ast;
-pub(crate) mod cfg;
+/// Common utilities for everyone
 pub(crate) mod common;
-pub(crate) mod context;
+
+/// Lexical analysis for the language
 pub(crate) mod lexer;
+
+/// Recursive descent parser for the language
 pub(crate) mod parser;
-pub(crate) mod printer;
+/// AST definitions
+pub(crate) mod ast;
+
+/// Semantic analyzer for the language
+pub(crate) mod analyzer;
+/// Scope tree for all possible code constructs
 pub(crate) mod scope;
-pub(crate) mod codegen;
+/// Context for storing code in a tree based IR
+pub(crate) mod context;
+/// Defintions for the control flow graph
+pub(crate) mod cfg;
+
+// pub(crate) mod codegen;
+pub(crate) mod printer;
 
 fn compile_file(file_path: &str) -> CompileResult<()> {
     let matches = command!()
@@ -76,13 +85,14 @@ fn compile_file(file_path: &str) -> CompileResult<()> {
     );
     let sem_result = analyzer.analyze()?;
     if !sem_result.warnings.is_empty() {
-        printer::print_error(common::CompileError::Errors(sem_result.warnings));
+        printer::print_error(sem_result.warnings);
     }
+    let scope_pool = sem_result.scope_pool;
     let roots = sem_result.roots;
-    printer::print_scopes(&roots);
+    printer::print_scopes(&scope_pool, &roots);
     if matches.get_flag("show_ctx") {
         println!();
-        printer::print_ir_of_all_scopes(&roots);
+        printer::print_ir_of_all_scopes(&scope_pool, &roots);
     }
     // codegen::generate_code("main", roots);
 
@@ -96,6 +106,8 @@ fn main() -> ExitCode {
         .verbosity(4)
         .init()
         .unwrap();
+
+    unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
 
     if let Err(err) = compile_file("examples/program.bl") {
         printer::print_error(err);

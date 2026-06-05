@@ -1,20 +1,14 @@
 use std::{
-    cell::{Ref, RefCell},
-    collections::HashMap,
     fmt::{self, Write},
     fs,
     io::{self, IsTerminal},
-    rc::Rc,
 };
 
 use color_print::{cprint, cprintln, cwrite};
+use indexmap::IndexMap;
 
 use crate::{
-    ast,
-    common::{CompileError, HasLineInfo, LineInfo},
-    context::{self, Context},
-    lexer::Token,
-    scope,
+    analyzer::ScopePool, ast, common::{CompileError, HasLineInfo, LineInfo}, context::{self, Context}, lexer::Token, scope::{self, ScopeId}
 };
 
 enum DiagKind {
@@ -255,13 +249,13 @@ impl fmt::Display for Token {
     }
 }
 
-pub fn print_scopes<'a>(scopes: &HashMap<String, Rc<RefCell<scope::Scope<'a>>>>) {
-    for (name, scope) in scopes {
-        print_scope(name, scope.borrow(), &mut Vec::new());
+pub fn print_scopes(pool: &ScopePool, scopes: &IndexMap<String, ScopeId>) {
+    for (name, scope_id) in scopes {
+        print_scope(pool, name, scope_id, &mut Vec::new());
     }
 }
 
-fn print_scope<'a>(name: &str, scope: Ref<'_, scope::Scope<'a>>, is_last_vec: &mut Vec<bool>) {
+fn print_scope(pool: &ScopePool, name: &str, scope_id: &ScopeId, is_last_vec: &mut Vec<bool>) {
     for (i, &is_last) in is_last_vec.iter().enumerate() {
         if i == is_last_vec.len() - 1 {
             if is_last {
@@ -276,24 +270,38 @@ fn print_scope<'a>(name: &str, scope: Ref<'_, scope::Scope<'a>>, is_last_vec: &m
         }
     }
     print!("{}: ", name);
-    match &scope.state {
-        scope::State::NotVisited(_) => print!("not evaluated"),
-        scope::State::VisitInProg => print!("evaluation in progress"),
-        scope::State::Visited(ctx) => {
-            print!("{}", ctx);
-            if let context::Value::Imm(value) = &ctx.value {
-                let repr = value.to_string();
-                if !repr.is_empty() {
-                    print!(" = {}", repr);
-                }
-            }
-        }
+    match pool.get_scope(scope_id).kind {
+        scope::ScopeKind::Module => print!("(module)"),
+        scope::ScopeKind::Compound => print!("(compound)"),
+        scope::ScopeKind::Function => print!("(function) {}", pool.get_scope(scope_id).get_type()),
+        scope::ScopeKind::Param => print!("(param) {}", pool.get_scope(scope_id).get_type()),
+        scope::ScopeKind::Variable => print!("(variable) {}", pool.get_scope(scope_id).get_type()),
+        scope::ScopeKind::Const => print!("(const) {}", pool.get_scope(scope_id).get_type()),
+        scope::ScopeKind::Typedef => {
+            let scope::Payload::Typedef(ref taipe) = pool.get_scope(scope_id).payload else {
+                unreachable!("probably some analyzer bug");
+            };
+            print!("(typedef) = {}", taipe);
+        },
+        scope::ScopeKind::Block => print!("(block)"),
+        scope::ScopeKind::None => print!("(none)"),
     }
+    // TODO: show more
+    //     scope::State::Visited(ctx) => {
+    //         print!("{}", ctx);
+    //         if let context::Value::Imm(value) = &ctx.value {
+    //             let repr = value.to_string();
+    //             if !repr.is_empty() {
+    //                 print!(" = {}", repr);
+    //             }
+    //         }
+    //     }
     println!();
 
-    for (i, (name, child)) in scope.children.iter().enumerate() {
-        is_last_vec.push(i + 1 >= scope.children.len());
-        print_scope(name, child.borrow(), is_last_vec);
+    let children = &pool.get_scope(scope_id).children;
+    for (i, (name, child)) in children.iter().enumerate() {
+        is_last_vec.push(i + 1 >= children.len());
+        print_scope(pool, name, child, is_last_vec);
         is_last_vec.pop();
     }
 }
@@ -348,32 +356,35 @@ impl Write for IrPrinter {
     }
 }
 
-pub fn print_ir_of_all_scopes<'a>(scopes: &HashMap<String, Rc<RefCell<scope::Scope<'a>>>>) {
-    for (_, scope) in scopes {
-        print_ir_of_scope(scope.borrow());
+pub fn print_ir_of_all_scopes(pool: &ScopePool, scopes: &IndexMap<String, ScopeId>) {
+    for (_, scope_id) in scopes {
+        print_ir_of_scope(pool, scope_id);
     }
 }
 
-fn print_ir_of_scope<'a>(scope: Ref<'_, scope::Scope<'a>>) {
-    match &scope.state {
-        scope::State::NotVisited(_) => {
-            println!("{}: not evaluated", scope.sym_path)
-        }
-        scope::State::VisitInProg => {
-            println!("{}: evaluation in progress", scope.sym_path)
-        }
-        scope::State::Visited(ctx) => {
-            if let context::Value::Reference(_) = ctx.value {
-                // } else if let context::Value::Block(_) = ctx.value {
-            } else {
-                print_ir(&scope.sym_path.to_string(), ctx);
-                // println!();
-            }
+fn print_ir_of_scope(pool: &ScopePool, scope_id: &ScopeId) {
+    let scope = pool.get_scope(scope_id);
+    let name = scope.id.sym_path.to_string();
+    let ctx: Option<&Context> = match &scope.payload {
+        // TODO: show struct layout
+        // scope::Payload::Compound(compound_info) => todo!(),
+        scope::Payload::Function(function_info) => function_info.ctx.as_ref(),
+        scope::Payload::Global(global_info) => Some(&global_info.ctx),
+        scope::Payload::Block(block_info) => Some(&block_info.ctx),
+        // TODO: Show param default values
+        // scope::Payload::Param(param_info) => {},
+        _ => None,
+    };
+
+    if let Some(ctx) = ctx {
+        if let context::Value::Reference(_) = ctx.value {
+        } else {
+            print_ir(&name, ctx);
         }
     }
-
-    for (_, child) in scope.children.iter() {
-        print_ir_of_scope(child.borrow());
+    
+    for child in scope.children.values() {
+        print_ir_of_scope(pool, child);
     }
 }
 
@@ -383,12 +394,12 @@ pub fn print_ir(name: &str, ctx: &Context) {
     print_tree_node(&node, &mut Vec::new());
 }
 
-impl<'a> IrPrinter {
+impl IrPrinter {
     fn new() -> Self {
         Self { node_stack: Vec::new() }
     }
 
-    pub fn print_context(&mut self, name: &str, ctx: &Context<'a>) -> Result<Option<TreeNode>, fmt::Error> {
+    pub fn print_context(&mut self, name: &str, ctx: &Context) -> Result<Option<TreeNode>, fmt::Error> {
         // Start a level
         let node = TreeNode {
             value: String::new(),
@@ -423,7 +434,7 @@ impl<'a> IrPrinter {
         }
     }
 
-    pub fn print_value(&mut self, name: &str, value: &context::Value<'a>) -> Result<Option<TreeNode>, fmt::Error> {
+    pub fn print_value(&mut self, name: &str, value: &context::Value) -> Result<Option<TreeNode>, fmt::Error> {
         // Start a level
         let node = TreeNode {
             value: String::new(),
@@ -445,7 +456,7 @@ impl<'a> IrPrinter {
         }
     }
 
-    fn visit_value(&mut self, value: &context::Value<'a>) -> fmt::Result {
+    fn visit_value(&mut self, value: &context::Value) -> fmt::Result {
         match value {
             context::Value::Imm(imm) => {
                 write!(self, "Imm = {}", imm)?;
@@ -462,8 +473,11 @@ impl<'a> IrPrinter {
                     self.print_value(&format!("[{}]", i), value)?;
                 }
             }
-            context::Value::Reference(scope) => {
-                write!(self, "Reference = {}", scope.borrow().sym_path)?;
+            context::Value::Reference(scope_id) => {
+                write!(self, "Reference = {}", scope_id.sym_path)?;
+            }
+            context::Value::UserReference { line_info: _, scope_id } => {
+                write!(self, "UserReference = {}", scope_id.sym_path)?;
             }
             context::Value::Negate { line_info: _, ctx } => {
                 write!(self, "Negate")?;
@@ -586,10 +600,10 @@ impl<'a> IrPrinter {
             }
             context::Value::Call {
                 line_info: _,
-                fun_scope,
+                fun_scope_id,
                 args,
             } => {
-                write!(self, "Call = {}", fun_scope.borrow().sym_path)?;
+                write!(self, "Call = {}", fun_scope_id.sym_path)?;
                 for (arg_name, arg_ctx) in args {
                     self.print_context(arg_name, arg_ctx)?;
                 }
@@ -637,6 +651,9 @@ impl<'a> IrPrinter {
                 for (i, ctx) in ctxs.iter().enumerate() {
                     self.print_context(&format!("[{}]", i), ctx)?;
                 }
+            }
+            context::Value::VarDecl(scope_id) => {
+                write!(self, "VarDecl = {}", scope_id.sym_path)?;
             }
             context::Value::Ret(ctx) => {
                 write!(self, "Ret")?;

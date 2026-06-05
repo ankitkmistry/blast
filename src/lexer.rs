@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::LazyLock};
 
 use num_bigint::BigInt;
 
-use crate::common::{CompileError, CompileResult, HasLineInfo, LineInfo};
+use crate::{common::{CompileError, CompileResult, HasLineInfo, LineInfo}, errors};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
@@ -470,9 +470,10 @@ impl Lexer {
                 }
                 self.advance();
             } else {
-                return Err(self
-                    .make_error(format!("expected end of multiline comment, comment depth: '{}'", depth))
-                    .chain(self.make_note_at_start("comment starts here")));
+                return Err(errors![
+                    self.make_error(format!("expected end of multiline comment, comment depth: '{}'", depth)),
+                    self.make_note_at_start("comment starts here"),
+                ]);
             }
         }
         Ok(())

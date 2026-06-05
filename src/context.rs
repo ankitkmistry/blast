@@ -1,34 +1,27 @@
-use std::{cell::RefCell, cmp::Ordering, fmt, rc::Rc};
+use std::{cmp::Ordering, fmt};
 
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 
-use crate::{
-    common::LineInfo,
-    scope,
-};
+use crate::{common::LineInfo, scope::ScopeId};
 
-#[derive(Clone)]
-pub struct Param<'a> {
-    pub taipe: Type<'a>,
+// ------------------------------------------------------------
+// Context structures (Storing a tree based IR)
+// ------------------------------------------------------------
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Param {
+    pub taipe: Type,
 }
 
-impl<'a> PartialEq for Param<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        self.taipe == other.taipe
-    }
-}
-
-impl<'a> Eq for Param<'a> {}
-
-impl<'a> ToString for Param<'a> {
-    fn to_string(&self) -> String {
-        self.taipe.to_string()
+impl fmt::Display for Param {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.taipe)
     }
 }
 
 #[derive(Clone)]
-pub enum Type<'a> {
+pub enum Type {
     /// Value can be:
     /// - Value::Bool => boolean value
     Bool,
@@ -48,7 +41,6 @@ pub enum Type<'a> {
     Uint32,
     Uint64,
     Uint128,
-    // Int,
     /// Value can be:
     /// - Value::Float32 => float32 value
     Float32,
@@ -57,31 +49,31 @@ pub enum Type<'a> {
     Float64,
     /// Value can be:
     /// - depending on Type::Const.0
-    Const(Box<Type<'a>>),
+    Const(Box<Type>),
     /// Value can be:
     /// - TODO: object
-    Basic(Rc<RefCell<scope::Scope<'a>>>),
+    Basic(ScopeId),
     /// Value can be:
     /// - Value::Function => Function value
     Function {
-        ret: Box<Type<'a>>,
-        params: Vec<Param<'a>>,
+        ret: Box<Type>,
+        params: Vec<Param>,
     },
     /// Value can be:
     /// - TODO: pointer
-    Pointer(Box<Type<'a>>),
+    Pointer(Box<Type>),
     /// Value can be:
     /// - Value::Array => array value
     Array {
         count: usize,
-        taipe: Box<Type<'a>>,
+        taipe: Box<Type>,
     },
     /// Value can be:
     /// - Value::Array => array value
-    Fat(Box<Type<'a>>),
+    Fat(Box<Type>),
     /// Value can be:
     /// - Value::Tuple => tuple value
-    Tuple(Vec<Type<'a>>),
+    Tuple(Vec<Type>),
     /// Value can be:
     /// - Value::Module => module reference
     Module,
@@ -97,7 +89,7 @@ pub enum Type<'a> {
     Noreturn,
 }
 
-impl<'a> Type<'a> {
+impl Type {
     pub fn add_const(self) -> Self {
         if self.is_const() {
             self
@@ -129,16 +121,16 @@ impl<'a> Type<'a> {
     pub fn is_integer(&self) -> bool {
         match self {
             Type::VarInt
-            | Type::Int8
-            | Type::Int16
-            | Type::Int32
-            | Type::Int64
-            | Type::Int128
-            | Type::Uint8
-            | Type::Uint16
-            | Type::Uint32
-            | Type::Uint64
-            | Type::Uint128 => true,
+                | Type::Int8
+                | Type::Int16
+                | Type::Int32
+                | Type::Int64
+                | Type::Int128
+                | Type::Uint8
+                | Type::Uint16
+                | Type::Uint32
+                | Type::Uint64
+                | Type::Uint128 => true,
             Type::Const(taipe) => taipe.is_integer(),
             _ => false,
         }
@@ -221,11 +213,11 @@ impl<'a> Type<'a> {
     }
 }
 
-impl<'a> PartialEq for Type<'a> {
+impl PartialEq for Type {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Const(l0), Self::Const(r0)) => l0 == r0,
-            (Self::Basic(l0), Self::Basic(r0)) => Rc::ptr_eq(l0, r0),
+            (Self::Basic(l0), Self::Basic(r0)) => l0 == r0,
             (
                 Self::Function {
                     ret: l_ret,
@@ -254,9 +246,9 @@ impl<'a> PartialEq for Type<'a> {
     }
 }
 
-impl<'a> Eq for Type<'a> {}
+impl Eq for Type {}
 
-impl<'a> fmt::Display for Type<'a> {
+impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::Bool => write!(f, "__bool"),
@@ -275,7 +267,7 @@ impl<'a> fmt::Display for Type<'a> {
             Type::Float32 => write!(f, "__f32"),
             Type::Float64 => write!(f, "__f64"),
             Type::Const(taipe) => write!(f, "const {}", taipe),
-            Type::Basic(scope) => write!(f, "{}", scope.borrow().sym_path),
+            Type::Basic(scope_id) => write!(f, "{}", scope_id.sym_path),
             Type::Function { ret, params } => write!(
                 f,
                 "fun ({}) -> {}",
@@ -303,7 +295,7 @@ impl<'a> fmt::Display for Type<'a> {
 }
 
 #[derive(Clone)]
-pub enum Imm<'a> {
+pub enum Imm {
     Bool(bool),
     Char(char),
     VarInt(BigInt),
@@ -320,12 +312,12 @@ pub enum Imm<'a> {
     Float32(f32),
     Float64(f64),
     // Typedef values
-    Type(Type<'a>),
+    Type(Type),
     // Represents nothing
     Nil,
 }
 
-impl<'a> Imm<'a> {
+impl Imm {
     pub fn to_usize(&self) -> Option<usize> {
         match self {
             Imm::Int8(val) => usize::try_from(*val).ok(),
@@ -368,7 +360,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on value"),
         }
     }
-    pub fn add(self, other: Imm<'a>) -> Option<Self> {
+    pub fn add(self, other: Imm) -> Option<Self> {
         match (self, other) {
             (Imm::Int8(a), Imm::Int8(b)) => a.checked_add(b).map(|value| Imm::Int8(value)),
             (Imm::Int16(a), Imm::Int16(b)) => a.checked_add(b).map(|value| Imm::Int16(value)),
@@ -385,7 +377,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on imm"),
         }
     }
-    pub fn sub(self, other: Imm<'a>) -> Option<Self> {
+    pub fn sub(self, other: Imm) -> Option<Self> {
         match (self, other) {
             (Imm::Int8(a), Imm::Int8(b)) => a.checked_sub(b).map(|value| Imm::Int8(value)),
             (Imm::Int16(a), Imm::Int16(b)) => a.checked_sub(b).map(|value| Imm::Int16(value)),
@@ -402,7 +394,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on imm"),
         }
     }
-    pub fn mul(self, other: Imm<'a>) -> Option<Self> {
+    pub fn mul(self, other: Imm) -> Option<Self> {
         match (self, other) {
             (Imm::Int8(a), Imm::Int8(b)) => a.checked_mul(b).map(|value| Imm::Int8(value)),
             (Imm::Int16(a), Imm::Int16(b)) => a.checked_mul(b).map(|value| Imm::Int16(value)),
@@ -419,7 +411,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on imm"),
         }
     }
-    pub fn div(self, other: Imm<'a>) -> Option<Self> {
+    pub fn div(self, other: Imm) -> Option<Self> {
         match (self, other) {
             (Imm::Int8(a), Imm::Int8(b)) => a.checked_div(b).map(|value| Imm::Int8(value)),
             (Imm::Int16(a), Imm::Int16(b)) => a.checked_div(b).map(|value| Imm::Int16(value)),
@@ -436,7 +428,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on imm"),
         }
     }
-    pub fn modulo(self, other: Imm<'a>) -> Option<Self> {
+    pub fn modulo(self, other: Imm) -> Option<Self> {
         match (self, other) {
             (Imm::Int8(a), Imm::Int8(b)) => a.checked_rem(b).map(|value| Imm::Int8(value)),
             (Imm::Int16(a), Imm::Int16(b)) => a.checked_rem(b).map(|value| Imm::Int16(value)),
@@ -451,7 +443,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on imm"),
         }
     }
-    pub fn shl(self, other: Imm<'a>) -> Self {
+    pub fn shl(self, other: Imm) -> Self {
         match (self, other) {
             (Imm::Int8(a), Imm::Uint32(b)) => Imm::Int8(a.wrapping_shl(b)),
             (Imm::Int16(a), Imm::Uint32(b)) => Imm::Int16(a.wrapping_shl(b)),
@@ -466,7 +458,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on imm"),
         }
     }
-    pub fn shr(self, other: Imm<'a>) -> Self {
+    pub fn shr(self, other: Imm) -> Self {
         match (self, other) {
             (Imm::Int8(a), Imm::Uint32(b)) => Imm::Int8(a.wrapping_shr(b)),
             (Imm::Int16(a), Imm::Uint32(b)) => Imm::Int16(a.wrapping_shr(b)),
@@ -481,7 +473,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on imm"),
         }
     }
-    pub fn bit_or(self, other: Imm<'a>) -> Self {
+    pub fn bit_or(self, other: Imm) -> Self {
         match (self, other) {
             (Imm::Int8(a), Imm::Int8(b)) => Imm::Int8(a | b),
             (Imm::Int16(a), Imm::Int16(b)) => Imm::Int16(a | b),
@@ -496,7 +488,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on imm"),
         }
     }
-    pub fn bit_xor(self, other: Imm<'a>) -> Self {
+    pub fn bit_xor(self, other: Imm) -> Self {
         match (self, other) {
             (Imm::Int8(a), Imm::Int8(b)) => Imm::Int8(a ^ b),
             (Imm::Int16(a), Imm::Int16(b)) => Imm::Int16(a ^ b),
@@ -511,7 +503,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on imm"),
         }
     }
-    pub fn bit_and(self, other: Imm<'a>) -> Self {
+    pub fn bit_and(self, other: Imm) -> Self {
         match (self, other) {
             (Imm::Int8(a), Imm::Int8(b)) => Imm::Int8(a & b),
             (Imm::Int16(a), Imm::Int16(b)) => Imm::Int16(a & b),
@@ -526,7 +518,7 @@ impl<'a> Imm<'a> {
             _ => panic!("invalid operation on imm"),
         }
     }
-    pub fn compare(&self, other: &Imm<'a>) -> Option<Ordering> {
+    pub fn compare(&self, other: &Imm) -> Option<Ordering> {
         match (self, other) {
             (Imm::Bool(a), Imm::Bool(b)) => a.partial_cmp(b),
             (Imm::Char(a), Imm::Char(b)) => a.partial_cmp(b),
@@ -547,7 +539,7 @@ impl<'a> Imm<'a> {
     }
 }
 
-impl<'a> fmt::Display for Imm<'a> {
+impl fmt::Display for Imm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Imm::Bool(val) => write!(f, "{}", val),
@@ -573,157 +565,166 @@ impl<'a> fmt::Display for Imm<'a> {
 
 // Cloning Value is strongly discouraged
 #[derive(Clone)]
-pub enum Value<'a> {
-    Imm(Imm<'a>),
-    Array(Vec<Value<'a>>),
-    Tuple(Vec<Value<'a>>),
+pub enum Value {
+    Imm(Imm),
+    Array(Vec<Value>),
+    Tuple(Vec<Value>),
+    Reference(ScopeId),
     /// Anything that can be referenced by an identifier
-    Reference(Rc<RefCell<scope::Scope<'a>>>),
+    UserReference {
+        line_info: LineInfo,
+        scope_id: ScopeId,
+    },
     // Unary Instructions
     Negate {
         line_info: LineInfo,
-        ctx: Box<Context<'a>>,
+        ctx: Box<Context>,
     },
     FlipBits {
         line_info: LineInfo,
-        ctx: Box<Context<'a>>,
+        ctx: Box<Context>,
     },
     Deref {
         line_info: LineInfo,
-        ctx: Box<Context<'a>>,
+        ctx: Box<Context>,
     },
     AddrOf {
         line_info: LineInfo,
-        ctx: Box<Context<'a>>,
+        ctx: Box<Context>,
     },
     Not {
         line_info: LineInfo,
-        ctx: Box<Context<'a>>,
+        ctx: Box<Context>,
     },
     // Binary Instructions
     Add {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Sub {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Mul {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Div {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Rem {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Shl {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Shr {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     BitAnd {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     BitXor {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     BitOr {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Lt {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Le {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Eq {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Ne {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Ge {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     Gt {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     LogicAnd {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     LogicOr {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        rhs: Box<Context<'a>>,
+        lhs: Box<Context>,
+        rhs: Box<Context>,
     },
     // Postfix op instructions
     Index {
         line_info: LineInfo,
-        lhs: Box<Context<'a>>,
-        index: Box<Context<'a>>,
+        lhs: Box<Context>,
+        index: Box<Context>,
     },
     Call {
         line_info: LineInfo,
-        fun_scope: Rc<RefCell<scope::Scope<'a>>>,
-        args: IndexMap<String, Context<'a>>,
+        fun_scope_id: ScopeId,
+        args: IndexMap<String, Context>,
     },
     // Statement instructions
-    Assign(Vec<Context<'a>>, Vec<Context<'a>>),
+    Assign(Vec<Context>, Vec<Context>),
     IfElse {
         line_info: LineInfo,
-        cond: Box<Context<'a>>,
-        then_ctx: Box<Context<'a>>,
-        else_ctx: Box<Context<'a>>,
+        cond: Box<Context>,
+        then_ctx: Box<Context>,
+        else_ctx: Box<Context>,
     },
     If {
         line_info: LineInfo,
-        cond: Box<Context<'a>>,
-        then_ctx: Box<Context<'a>>,
+        cond: Box<Context>,
+        then_ctx: Box<Context>,
     },
     While {
         line_info: LineInfo,
-        cond: Box<Context<'a>>,
-        body_ctx: Box<Context<'a>>,
+        cond: Box<Context>,
+        body_ctx: Box<Context>,
     },
-    Block(Vec<Context<'a>>),
-    Ret(Box<Context<'a>>),
+    Block(Vec<Context>),
+    /// This represents a variable declaration, so that the
+    /// compile time evaluator can track the variables that are changed.
+    /// This also records the initial value of the declaration.
+    /// This node is generated from Decls in Analyzer::visit_stmt().
+    VarDecl(ScopeId),
+    Ret(Box<Context>),
     RetVoid,
-    Eval(Box<Context<'a>>),
+    Eval(Box<Context>),
     // Cast instructions
     // * from: uX     to: iX
     // * from: iX     to: uX
@@ -732,10 +733,10 @@ pub enum Value<'a> {
     // * from: iX     to: fX
     // * from: uX     to: fX
     // * from: [N]T   to: []T
-    Cast(Box<Context<'a>>),
+    Cast(Box<Context>),
 }
 
-impl<'a> Value<'a> {
+impl Value {
     pub fn from_nil() -> Self {
         Self::Imm(Imm::Nil)
     }
@@ -752,35 +753,19 @@ impl<'a> Value<'a> {
 
 // Cloning Context is strongly discouraged
 #[derive(Clone)]
-pub struct Context<'a> {
+pub struct Context {
     pub is_lvalue: bool,
-    pub taipe: Type<'a>,
-    pub value: Value<'a>,
+    pub taipe: Type,
+    pub value: Value,
 }
 
-impl<'a> Context<'a> {
+impl Context {
     // Helper functions
     pub fn add_const(self) -> Self {
         Context {
             is_lvalue: self.is_lvalue,
             taipe: Type::Const(Box::new(self.taipe)),
             value: self.value,
-        }
-    }
-
-    // Construction functions
-    pub fn from_module(module_ref: &Rc<RefCell<scope::Scope<'a>>>) -> Self {
-        Self {
-            is_lvalue: true,
-            taipe: Type::Module,
-            value: Value::Reference(Rc::clone(module_ref)),
-        }
-    }
-    pub fn from_scope(taipe: &Type<'a>, scope_ref: &Rc<RefCell<scope::Scope<'a>>>) -> Self {
-        Self {
-            is_lvalue: true,
-            taipe: taipe.clone(),
-            value: Value::Reference(Rc::clone(scope_ref)),
         }
     }
     // Creating immediate values
@@ -893,7 +878,7 @@ impl<'a> Context<'a> {
             value: Value::Array(chars),
         }
     }
-    pub fn from_type(taipe: Type<'a>) -> Self {
+    pub fn from_type(taipe: Type) -> Self {
         Self {
             is_lvalue: false,
             taipe: Type::Typedef,
@@ -916,7 +901,7 @@ impl<'a> Context<'a> {
     }
 }
 
-impl<'a> fmt::Display for Context<'a> {
+impl fmt::Display for Context {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.taipe)
     }
