@@ -83,7 +83,7 @@ pub struct Analyzer<'a> {
     roots: IndexMap<String, ScopeId>,
     scope_eval_state_table: IndexMap<ScopeId, ScopeEvalState<'a>>,
     
-    current_scope_id: ScopeId,
+    current_scope_stack: Vec<ScopeId>,
 
     /// The type that is used for '__int'
     type_int: context::Type,
@@ -150,7 +150,7 @@ impl<'a> Analyzer<'a> {
             scope_pool,
             roots,
             scope_eval_state_table,
-            current_scope_id: id,
+            current_scope_stack: vec![id],
             type_int,
             type_uint,
             type_isize,
@@ -187,15 +187,14 @@ impl<'a> Analyzer<'a> {
                         ast::Object::Module { line_info: _, decls }
                     )
                 ) => {
-                    let old_cur_scope = self.current_scope_id.clone();
-                    self.current_scope_id = root_id.clone();
+                    self.push_current_scope(&root_id);
                     for decl in decls {
                         match self.declaration_first_stage(decl) {
                             Ok(()) => {},
                             Err(err) => saved_errs.push_err(err),
                         }
                     }
-                    self.current_scope_id = old_cur_scope;
+                    self.pop_current_scope();
                     self.set_scope_eval_state(&root_id, ScopeEvalState::Visited);
                 }
                 _ => unreachable!("not supposed to happen"),
@@ -213,10 +212,9 @@ impl<'a> Analyzer<'a> {
                 match self.get_scope_eval_state(&scope_id) {
                     ScopeEvalState::NotVisited(scope_node) => match scope_node {
                         ScopeNode::Decl(decl) => {
-                            let old_cur_scope = self.current_scope_id.clone();
-                            self.current_scope_id = self.get_scope(&scope_id).parent.clone().unwrap();
+                            self.push_current_scope(&self.get_scope(&scope_id).parent.clone().unwrap());
                             self.visit_decl(decl)?;
-                            self.current_scope_id = old_cur_scope;
+                            self.pop_current_scope();
                         },
                         ScopeNode::Object(_) => unreachable!("probably some analyzer bug"),
                     },
@@ -284,8 +282,7 @@ impl<'a> Analyzer<'a> {
                             ]);
                         }
                         // Begin new scope
-                        let old_cur_scope_id = self.current_scope_id.clone();
-                        self.current_scope_id = scope_id.clone();
+                        self.push_current_scope(&scope_id);
                         // Mark it evaluated if not already
                         if let ScopeEvalState::Visited = self.get_scope_eval_state(&scope_id) {
                         } else {
@@ -296,7 +293,7 @@ impl<'a> Analyzer<'a> {
                             self.declaration_first_stage(decl)?;
                         }
                         // Restore old scope
-                        self.current_scope_id = old_cur_scope_id;
+                        self.pop_current_scope();
                         Ok(())
                     },
                     _ => Ok(()),
@@ -444,8 +441,7 @@ impl<'a> Analyzer<'a> {
                         };
                         // --- FUNCTION CODE START
                         // Begin new scope
-                        let old_cur_scope_id = self.current_scope_id.clone();
-                        self.current_scope_id = scope_id.clone();
+                        self.push_current_scope(&scope_id);
                         // Parameter visitation
                         // INFO: Parameters are iterated twice. In the first iteration we visit
                         // the ast nodes and take the useful information (name and Context).
@@ -577,7 +573,7 @@ impl<'a> Analyzer<'a> {
                             info.ctx = Some(ctx);
                         }
                         // Restore old scope
-                        self.current_scope_id = old_cur_scope_id;
+                        self.pop_current_scope();
                         Ok(scope_id)
                         // --- FUNCTION CODE END
                     }
@@ -804,8 +800,7 @@ impl<'a> Analyzer<'a> {
         field: &'a ast::Field,
     ) -> CompileResult<ScopeId> {
         // Begin new scope
-        let old_cur_scope_id = self.current_scope_id.clone();
-        self.current_scope_id = scope_id.clone();
+        self.push_current_scope(&scope_id);
         // Mark it evaluated
         self.set_scope_eval_state(&scope_id, ScopeEvalState::Visited);
         // Visit every field
@@ -833,7 +828,7 @@ impl<'a> Analyzer<'a> {
             debug!("");
         }
         // Restore old scope
-        self.current_scope_id = old_cur_scope_id;
+        self.pop_current_scope();
         Ok(scope_id)
     }
     
@@ -985,7 +980,7 @@ impl<'a> Analyzer<'a> {
         };
 
         Ok(self.add_child_scope(
-            &self.current_scope_id.clone(),
+            &self.get_current_scope_id().clone(),
             ScopeKind::None,
             &sym_name,
             ScopeEvalState::NotVisited(ScopeNode::Decl(node)),
@@ -1046,7 +1041,7 @@ impl<'a> Analyzer<'a> {
         };
 
         Ok(self.add_child_scope(
-            &self.current_scope_id.clone(),
+            &self.get_current_scope_id().clone(),
             ScopeKind::None,
             &sym_name,
             ScopeEvalState::NotVisited(ScopeNode::Decl(node)),
@@ -1080,7 +1075,7 @@ impl<'a> Analyzer<'a> {
         };
 
         Ok(self.add_child_scope(
-            &self.current_scope_id.clone(),
+            &self.get_current_scope_id().clone(),
             ScopeKind::Param,
             &sym_name,
             state,
@@ -1775,7 +1770,7 @@ impl<'a> Analyzer<'a> {
         let cf_end = cfg.insert_vertex(ControlNode::End);
         // Create a block scope
         let scope_id = self.add_child_scope(
-            &self.current_scope_id.clone(),
+            &self.get_current_scope_id().clone(),
             ScopeKind::Block,
             &block_name,
             ScopeEvalState::VisitInProgress,
@@ -1795,8 +1790,7 @@ impl<'a> Analyzer<'a> {
     fn visit_block(&mut self, line_info: LineInfo, stmts: &'a [ast::Stmt]) -> CompileResult<Context> {
         let scope_id = self.create_block_scope(line_info);
         // Begin new scope
-        let old_cur_scope_id = self.current_scope_id.clone();
-        self.current_scope_id = scope_id.clone();
+        self.push_current_scope(&scope_id);
         // Predeclare function, struct and union declarations
         for stmt in stmts.iter() {
             match stmt {
@@ -1868,7 +1862,7 @@ impl<'a> Analyzer<'a> {
             self.warnings.push(self.make_warning("unreachable code", &&stmts[last_stmt_index..]));
         }
         // Restore old scope
-        self.current_scope_id = old_cur_scope_id;
+        self.pop_current_scope();
         // cfg: now traverse the cfg
         // Track all variables by checking their initialization and usage (by performing DFS on the CFG)
         if let Err(err) = self.traverse_cfg(&scope_id) {
@@ -5096,11 +5090,10 @@ impl<'a> Analyzer<'a> {
                 ScopeEvalState::NotVisited(scope_node) => match scope_node {
                     ScopeNode::Decl(decl) => {
                         // Begin new scope
-                        let old_cur_scope = self.current_scope_id.clone();
-                        self.current_scope_id = scope_id.clone();
+                        self.push_current_scope(scope_id);
                         // Visit the decl
                         let child_id = self.visit_decl(decl)?;
-                        self.current_scope_id = old_cur_scope;
+                        self.pop_current_scope();
                         child_id
                     },
                     ScopeNode::Object(_) => unreachable!("probably some analyzer bug"),
@@ -5163,7 +5156,7 @@ impl<'a> Analyzer<'a> {
         searched_names: &mut HashSet<String>,
     ) -> CompileResult<Option<Context>> {
         // Check in the current scope and go upwards
-        let mut scope_id = self.current_scope_id.clone();
+        let mut scope_id = self.get_current_scope_id().clone();
         let mut inner_fn: Option<ScopeId> = None;
         loop {
             match self.resolve_member(&scope_id, name, line_info, searched_names) {
@@ -5243,8 +5236,20 @@ impl<'a> Analyzer<'a> {
     // ------------------------------------------------------------
 
     /// Returns a reference to the current scope
+    fn push_current_scope(&mut self, scope_id: &ScopeId) {
+        self.current_scope_stack.push(scope_id.clone());
+    }
+
+    fn pop_current_scope(&mut self) {
+        self.current_scope_stack.pop();
+    }
+    
+    fn get_current_scope_id(&self) -> &ScopeId {
+        self.current_scope_stack.last().unwrap()
+    }
+    
     fn get_current_scope(&self) -> &Scope {
-        self.get_scope(&self.current_scope_id)
+        self.get_scope(&self.get_current_scope_id())
     }
 
     fn get_current_block(&self) -> Option<&Scope> {
@@ -5252,7 +5257,7 @@ impl<'a> Analyzer<'a> {
         if scope.is_block() {
             Some(scope)
         } else {
-            if let Some(scope_id) = self.get_enclosing_block(&self.current_scope_id) {
+            if let Some(scope_id) = self.get_enclosing_block(self.get_current_scope_id()) {
                 Some(self.get_scope(&scope_id))
             } else { None }
         }
@@ -5268,7 +5273,7 @@ impl<'a> Analyzer<'a> {
         if scope.is_function() {
             Some(scope)
         } else {
-            if let Some(scope_id) = self.get_enclosing_function(&self.current_scope_id) {
+            if let Some(scope_id) = self.get_enclosing_function(self.get_current_scope_id()) {
                 Some(self.get_scope(&scope_id))
             } else { None }
         }
@@ -5422,7 +5427,7 @@ impl<'a> Analyzer<'a> {
 
     /// Returns the source file path of the current scope
     fn get_current_src_path(&self) -> String {
-        self.get_src_path_of_scope(&self.current_scope_id)
+        self.get_src_path_of_scope(self.get_current_scope_id())
     }
     
     fn make_err(&self, msg: impl ToString, obj: &impl HasLineInfo) -> CompileError {
