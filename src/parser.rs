@@ -621,8 +621,13 @@ impl Parser {
         })
     }
 
+    // type_fun_param ::= (identifier ':')? type
+    fn parse_type_fun_param(&mut self) -> CompileResult<ast::Type> {
+        self.parse_type_tuple_item()
+    }
+
     // type ::= identifier ('.' identifier)*
-    //        | 'fun' '(' type_list ')' '->' type
+    //        | 'fun' '(' type_fun_param_list ')' '->' type
     //        | 'const' type                 # duplicate const is handled in the parser
     //        | '*' type
     //        | '[' ('_' | expr) ']' type
@@ -648,7 +653,7 @@ impl Parser {
                 Fun => {
                     let start = self.get_token()?;
                     self.expect(LParen)?;
-                    let params = self.parse_type_list();
+                    let params = self.parse_type_fun_param_list();
                     self.expect(RParen)?;
                     self.expect(Arrow)?;
                     let ret = self.parse_type()?;
@@ -692,9 +697,7 @@ impl Parser {
                             taipe: Box::new(taipe),
                         })
                     } else {
-                        let expr = if let Some(tok) = self.peek()
-                            && tok.kind == Underscore
-                        {
+                        let expr = if let Some(tok) = self.peek() && tok.kind == Underscore {
                             self.get_token()?;
                             None
                         } else {
@@ -711,8 +714,12 @@ impl Parser {
                     }
                 }
                 LParen => {
+                    if let Some(tok) = self.peek_at(1) && tok.kind == RParen {
+                        return self.parse_type_tuple();
+                    }
                     if let Some(tok) = self.peek_at(1)
-                        && tok.kind == RParen
+                        && tok.kind == Ident
+                        && let Some(tok) = self.peek_at(2) && tok.kind == Colon
                     {
                         return self.parse_type_tuple();
                     }
@@ -720,9 +727,7 @@ impl Parser {
 
                     let start = self.get_token()?;
                     let taipe = self.parse_type()?;
-                    if let Some(tok) = self.peek()
-                        && tok.kind == Comma
-                    {
+                    if let Some(tok) = self.peek() && tok.kind == Comma {
                         self.index = save;
                         return self.parse_type_tuple();
                     }
@@ -913,7 +918,7 @@ impl Parser {
         Ok(expr)
     }
 
-    // arg ::= (identifer ':')? expr;
+    // arg ::= (identifier ':')? expr;
     fn parse_arg(&mut self) -> CompileResult<ast::Arg> {
         let mut name: Option<Token> = None;
         if let Some(tok1) = self.peek_at(0)
@@ -1068,10 +1073,23 @@ impl Parser {
         }
     }
 
-    // type_tuple ::= '(' type_list ')';
+    // type_tuple_item ::= (identifier ':')? type
+    fn parse_type_tuple_item(&mut self) -> CompileResult<ast::Type> {
+        if let Some(tok1) = self.peek_at(0)
+            && tok1.kind == Ident
+            && let Some(tok2) = self.peek_at(1)
+            && tok2.kind == Colon
+        {
+            self.get_token()?; // eat the identifier
+            self.get_token()?; // eat the colon
+        }
+        self.parse_type()
+    }
+
+    // type_tuple ::= '(' type_tuple_list ')';
     fn parse_type_tuple(&mut self) -> CompileResult<ast::Type> {
         let start = self.expect(LParen)?;
-        let types = self.parse_type_list();
+        let types = self.parse_type_tuple_list();
         let end = self.expect(RParen)?;
         Ok(ast::Type::Tuple {
             line_info: LineInfo::from_range(&start, &end),
@@ -1092,7 +1110,9 @@ impl Parser {
 
     define_rule_list!(crate::ast::Field, parse_field_list, parse_field);
     define_rule_list!(crate::ast::Param, parse_param_list, parse_param);
-    define_rule_list!(crate::ast::Type, parse_type_list, parse_type);
+    // define_rule_list!(crate::ast::Type, parse_type_list, parse_type);
+    define_rule_list!(crate::ast::Type, parse_type_tuple_list, parse_type_tuple_item);
+    define_rule_list!(crate::ast::Type, parse_type_fun_param_list, parse_type_fun_param);
     define_rule_list!(crate::ast::Expr, parse_logical_list, parse_logical);
     define_rule_list!(crate::ast::Arg, parse_arg_list, parse_arg);
     define_rule_list!(crate::ast::Expr, parse_expr_list, parse_expr);

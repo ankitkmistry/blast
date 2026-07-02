@@ -91,7 +91,8 @@ std :: module {
 number :: 0;
 invert := ~number;
 
-tup :: (11, 22, 33);
+// TODO: fix this
+tup : (first: __i8, second: __i32, third: __int) : (11i8, 22 as __i32, 33);
 tup_mem :: tup.2;
 
 constants :: module {

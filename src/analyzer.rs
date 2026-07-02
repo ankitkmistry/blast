@@ -4828,6 +4828,27 @@ impl<'a> Analyzer<'a> {
                 // noreturn type can be coerced to any type
                 context::Value::from_nil()
             }
+            (context::Type::Tuple(lhs_types), context::Type::Tuple(rhs_types)) => {
+                if lhs_types.len() != rhs_types.len() {
+                    return_err!();
+                }
+                let context::Value::Tuple(rhs_values) = rhs.value else { unreachable!("probably some analyzer bug") };
+                assert!(rhs_types.len() == rhs_values.len());
+                let mut res_values = Vec::new();
+                for ((lhs_type, rhs_type), rhs_value) in lhs_types.iter().zip(rhs_types.iter()).zip(rhs_values.into_iter()) {
+                    let ctx = self.resolve_assign(
+                        Some((lhs_type.clone(), lhs_line_info)),
+                        None,
+                        Some((Context {
+                            is_lvalue: rhs.is_lvalue,
+                            taipe: rhs_type.clone(),
+                            value: rhs_value,
+                        }, rhs_line_info))
+                    )?;
+                    res_values.push(ctx.value);
+                }
+                context::Value::Tuple(res_values)
+            }
             (lhs, rhs_type) => {
                 if lhs != rhs_type {
                     return_err!();
