@@ -22,13 +22,13 @@ impl fmt::Display for Param {
 
 #[derive(Clone)]
 pub enum Type {
-    /// Value can be:
+    /// Imm can be:
     /// - Value::Bool => boolean value
     Bool,
-    /// Value can be:
+    /// Imm can be:
     /// - Value::Char => char value
     Char,
-    /// Value can be:
+    /// Imm can be:
     /// - Value::Int => integer value
     VarInt,
     Int8,
@@ -41,50 +41,50 @@ pub enum Type {
     Uint32,
     Uint64,
     Uint128,
-    /// Value can be:
+    /// Imm can be:
     /// - Value::Float32 => float32 value
     Float32,
-    /// Value can be:
+    /// Imm can be:
     /// - Value::Float64 => float64 value
     Float64,
-    /// Value can be:
+    /// Imm can be:
     /// - depending on Type::Const.0
     Const(Box<Type>),
-    /// Value can be:
+    /// Imm can be:
     /// - TODO: object
     Basic(ScopeId),
-    /// Value can be:
+    /// Imm can be:
     /// - Value::Function => Function value
     Function {
         ret: Box<Type>,
         params: Vec<Param>,
     },
-    /// Value can be:
+    /// Imm can be:
     /// - TODO: pointer
     Pointer(Box<Type>),
-    /// Value can be:
+    /// Imm can be:
     /// - Value::Array => array value
     Array {
         count: usize,
         taipe: Box<Type>,
     },
-    /// Value can be:
+    /// Imm can be:
     /// - Value::Array => array value
     Fat(Box<Type>),
-    /// Value can be:
+    /// Imm can be:
     /// - Value::Tuple => tuple value
     Tuple(Vec<Type>),
-    /// Value can be:
+    /// Imm can be:
     /// - Value::Module => module reference
     Module,
-    /// Value can be:
+    /// Imm can be:
     /// - None => type literal itself: 'typedef'
     /// - Value::Type => type reference
     Typedef,
-    /// Value can be:
+    /// Imm can be:
     /// - None
     Void,
-    /// Value can be:
+    /// Imm can be:
     /// - None
     Noreturn,
 }
@@ -278,9 +278,9 @@ impl fmt::Display for Type {
                     .join(", "),
                 ret.to_string()
             ),
-            Type::Pointer(taipe) => write!(f, "*{}", taipe.to_string()),
-            Type::Array { count, taipe } => write!(f, "[{}]{}", count, taipe.to_string()),
-            Type::Fat(taipe) => write!(f, "[]{}", taipe.to_string()),
+            Type::Pointer(taipe) => write!(f, "*{}", taipe),
+            Type::Array { count, taipe } => write!(f, "[{}]{}", count, taipe),
+            Type::Fat(taipe) => write!(f, "[]{}", taipe),
             Type::Tuple(items) => write!(
                 f,
                 "({})",
@@ -296,25 +296,44 @@ impl fmt::Display for Type {
 
 #[derive(Clone)]
 pub enum Imm {
+    /// Represents a boolean value
     Bool(bool),
+    /// Represents a char value
     Char(char),
+    /// Represents a compiler internal variable length integer
     VarInt(BigInt),
+    /// Represents a 8 bit signed integer
     Int8(i8),
+    /// Represents a 16 bit signed integer
     Int16(i16),
+    /// Represents a 32 bit signed integer
     Int32(i32),
+    /// Represents a 64 bit signed integer
     Int64(i64),
+    /// Represents a 128 bit signed integer
     Int128(i128),
+    /// Represents a 8 bit unsigned integer
     Uint8(u8),
+    /// Represents a 16 bit unsigned integer
     Uint16(u16),
+    /// Represents a 32 bit unsigned integer
     Uint32(u32),
+    /// Represents a 64 bit unsigned integer
     Uint64(u64),
+    /// Represents a 128 bit unsigned integer
     Uint128(u128),
+    /// Represents a 32 bit floating point
     Float32(f32),
+    /// Represents a 64 bit floating point
     Float64(f64),
-    // Typedef values
+    /// Represents a typedef
     Type(Type),
-    // Represents nothing
-    Nil,
+    /// Represents a module
+    Module(ScopeId),
+    /// Represents a null pointer
+    Null,
+    /// Represents nothing (used in void context)
+    Void,
 }
 
 impl Imm {
@@ -558,23 +577,62 @@ impl fmt::Display for Imm {
             Imm::Float32(val) => write!(f, "{}", val),
             Imm::Float64(val) => write!(f, "{}", val),
             Imm::Type(t) => write!(f, "{}", t),
-            Imm::Nil => write!(f, "nil"),
+            Imm::Module(scope_id) => write!(f, "module {}", scope_id),
+            Imm::Null => write!(f, "null"),
+            Imm::Void => write!(f, "void"),
         }
     }
 }
 
-// Cloning Value is strongly discouraged
 #[derive(Clone)]
 pub enum Value {
+    // Immediate or partially immediate ones 
+    /// Represents an immediate value
     Imm(Imm),
+    /// Array of values
     Array(Vec<Value>),
+    /// Tuple of values
     Tuple(Vec<Value>),
-    Reference(ScopeId),
-    /// Anything that can be referenced by an identifier
-    UserReference {
+
+    // Instructions
+    // Get things
+    /// type: type of global
+    GetGlobal {
         line_info: LineInfo,
         scope_id: ScopeId,
     },
+    /// type: type of local
+    GetLocal {
+        line_info: LineInfo,
+        scope_id: ScopeId,
+    },
+    /// type: type of field
+    GetField {
+        line_info: LineInfo,
+        lhs: Box<Context>,
+        scope_id: ScopeId,
+    },
+    // Set things
+    /// type: void 
+    SetGlobal {
+        line_info: LineInfo,
+        scope_id: ScopeId,
+        rhs: Box<Context>,
+    },
+    /// type: void 
+    SetLocal {
+        line_info: LineInfo,
+        scope_id: ScopeId,
+        rhs: Box<Context>,
+    },
+    /// type: void 
+    SetField {
+        line_info: LineInfo,
+        lhs: Box<Context>,
+        scope_id: ScopeId,
+        rhs: Box<Context>,
+    },
+    
     // Unary Instructions
     Negate {
         line_info: LineInfo,
@@ -596,6 +654,7 @@ pub enum Value {
         line_info: LineInfo,
         ctx: Box<Context>,
     },
+
     // Binary Instructions
     Add {
         line_info: LineInfo,
@@ -687,43 +746,45 @@ pub enum Value {
         lhs: Box<Context>,
         rhs: Box<Context>,
     },
+
     // Postfix op instructions
     Index {
         line_info: LineInfo,
         lhs: Box<Context>,
         index: Box<Context>,
     },
-    Call {
+    DirectCall {
         line_info: LineInfo,
         fun_scope_id: ScopeId,
         args: IndexMap<String, Context>,
     },
+    IndirectCall {
+        line_info: LineInfo,
+        lhs: Box<Context>,
+        args: IndexMap<String, Context>,
+    },
+
     // Statement instructions
-    Assign(Vec<Context>, Vec<Context>),
+    /// type: type of both branch
     IfElse {
         line_info: LineInfo,
         cond: Box<Context>,
         then_ctx: Box<Context>,
         else_ctx: Box<Context>,
     },
-    If {
-        line_info: LineInfo,
-        cond: Box<Context>,
-        then_ctx: Box<Context>,
-    },
+    /// type: void
     While {
         line_info: LineInfo,
         cond: Box<Context>,
         body_ctx: Box<Context>,
     },
+    /// type: type of last stmt
     Block(Vec<Context>),
-    /// This represents a variable declaration, so that the
-    /// compile time evaluator can track the variables that are changed.
-    /// This also records the initial value of the declaration.
-    /// This node is generated from Decls in Analyzer::visit_stmt().
-    VarDecl(ScopeId),
+    /// type: noreturn
     Ret(Box<Context>),
+    /// type: noreturn
     RetVoid,
+    /// type: void
     Eval(Box<Context>),
     // Cast instructions
     // * from: uX     to: iX
@@ -738,10 +799,13 @@ pub enum Value {
 
 impl Value {
     pub fn from_nil() -> Self {
-        Self::Imm(Imm::Nil)
+        Self::Imm(Imm::Null)
     }
     pub fn from_bool(b: bool) -> Self {
         Self::Imm(Imm::Bool(b))
+    }
+    pub fn from_module(scope_id: ScopeId) -> Self {
+        Self::Imm(Imm::Module(scope_id))
     }
     // pub fn is_imm(&self) -> bool {
     //     match self {
@@ -889,14 +953,14 @@ impl Context {
         Self {
             is_lvalue: false,
             taipe: Type::Void,
-            value: Value::Imm(Imm::Nil),
+            value: Value::Imm(Imm::Void),
         }
     }
     pub fn from_noreturn() -> Self {
         Self {
             is_lvalue: false,
             taipe: Type::Noreturn,
-            value: Value::Imm(Imm::Nil),
+            value: Value::Imm(Imm::Null),
         }
     }
 }

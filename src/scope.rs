@@ -197,8 +197,6 @@ impl FunctionInfo {
 }
 
 pub struct BlockInfo {
-    /// Context containing the code of the block
-    pub ctx: Context,
     /// Control flow graph of the block
     pub cfg: ControlGraph,
     /// The start node of the graph
@@ -304,12 +302,7 @@ impl Scope {
                 }
             },
             ScopeKind::Typedef => panic!("type has no type"),
-            ScopeKind::Block => {
-                let Payload::Block(ref info) = self.payload else {
-                    unreachable!("probably some analyzer bug");
-                };
-                &info.ctx.taipe
-            },
+            ScopeKind::Block => unreachable!("probably some analyzer bug"),
             ScopeKind::None => unreachable!("probably some analyzer bug"),
         }
     }

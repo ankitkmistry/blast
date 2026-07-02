@@ -370,17 +370,13 @@ fn print_ir_of_scope(pool: &ScopePool, scope_id: &ScopeId) {
         // scope::Payload::Compound(compound_info) => todo!(),
         scope::Payload::Function(function_info) => function_info.ctx.as_ref(),
         scope::Payload::Global(global_info) => Some(&global_info.ctx),
-        scope::Payload::Block(block_info) => Some(&block_info.ctx),
         // TODO: Show param default values
         // scope::Payload::Param(param_info) => {},
         _ => None,
     };
 
     if let Some(ctx) = ctx {
-        if let context::Value::Reference(_) = ctx.value {
-        } else {
-            print_ir(&name, ctx);
-        }
+        print_ir(&name, ctx);
     }
     
     for child in scope.children.values() {
@@ -473,12 +469,29 @@ impl IrPrinter {
                     self.print_value(&format!("[{}]", i), value)?;
                 }
             }
-            context::Value::Reference(scope_id) => {
-                write!(self, "Reference = {}", scope_id.sym_path)?;
-            }
-            context::Value::UserReference { line_info: _, scope_id } => {
-                write!(self, "UserReference = {}", scope_id.sym_path)?;
-            }
+            context::Value::GetGlobal { line_info: _, scope_id } => {
+                write!(self, "GetGlobal = {}", scope_id)?;
+            },
+            context::Value::GetLocal { line_info: _, scope_id } => {
+                write!(self, "GetLocal = {}", scope_id)?;
+            },
+            context::Value::GetField { line_info: _, lhs, scope_id } => {
+                write!(self, "GetField = {}", scope_id)?;
+                self.print_context("object", lhs)?;
+            },
+            context::Value::SetGlobal { line_info: _, scope_id, rhs } => {
+                write!(self, "SetGlobal = {}", scope_id)?;
+                self.print_context("value", rhs)?;
+            },
+            context::Value::SetLocal { line_info: _, scope_id, rhs } => {
+                write!(self, "SetLocal = {}", scope_id)?;
+                self.print_context("value", rhs)?;
+            },
+            context::Value::SetField { line_info: _, lhs, scope_id, rhs } => {
+                write!(self, "SetField = {}", scope_id)?;
+                self.print_context("object", lhs)?;
+                self.print_context("value", rhs)?;
+            },
             context::Value::Negate { line_info: _, ctx } => {
                 write!(self, "Negate")?;
                 self.print_context("value", ctx)?;
@@ -589,59 +602,30 @@ impl IrPrinter {
                 self.print_context("lhs", lhs)?;
                 self.print_context("rhs", rhs)?;
             }
-            context::Value::Index {
-                line_info: _,
-                lhs: container,
-                index,
-            } => {
+            context::Value::Index { line_info: _, lhs: container, index } => {
                 write!(self, "Index")?;
                 self.print_context("container", container)?;
                 self.print_context("index", index)?;
             }
-            context::Value::Call {
-                line_info: _,
-                fun_scope_id,
-                args,
-            } => {
+            context::Value::DirectCall { line_info: _, fun_scope_id, args } => {
                 write!(self, "Call = {}", fun_scope_id.sym_path)?;
                 for (arg_name, arg_ctx) in args {
                     self.print_context(arg_name, arg_ctx)?;
                 }
             }
-            context::Value::Assign(lhs_ctxes, rhs_ctxes) => {
-                write!(self, "Assign")?;
-                for (i, ctx) in lhs_ctxes.iter().enumerate() {
-                    self.print_context(&format!("lhs[{}]", i), ctx)?;
-                }
-                for (i, ctx) in rhs_ctxes.iter().enumerate() {
-                    self.print_context(&format!("rhs[{}]", i), ctx)?;
+            context::Value::IndirectCall { line_info: _, lhs, args } => {
+                self.print_context("callee", lhs)?;
+                for (arg_name, arg_ctx) in args {
+                    self.print_context(arg_name, arg_ctx)?;
                 }
             }
-            context::Value::IfElse {
-                line_info: _,
-                cond,
-                then_ctx,
-                else_ctx,
-            } => {
+            context::Value::IfElse { line_info: _, cond, then_ctx, else_ctx } => {
                 write!(self, "IfElse")?;
                 self.print_context("condition", cond)?;
                 self.print_context("then", then_ctx)?;
                 self.print_context("else", else_ctx)?;
             }
-            context::Value::If {
-                line_info: _,
-                cond,
-                then_ctx,
-            } => {
-                write!(self, "If")?;
-                self.print_context("condition", cond)?;
-                self.print_context("then", then_ctx)?;
-            }
-            context::Value::While {
-                line_info: _,
-                cond,
-                body_ctx,
-            } => {
+            context::Value::While { line_info: _, cond, body_ctx } => {
                 write!(self, "While")?;
                 self.print_context("condition", cond)?;
                 self.print_context("body", body_ctx)?;
@@ -651,9 +635,6 @@ impl IrPrinter {
                 for (i, ctx) in ctxs.iter().enumerate() {
                     self.print_context(&format!("[{}]", i), ctx)?;
                 }
-            }
-            context::Value::VarDecl(scope_id) => {
-                write!(self, "VarDecl = {}", scope_id.sym_path)?;
             }
             context::Value::Ret(ctx) => {
                 write!(self, "Ret")?;

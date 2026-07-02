@@ -124,18 +124,18 @@ f :: 1e-4654654651321354631;
 //     }
 // }
 
-// fib :: fun (n: __uint) -> __uint {
-//     a: __uint = 0;
-//     b: __uint = 1;
-//     while b <= n {
-//         // print("{}", a);
-//         temp: __uint;
-//         temp = a;
-//         a = b;
-//         b = temp + b;
-//     }
-//     return a;
-// }
+fib :: fun (n: __uint) -> __uint {
+    a: __uint = 0;
+    b: __uint = 1;
+    while b <= n {
+        // print("{}", a);
+        temp: __uint;
+        temp = a;
+        a = b;
+        b = temp + b;
+    }
+    return a;
+}
 
 // Advanced variable scoping
 // ai := 5;

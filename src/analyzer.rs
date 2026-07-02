@@ -513,7 +513,7 @@ impl<'a> Analyzer<'a> {
                         let rhs = Context {
                             is_lvalue: true,
                             taipe: taipe.clone(),
-                            value: context::Value::Reference(scope_id.clone()),
+                            value: context::Value::from_nil(),
                         };
                         // Resolve assignment
                         self.resolve_assign(lhs, eq_token.as_ref(), Some((rhs, *line_info)))?;
@@ -1369,17 +1369,8 @@ impl<'a> Analyzer<'a> {
             ast::Stmt::Break { token, label } => self.visit_break(token, label.as_ref()),
             ast::Stmt::Return { token, expr } => self.visit_return(token, expr.as_ref()),
             ast::Stmt::Decl(decl) => {
-                let scope_id = self.visit_decl(decl)?;
-                let scope = self.get_scope(&scope_id);
-                if scope.is_variable() || scope.is_const() {
-                    Ok(Context {
-                        is_lvalue: false,
-                        taipe: context::Type::Void,
-                        value: context::Value::VarDecl(scope_id),
-                    })
-                } else {
-                    Ok(Context::from_void())
-                }
+                let _ = self.visit_decl(decl)?;
+                Ok(Context::from_void())
             }
             ast::Stmt::Expr(expr) => {
                 let ctx = self.visit_expr(expr)?;
@@ -1640,7 +1631,7 @@ impl<'a> Analyzer<'a> {
         // cfg: Get the cond flow
         let cf_cond = self.use_current_block_data(|data| data.cf_last);
 
-        let then_body_result = self.visit_stmt(then_body)?;
+        let then_body_ctx = self.visit_stmt(then_body)?;
 
         // cfg: Get the then branch flow
         let cf_then = self.use_current_block_data(|data| data.cf_last);
@@ -1651,7 +1642,7 @@ impl<'a> Analyzer<'a> {
                 data.cf_last = cf_cond;
             });
 
-            let else_body_result = self.visit_stmt(else_body)?;
+            let else_body_ctx = self.visit_stmt(else_body)?;
 
             // cfg: Get the else branch flow
             let cf_else = self.use_current_block_data(|data| data.cf_last);
@@ -1664,54 +1655,45 @@ impl<'a> Analyzer<'a> {
                 data.cf_last = cf_join;
             });
 
-            if then_body_result.taipe.is_noreturn() {
+            if then_body_ctx.taipe.is_noreturn() {
                 Ok(Context {
-                    is_lvalue: else_body_result.is_lvalue,
-                    taipe: else_body_result.taipe.clone(),
+                    is_lvalue: else_body_ctx.is_lvalue,
+                    taipe: else_body_ctx.taipe.clone(),
                     value: context::Value::IfElse {
                         line_info,
                         cond: Box::new(cond),
-                        then_ctx: Box::new(then_body_result),
-                        else_ctx: Box::new(else_body_result),
+                        then_ctx: Box::new(then_body_ctx),
+                        else_ctx: Box::new(else_body_ctx),
                     },
                 })
-            } else if else_body_result.taipe.is_noreturn() {
+            } else if else_body_ctx.taipe.is_noreturn() {
                 Ok(Context {
-                    is_lvalue: then_body_result.is_lvalue,
-                    taipe: then_body_result.taipe.clone(),
+                    is_lvalue: then_body_ctx.is_lvalue,
+                    taipe: then_body_ctx.taipe.clone(),
                     value: context::Value::IfElse {
                         line_info,
                         cond: Box::new(cond),
-                        then_ctx: Box::new(then_body_result),
-                        else_ctx: Box::new(else_body_result),
+                        then_ctx: Box::new(then_body_ctx),
+                        else_ctx: Box::new(else_body_ctx),
                     },
                 })
-            } else if then_body_result.taipe == else_body_result.taipe {
+            } else if then_body_ctx.taipe == else_body_ctx.taipe {
                 // TODO: allow mixing of compatible values
                 Ok(Context {
-                    is_lvalue: then_body_result.is_lvalue && else_body_result.is_lvalue,
-                    taipe: then_body_result.taipe.clone(),
+                    is_lvalue: then_body_ctx.is_lvalue && else_body_ctx.is_lvalue,
+                    taipe: then_body_ctx.taipe.clone(),
                     value: context::Value::IfElse {
                         line_info,
                         cond: Box::new(cond),
-                        then_ctx: Box::new(then_body_result),
-                        else_ctx: Box::new(else_body_result),
+                        then_ctx: Box::new(then_body_ctx),
+                        else_ctx: Box::new(else_body_ctx),
                     },
                 })
             } else {
-                let line_info = if let context::Value::Reference(ref scope_id) = else_body_result.value {
-                    self.get_scope(scope_id).get_line_info()
-                } else {
-                    else_body.get_line_info()
-                };
-                return Err(self.make_err(
-                    format!(
-                        "expected '{}' but got '{}'",
-                        then_body_result,
-                        else_body_result,
-                    ),
-                    &line_info,
-                ));
+                return Err(errors![
+                    self.make_err(format!("expected '{}' but got '{}'", then_body_ctx, else_body_ctx), &else_body.get_line_info()),
+                    self.make_note(format!("then body of if statement returns a different type"), &then_body.get_line_info())
+                ]);
             }
         } else {
             // cfg: Stitch them together
@@ -1722,35 +1704,19 @@ impl<'a> Analyzer<'a> {
                 data.cf_last = cf_join;
             });
 
-            if then_body_result.taipe.is_noreturn() {
-                Ok(Context {
-                    is_lvalue: false,
-                    taipe: context::Type::Noreturn,
-                    value: context::Value::If {
-                        line_info,
-                        cond: Box::new(cond),
-                        then_ctx: Box::new(then_body_result),
-                    },
-                })
-            } else if then_body_result.taipe.is_void() {
+            if then_body_ctx.taipe.is_void() || then_body_ctx.taipe.is_noreturn() {
                 Ok(Context {
                     is_lvalue: false,
                     taipe: context::Type::Void,
-                    value: context::Value::If {
+                    value: context::Value::IfElse {
                         line_info,
                         cond: Box::new(cond),
-                        then_ctx: Box::new(then_body_result),
+                        then_ctx: Box::new(then_body_ctx),
+                        else_ctx: Box::new(Context::from_void()),
                     },
                 })
             } else {
-                Err(self.make_err(
-                    format!(
-                        "expected '{}' but got '{}'",
-                        context::Type::Void,
-                        then_body_result
-                    ),
-                    then_body,
-                ))
+                Err(self.make_err(format!("expected '{}' but got '{}'", context::Type::Void, then_body_ctx), then_body))
             }
         }
     }
@@ -1775,7 +1741,6 @@ impl<'a> Analyzer<'a> {
             &block_name,
             ScopeEvalState::VisitInProgress,
             Payload::Block(BlockInfo {
-                ctx: Context::from_void(),
                 cfg,
                 cf_start,
                 cf_end,
@@ -1832,7 +1797,12 @@ impl<'a> Analyzer<'a> {
             let ctx = self.visit_stmt(stmt)?;
             is_lvalue = ctx.is_lvalue;
             block_ret_type = ctx.taipe.clone();
-            items.push(ctx);
+            // before pushing just change ctx
+            if let context::Value::Eval(ctx) = ctx.value {
+                items.push(*ctx);
+            } else {
+                items.push(ctx);
+            }
             last_stmt_index = i + 1;
             if block_ret_type.is_noreturn() {
                 break;
@@ -1841,6 +1811,9 @@ impl<'a> Analyzer<'a> {
                 continue;
             }
             break;
+        }
+        if block_ret_type.is_void() {
+            items.push(Context::from_void());
         }
         // For better error output change the line info of the block scope
         if !stmts.is_empty() {
@@ -1868,23 +1841,14 @@ impl<'a> Analyzer<'a> {
         if let Err(err) = self.traverse_cfg(&scope_id) {
             self.saved_errors.push_err(err);
         }
-        // Create the context
-        block_ret_type = block_ret_type.add_const();
-        let Payload::Block(ref mut info) = self.get_scope_mut(&scope_id).payload else {
-            unreachable!("not supposed to happen");
-        };
-        info.ctx = Context {
-            is_lvalue,
-            taipe: block_ret_type.clone(),
-            value: context::Value::Block(items),
-        };
-        let result = Context {
-            is_lvalue,
-            taipe: block_ret_type,
-            value: context::Value::Reference(scope_id.clone()),
-        };
+        // Mark the block scope visited
         self.set_scope_eval_state(&scope_id, ScopeEvalState::Visited);
-        Ok(result)
+        // Create the context
+        Ok(Context {
+            is_lvalue,
+            taipe: block_ret_type.add_const(),
+            value: context::Value::Block(items),
+        })
     }
 
     // Control flow analysis
@@ -2103,49 +2067,33 @@ impl<'a> Analyzer<'a> {
                     value: context::Value::Tuple(new_values),
                 })
             }
-            context::Value::Reference(scope_id) => {
+            
+            context::Value::GetGlobal { line_info, scope_id } => {
                 let scope = self.get_scope(scope_id);
-                match &scope.payload {
-                    Payload::Block(block_info) => {
-                        self.compeval_trivial_impl(block_info.ctx.is_lvalue, &block_info.ctx.taipe, &block_info.ctx.value, var_state)
-                    },
-                    _ => unreachable!("probably some analyzer bug"),
+                if !scope.is_const() {
+                    return Err(errors![
+                        self.make_err("accessing global variables is not allowed in trivial compeval context", line_info),
+                        self.make_note_no_path("only accessing global constants is allowed"),
+                    ]);
                 }
+                let Payload::Global(info) = &scope.payload else { unreachable!("probably some analyzer bug"); };
+                Ok(info.ctx.clone())
             },
-            context::Value::UserReference { line_info, scope_id } => {
-                let scope = self.get_scope(scope_id);
-                match &scope.payload {
-                    Payload::Compound(_) => Ok(Context {
-                        is_lvalue: true,
-                        taipe: context::Type::Typedef,
-                        value: context::Value::Imm(context::Imm::Type(context::Type::Basic(scope_id.clone()))),
-                    }),
-                    Payload::Function(function_info) => todo!(),
-                    Payload::Global(global_info) => {
-                        // The value of a global constant is always compevaled
-                        Ok(global_info.ctx.clone())
-                    },
-                    Payload::Local(_) => {
-                        if let Some(ctx) = var_state.get(&scope.id.sym_path).cloned() {
-                            Ok(ctx)
-                        } else {
-                            // Invalid cases
-                            return_err!(compeval_not_trivial: line_info)
-                        }
-                    },
-                    Payload::Typedef(taipe) => Ok(Context {
-                        is_lvalue: true,
-                        taipe: context::Type::Typedef,
-                        value: context::Value::Imm(context::Imm::Type(taipe.clone())),
-                    }),
-                    Payload::Block(block_info) => {
-                        self.compeval_trivial_impl(block_info.ctx.is_lvalue, &block_info.ctx.taipe, &block_info.ctx.value, var_state)
-                    },
-                    Payload::Param(param_info) => todo!(),
-                    Payload::LayoutResolutionInProgress => todo!(),
-                    Payload::None => todo!(),
-                }
-            }
+            context::Value::GetLocal { line_info, scope_id } => todo!(),
+            context::Value::GetField { line_info, lhs, scope_id } => todo!(),
+            context::Value::SetGlobal { line_info, scope_id: _, rhs: _ } => Err(errors![
+                self.make_err("could not evaluate expression trivially at compile time", line_info),
+                self.make_note_no_path("setting global variables may produce side effects")
+            ]),
+            context::Value::SetLocal { line_info, scope_id, rhs } => Err(errors![
+                self.make_err("could not evaluate expression trivially at compile time", line_info),
+                self.make_note_no_path("setting local variables may produce side effects")
+            ]),
+            context::Value::SetField { line_info, lhs, scope_id, rhs } => Err(errors![
+                self.make_err("could not evaluate expression trivially at compile time", line_info),
+                self.make_note_no_path("setting fields may produce side effects")
+            ]),
+
             context::Value::Negate { line_info, ctx } => {
                 let ctx = self.compeval_trivial_impl(ctx.is_lvalue, &ctx.taipe, &ctx.value, var_state)?;
                 assert!(ctx.taipe.is_signed_integer() || ctx.taipe.is_float());
@@ -2481,32 +2429,11 @@ impl<'a> Analyzer<'a> {
                     _ => return_err!(compeval_not_trivial: line_info),
                 }
             }
-            context::Value::Call {
-                line_info,
-                fun_scope_id: _,
-                args: _,
-            } => Err(errors![
+            context::Value::DirectCall { line_info, fun_scope_id: _, args: _ }
+            | context::Value::IndirectCall { line_info, lhs: _, args: _ } => Err(errors![
                 self.make_err("could not evaluate expression trivially at compile time", line_info),
                 self.make_note_no_path("function call may have side effects")
             ]),
-            context::Value::Assign(lhses, rhses) => {
-                assert!(lhses.len() == rhses.len());
-                for (lhs, rhs) in lhses.iter().zip(rhses.iter()) {
-                    let rhs = self.compeval_trivial_impl(rhs.is_lvalue, &rhs.taipe, &rhs.value, var_state)?;
-                    // let lhs = self.compeval_trivial_impl(lhs.is_lvalue, &lhs.taipe, &lhs.value, var_state)?;
-                    
-                    let context::Value::UserReference { line_info, ref scope_id } = lhs.value else {
-                        // TODO: extend support for assignment
-                        unreachable!("probably some analyzer bug");
-                    };
-                    let scope = self.get_scope(&scope_id);
-                    let assign_result = var_state.insert(scope.id.sym_path.clone(), rhs);
-                    if assign_result.is_none() {
-                        return_err!(compeval_not_trivial: &line_info)
-                    }
-                }
-                Ok(Context::from_void())
-            },
             context::Value::IfElse {
                 line_info,
                 cond,
@@ -2520,23 +2447,6 @@ impl<'a> Analyzer<'a> {
                         self.compeval_trivial_impl(then_ctx.is_lvalue, &then_ctx.taipe, &then_ctx.value, var_state)
                     } else {
                         self.compeval_trivial_impl(else_ctx.is_lvalue, &else_ctx.taipe, &else_ctx.value, var_state)
-                    }
-                } else {
-                    return_err!(compeval_not_trivial: line_info);
-                }
-            }
-            context::Value::If {
-                line_info,
-                cond,
-                then_ctx,
-            } => {
-                let cond = self.compeval_trivial_impl(cond.is_lvalue, &cond.taipe, &cond.value, var_state)?;
-                assert!(cond.taipe.is_bool());
-                if let context::Value::Imm(context::Imm::Bool(cond)) = cond.value {
-                    if cond {
-                        self.compeval_trivial_impl(then_ctx.is_lvalue, &then_ctx.taipe, &then_ctx.value, var_state)
-                    } else {
-                        Ok(Context::from_void())
                     }
                 } else {
                     return_err!(compeval_not_trivial: line_info);
@@ -2571,16 +2481,6 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 Ok(Context::from_void())
-            }
-            context::Value::VarDecl(scope_id) => {
-                let _scope = self.get_scope(scope_id);
-                match self.get_scope_eval_state(scope_id) {
-                    ScopeEvalState::NotVisited(_) => unreachable!("probably some analyzer bug"),
-                    ScopeEvalState::VisitInProgress => unreachable!("probably some analyzer bug"),
-                    ScopeEvalState::Visited => {
-                        todo!("variable declaration for compile time evaluation")
-                    },
-                }
             }
             context::Value::Ret(ctx) => {
                 let _ = self.compeval_trivial_impl(ctx.is_lvalue, &ctx.taipe, &ctx.value, var_state)?;
@@ -2706,7 +2606,7 @@ impl<'a> Analyzer<'a> {
     // ------------------------------------------------------------
     fn visit_expr(&mut self, node: &'a ast::Expr) -> CompileResult<Context> {
         let ctx = self.visit_expr_impl(node)?;
-        if let context::Value::UserReference { line_info: _, ref scope_id } = ctx.value {
+        if let context::Value::GetLocal { line_info: _, ref scope_id } = ctx.value {
             // cfg: insert variable used node
             //      only if it is a local variable or constant
             let should_insert_cfg = match self.get_scope(scope_id).kind {
@@ -2714,8 +2614,9 @@ impl<'a> Analyzer<'a> {
                 ScopeKind::Const => true,
                 _ => false,
             };
-            if should_insert_cfg && self.get_current_block().is_some() && self.get_enclosing_block(&scope_id).is_some()
-            {
+            if should_insert_cfg {
+                assert!(self.get_current_block().is_some());
+                assert!(self.get_enclosing_block(&scope_id).is_some());
                 self.mut_current_block_data(|data| {
                     let cf_node = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarUsed {
                         line_info: node.get_line_info(),
@@ -2730,7 +2631,7 @@ impl<'a> Analyzer<'a> {
     }
     fn visit_expr_lhs_of_assign(&mut self, node: &'a ast::Expr) -> CompileResult<Context> {
         let ctx = self.visit_expr_impl(node)?;
-        if let context::Value::UserReference { line_info: _, ref scope_id } = ctx.value {
+        if let context::Value::GetLocal { line_info: _, ref scope_id } = ctx.value {
             // cfg: insert variable assigned node
             //      only if it is a local variable or constant
             let should_insert_cfg = match self.get_scope(scope_id).kind {
@@ -2738,8 +2639,9 @@ impl<'a> Analyzer<'a> {
                 ScopeKind::Const => true,
                 _ => false,
             };
-            if should_insert_cfg && self.get_current_block().is_some() && self.get_enclosing_block(&scope_id).is_some()
-            {
+            if should_insert_cfg {
+                assert!(self.get_current_block().is_some());
+                assert!(self.get_enclosing_block(&scope_id).is_some());
                 self.mut_current_block_data(|data| {
                     let cf_node = data.cfg.insert_vertex(ControlNode::Info(ControlInfo::VarAssigned {
                         line_info: node.get_line_info(),
@@ -2772,12 +2674,13 @@ impl<'a> Analyzer<'a> {
                         ));
                     }
                 }
-                let mut lhs_ctxes = Vec::new();
-                let mut rhs_ctxes = Vec::new();
+                let mut assigns = Vec::new();
                 for i in 0..rhses.len() {
+                    // Visit rhs of assign
                     let rhs_node = &rhses[i];
                     let rhs_line_info = rhs_node.get_line_info();
-                    let rhs = self.visit_expr(rhs_node)?;
+                    let mut rhs = self.visit_expr(rhs_node)?;
+                    // Visit lhs of assign
                     let lhs_node = &lhses[i];
                     let lhs_line_info = lhs_node.get_line_info();
                     let lhs = self.visit_expr_lhs_of_assign(lhs_node)?;
@@ -2785,20 +2688,36 @@ impl<'a> Analyzer<'a> {
                     if !lhs.is_lvalue {
                         return Err(self.make_err("cannot assign to a prvalue (pure rvalue)", &lhs_line_info));
                     }
-                    lhs_ctxes.push(Context {
-                        is_lvalue: lhs.is_lvalue,
-                        taipe: lhs.taipe.clone(),
-                        value: lhs.value,
+                    // check assignment
+                    rhs = self.resolve_assign(Some((lhs.taipe, lhs_line_info)), None, Some((rhs, rhs_line_info)))?;
+                    // now transform get to set
+                    let line_info = node.get_line_info();
+                    assigns.push(Context {
+                        is_lvalue: false,
+                        taipe: context::Type::Void,
+                        value: match lhs.value {
+                            context::Value::GetGlobal { line_info: _, scope_id } => context::Value::SetGlobal {
+                                line_info, scope_id, rhs: Box::new(rhs),
+                            },
+                            context::Value::GetLocal { line_info: _, scope_id } => context::Value::SetLocal {
+                                line_info, scope_id, rhs: Box::new(rhs),
+                            },
+                            context::Value::GetField { line_info: _, lhs, scope_id } => context::Value::SetField {
+                                line_info, lhs, scope_id, rhs: Box::new(rhs),
+                            },
+                            _ => unreachable!("probably some analyzer bug"),
+                        }
                     });
-                    let rhs_ctx =
-                        self.resolve_assign(Some((lhs.taipe, lhs_line_info)), None, Some((rhs, rhs_line_info)))?;
-                    rhs_ctxes.push(rhs_ctx);
                 }
-                Ok(Context {
-                    is_lvalue: false,
-                    taipe: context::Type::Void,
-                    value: context::Value::Assign(lhs_ctxes, rhs_ctxes),
-                })
+                if assigns.len() == 1 {
+                    Ok(assigns.into_iter().next().unwrap())
+                } else {
+                    Ok(Context {
+                        is_lvalue: false,
+                        taipe: context::Type::Void,
+                        value: context::Value::Block(assigns),
+                    })
+                }
             }
             ast::Expr::Binary { left, op, right } => self.visit_binary(left, op, right),
             ast::Expr::Cast { expr, taipe } => {
@@ -2845,7 +2764,7 @@ impl<'a> Analyzer<'a> {
             ast::Expr::Member { expr, name } => {
                 let ctx = self.visit_expr(expr)?;
                 let keep_lvalue = ctx.is_lvalue;
-                let (keep_const, taipe) = match ctx.taipe.clone() {
+                let (keep_const, taipe) = match ctx.taipe {
                     context::Type::Pointer(taipe) => match *taipe {
                         context::Type::Const(taipe) => (true, *taipe),
                         taipe => (false, taipe),
@@ -2878,10 +2797,7 @@ impl<'a> Analyzer<'a> {
                         if name.kind != TokenKind::IntLit {
                             return Err(self.make_err(format!("expected {}", TokenKind::IntLit.get_repr()), name));
                         }
-                        let Some(index) = name.value.clone() else {
-                            unreachable!("probably some lexer bug");
-                        };
-                        let TokenValue::Int { integral: index, suffix } = index else {
+                        let Some(TokenValue::Int { integral: index, suffix }) = name.value.clone() else {
                             unreachable!("probably some lexer bug");
                         };
                         if suffix.is_some() {
@@ -2895,7 +2811,7 @@ impl<'a> Analyzer<'a> {
                             ));
                         }
                         // Get the type
-                        let mut taipe = items[index.to_usize().expect("dont know what to do in this case")].clone();
+                        let mut taipe = items[index.to_usize().unwrap()].clone();
                         if keep_const {
                             taipe = taipe.add_const();
                         }
@@ -2912,20 +2828,24 @@ impl<'a> Analyzer<'a> {
                             taipe,
                             value: context::Value::Index {
                                 line_info: node.get_line_info(),
-                                lhs: Box::new(ctx),
+                                lhs: Box::new(Context {
+                                    is_lvalue: keep_lvalue,
+                                    taipe: context::Type::Tuple(items),
+                                    value: ctx.value,
+                                }),
                                 index: Box::new(index),
                             },
                         })
                     }
                     context::Type::Module => {
-                        let context::Value::UserReference { line_info: _, scope_id: module } = ctx.value else {
+                        let context::Value::Imm(context::Imm::Module(module)) = ctx.value else {
                             unreachable!("probably some analyzer bug");
                         };
                         self.get_member(&module, &name)
                     }
                     // TODO: implement this after struct functions
                     // context::Type::Typedef => todo!(),
-                    _ => Err(self.make_err(format!("cannot use '.' operator on '{}'", ctx.taipe), expr)),
+                    taipe => Err(self.make_err(format!("cannot use '.' operator on '{}'", taipe), expr)),
                 }
             }
             ast::Expr::Call {
@@ -3209,7 +3129,12 @@ impl<'a> Analyzer<'a> {
         // Accumulate errors
         let mut errs = CompileError::Errors(Vec::new());
         // If the function scope can be resolved and is a lvalue
-        if let context::Value::UserReference { line_info: _, scope_id } = fun_ctx.value {
+        let scope_id = match fun_ctx.value {
+            context::Value::GetGlobal { line_info: _, scope_id }
+            | context::Value::GetLocal { line_info: _, scope_id } => Some(scope_id),
+            _ => None,
+        };
+        if let Some(scope_id) = scope_id {
             let Payload::Function(ref data) = self.get_scope(&scope_id).payload else {
                 unreachable!("probably some analyzer bug");
             };
@@ -3359,7 +3284,7 @@ impl<'a> Analyzer<'a> {
             Ok(Context {
                 is_lvalue: false,
                 taipe: (*return_type).clone(),
-                value: context::Value::Call {
+                value: context::Value::DirectCall {
                     line_info: call_line_info,
                     fun_scope_id: scope_id,
                     args: args_info,
@@ -4316,7 +4241,7 @@ impl<'a> Analyzer<'a> {
                     let name = &items[index];
                     ctx = match ctx.taipe.remove_const() {
                         context::Type::Module => {
-                            let context::Value::UserReference { line_info: _, scope_id: module } = ctx.value else {
+                            let context::Value::Imm(context::Imm::Module(module)) = ctx.value else {
                                 unreachable!("probably some analyzer bug");
                             };
                             self.get_member(&module, &name)?
@@ -5117,13 +5042,34 @@ impl<'a> Analyzer<'a> {
                     taipe: context::Type::Typedef,
                     value: context::Value::Imm(context::Imm::Type(taipe.clone())),
                 },
-                Payload::Function(_) | Payload::Global(_) | Payload::Local(_) | Payload::Param(_) | Payload::None => Context {
-                    is_lvalue: true,
-                    taipe: self.get_scope(&child_id).get_type().clone(),
-                    value: context::Value::UserReference {
-                        line_info,
-                        scope_id: child_id,
-                    },
+                Payload::Function(_) | Payload::Global(_) | Payload::Local(_) | Payload::Param(_) | Payload::None => {
+                    if self.get_scope(&child_id).is_module() {
+                        return Ok(Some(Context {
+                            is_lvalue: true,
+                            taipe: context::Type::Module,
+                            value: context::Value::from_module(child_id),
+                        }));
+                    }
+                    if self.is_global(&child_id) {
+                        Context {
+                            is_lvalue: true,
+                            taipe: self.get_scope(&child_id).get_type().clone(),
+                            value: context::Value::GetGlobal {
+                                line_info,
+                                scope_id: child_id,
+                            },
+                        }
+                    } else {
+                        assert!(self.is_local(&child_id));
+                        Context {
+                            is_lvalue: true,
+                            taipe: self.get_scope(&child_id).get_type().clone(),
+                            value: context::Value::GetLocal {
+                                line_info,
+                                scope_id: child_id,
+                            },
+                        }
+                    }
                 },
                 Payload::Block(_) => panic!("accessing block members not allowed"),
                 Payload::LayoutResolutionInProgress => unreachable!("probably some analyzer bug"),
@@ -5165,8 +5111,11 @@ impl<'a> Analyzer<'a> {
                         // Typedef is encoded by Type::Basic so ignore that case
                         return Ok(Some(ctx));
                     } else {
-                        let context::Value::UserReference { line_info: _, ref scope_id } = ctx.value else {
-                            unreachable!("probably some bug in resolve_member");
+                        let scope_id = match ctx.value {
+                            context::Value::Imm(context::Imm::Module(ref scope_id)) => scope_id,
+                            context::Value::GetGlobal { line_info: _, ref scope_id } => scope_id,
+                            context::Value::GetLocal { line_info: _, ref scope_id } => scope_id,
+                            _ => unreachable!("probably some bug in resolve_member"),
                         };
 
                         if let Some(inner_fn) = inner_fn {
@@ -5333,6 +5282,14 @@ impl<'a> Analyzer<'a> {
     /// Sets the evaluation state of the specified scope
     fn set_scope_eval_state(&mut self, scope_id: &ScopeId, eval_state: ScopeEvalState<'a>) {
         self.scope_eval_state_table.insert(scope_id.clone(), eval_state);
+    }
+
+    fn is_global(&mut self, scope_id: &ScopeId) -> bool {
+        self.get_enclosing_function(scope_id).is_none()
+    }
+
+    fn is_local(&mut self, scope_id: &ScopeId) -> bool {
+        self.get_enclosing_function(scope_id).is_some()
     }
 
     fn use_current_function_data<F, T>(&self, handler: F) -> T
